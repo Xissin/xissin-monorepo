@@ -28,9 +28,9 @@ class _HomeScreenState extends State<HomeScreen> {
     try {
       final data = await ApiService.keyStatus(widget.userId);
       setState(() {
-        _hasKey    = data['active'] == true;
+        _hasKey = data['active'] == true;
         _expiresAt = data['expires_at'];
-        _loading   = false;
+        _loading = false;
       });
     } catch (_) {
       setState(() => _loading = false);
@@ -38,7 +38,10 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _goToSms() {
-    if (!_hasKey) { _showNoKeyDialog(); return; }
+    if (!_hasKey) {
+      _showNoKeyDialog();
+      return;
+    }
     Navigator.push(
       context,
       MaterialPageRoute(builder: (_) => SmsBomberScreen(userId: widget.userId)),
@@ -60,7 +63,8 @@ class _HomeScreenState extends State<HomeScreen> {
         backgroundColor: AppColors.surface,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
         title: const Text('Key Required',
-            style: TextStyle(color: AppColors.textPrimary, fontWeight: FontWeight.bold)),
+            style: TextStyle(
+                color: AppColors.textPrimary, fontWeight: FontWeight.bold)),
         content: const Text(
           'You need an active key to use this feature.\nGo to Key Manager to redeem one.',
           style: TextStyle(color: AppColors.textSecondary, height: 1.5),
@@ -68,10 +72,14 @@ class _HomeScreenState extends State<HomeScreen> {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel', style: TextStyle(color: AppColors.textSecondary)),
+            child: const Text('Cancel',
+                style: TextStyle(color: AppColors.textSecondary)),
           ),
           ElevatedButton(
-            onPressed: () { Navigator.pop(context); _goToKeys(); },
+            onPressed: () {
+              Navigator.pop(context);
+              _goToKeys();
+            },
             child: const Text('Get Key'),
           ),
         ],
@@ -181,10 +189,13 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
               child: _loading
                   ? const SizedBox(
-                      width: 18, height: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.primary),
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(
+                          strokeWidth: 2, color: AppColors.primary),
                     )
-                  : const Icon(Icons.refresh_rounded, color: AppColors.textSecondary, size: 20),
+                  : const Icon(Icons.refresh_rounded,
+                      color: AppColors.textSecondary, size: 20),
             ),
           ),
         ],
@@ -217,14 +228,18 @@ class _HomeScreenState extends State<HomeScreen> {
               color: _hasKey ? AppColors.accent : AppColors.error,
             ),
             const SizedBox(width: 8),
-            Text(
-              _hasKey
-                  ? 'Key active${_expiresAt != null ? ' · Expires $_expiresAt' : ''}'
-                  : 'No active key — tap Key Manager to redeem',
-              style: TextStyle(
-                color: _hasKey ? AppColors.accent : AppColors.error,
-                fontSize: 12,
-                fontWeight: FontWeight.w500,
+            Expanded(
+              child: Text(
+                _hasKey
+                    ? 'Key active${_expiresAt != null ? ' · Expires $_expiresAt' : ''}'
+                    : 'No active key — tap Key Manager to redeem',
+                style: TextStyle(
+                  color: _hasKey ? AppColors.accent : AppColors.error,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w500,
+                ),
+                overflow: TextOverflow.ellipsis,
+                maxLines: 1,
               ),
             ),
           ],
@@ -287,7 +302,10 @@ class _FeatureCardState extends State<_FeatureCard>
   Widget build(BuildContext context) {
     return GestureDetector(
       onTapDown: (_) => _ctrl.reverse(),
-      onTapUp: (_) { _ctrl.forward(); widget.onTap(); },
+      onTapUp: (_) {
+        _ctrl.forward();
+        widget.onTap();
+      },
       onTapCancel: () => _ctrl.forward(),
       child: ScaleTransition(
         scale: _scale,
@@ -331,7 +349,8 @@ class _FeatureCardState extends State<_FeatureCard>
                 if (widget.locked)
                   const Padding(
                     padding: EdgeInsets.only(bottom: 6),
-                    child: Icon(Icons.lock_outline, color: AppColors.textSecondary, size: 15),
+                    child: Icon(Icons.lock_outline,
+                        color: AppColors.textSecondary, size: 15),
                   ),
                 Text(
                   widget.title,
@@ -344,7 +363,8 @@ class _FeatureCardState extends State<_FeatureCard>
                 const SizedBox(height: 3),
                 Text(
                   widget.subtitle,
-                  style: const TextStyle(color: AppColors.textSecondary, fontSize: 12),
+                  style: const TextStyle(
+                      color: AppColors.textSecondary, fontSize: 12),
                 ),
               ],
             ),
