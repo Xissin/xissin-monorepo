@@ -1,6 +1,10 @@
 """
 database.py — Upstash Redis persistence layer for Xissin App API
 Uses REST API (no redis-py needed — works on Railway without a Redis addon)
+
+Changes:
+  - Replaced pickle with JSON (security fix — pickle allows arbitrary code execution)
+  - Auto-prunes expired keys on every save (prevents Redis bloat)
 """
 
 import os
@@ -8,8 +12,6 @@ import json
 import time
 import logging
 import requests
-import base64
-import pickle
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -35,7 +37,7 @@ def _token() -> str:
 # ── Redis keys ────────────────────────────────────────────────────────────────
 RK_KEYS      = "xissin:app:keys"       # dict of key_string → key metadata
 RK_USERS     = "xissin:app:users"      # dict of user_id → user metadata
-RK_BANNED    = "xissin:app:banned"     # set of banned user_ids
+RK_BANNED    = "xissin:app:banned"     # list of banned user_ids (JSON-safe)
 RK_LOGS      = "xissin:app:logs"       # list of action log dicts
 RK_SMS_STATS = "xissin:app:sms_stats"  # dict of user_id → total SMS sent
 
@@ -48,6 +50,7 @@ def ph_now() -> datetime:
 # ── Low-level Upstash helpers ─────────────────────────────────────────────────
 
 def _redis_get(key: str):
+    """Fetch a JSON value from Upstash Redis."""
     try:
         resp = requests.get(
             f"{_url()}/get/{key}",
@@ -60,16 +63,18 @@ def _redis_get(key: str):
         result = body.get("result")
         if result is None:
             return None
-        return pickle.loads(base64.b64decode(result.encode("utf-8")))
+        # Result is a JSON string stored as a plain string in Redis
+        return json.loads(result)
     except Exception as e:
         logger.error(f"Redis GET {key} failed: {e}")
         return None
 
 
 def _redis_set(key: str, data) -> bool:
+    """Store a JSON-serialisable value in Upstash Redis."""
     for attempt in range(1, 4):
         try:
-            encoded = base64.b64encode(pickle.dumps(data)).decode("utf-8")
+            encoded = json.dumps(data, default=str)  # default=str handles datetime objects
             resp = requests.post(
                 f"{_url()}/set/{key}",
                 headers={"Authorization": f"Bearer {_token()}", "Content-Type": "text/plain"},
@@ -85,14 +90,56 @@ def _redis_set(key: str, data) -> bool:
     return False
 
 
+# ── Expired key pruning ───────────────────────────────────────────────────────
+
+def _prune_expired_keys(keys_dict: dict) -> dict:
+    """
+    Remove keys that are expired AND already redeemed, or expired AND unredeemed.
+    This keeps Redis storage lean — no point storing keys nobody can ever use.
+    """
+    now = ph_now().isoformat()
+    pruned = {}
+    removed = 0
+    for k, meta in keys_dict.items():
+        expires_at = meta.get("expires_at", "")
+        try:
+            if expires_at and expires_at < now:
+                # Key is expired — remove it regardless of redeemed status
+                removed += 1
+                continue
+        except Exception:
+            pass
+        pruned[k] = meta
+    if removed:
+        logger.info(f"🧹 Pruned {removed} expired key(s) from Redis")
+    return pruned
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def init_db():
     """Load all data from Upstash into memory on startup."""
     global _cache
-    _cache["keys"]      = _redis_get(RK_KEYS)      or {}
+
+    raw_keys = _redis_get(RK_KEYS) or {}
+    # Prune expired keys immediately on load
+    clean_keys = _prune_expired_keys(raw_keys)
+    if len(clean_keys) != len(raw_keys):
+        # Save pruned version back to Redis right away
+        _redis_set(RK_KEYS, clean_keys)
+
+    raw_banned = _redis_get(RK_BANNED) or []
+    # banned was previously a set — handle both list and set gracefully
+    if isinstance(raw_banned, list):
+        banned_set = set(raw_banned)
+    elif isinstance(raw_banned, set):
+        banned_set = raw_banned
+    else:
+        banned_set = set()
+
+    _cache["keys"]      = clean_keys
     _cache["users"]     = _redis_get(RK_USERS)     or {}
-    _cache["banned"]    = _redis_get(RK_BANNED)    or set()
+    _cache["banned"]    = banned_set
     _cache["logs"]      = _redis_get(RK_LOGS)      or []
     _cache["sms_stats"] = _redis_get(RK_SMS_STATS) or {}
     logger.info(
@@ -111,6 +158,8 @@ def get_key(key_str: str) -> dict | None:
 
 def save_key(key_str: str, metadata: dict):
     _cache.setdefault("keys", {})[key_str] = metadata
+    # Prune expired keys every time we save to keep Redis lean
+    _cache["keys"] = _prune_expired_keys(_cache["keys"])
     _redis_set(RK_KEYS, _cache["keys"])
 
 def delete_key(key_str: str):
@@ -134,11 +183,12 @@ def is_banned(user_id: str) -> bool:
 
 def ban_user(user_id: str):
     _cache.setdefault("banned", set()).add(str(user_id))
-    _redis_set(RK_BANNED, _cache["banned"])
+    # Store as list for JSON compatibility
+    _redis_set(RK_BANNED, list(_cache["banned"]))
 
 def unban_user(user_id: str):
     _cache.setdefault("banned", set()).discard(str(user_id))
-    _redis_set(RK_BANNED, _cache["banned"])
+    _redis_set(RK_BANNED, list(_cache["banned"]))
 
 # ── Action Logs ───────────────────────────────────────────────────────────────
 
