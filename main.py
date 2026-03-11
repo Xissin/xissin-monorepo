@@ -1,10 +1,12 @@
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from contextlib import asynccontextmanager
 import uvicorn
 import os
+import time
 import logging
 
 from limiter import limiter
@@ -28,7 +30,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# ── Attach limiter ────────────────────────────────────────────────────────────
+# ── Rate limiter ──────────────────────────────────────────────────────────────
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
@@ -40,6 +42,20 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ── Request logging middleware ────────────────────────────────────────────────
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    start = time.time()
+    response = await call_next(request)
+    duration = round(time.time() - start, 3)
+    logger.info(
+        f"{request.method} {request.url.path} "
+        f"→ {response.status_code} "
+        f"({duration}s) "
+        f"[{request.client.host if request.client else 'unknown'}]"
+    )
+    return response
 
 # ── Routers ───────────────────────────────────────────────────────────────────
 app.include_router(keys.router,  prefix="/api/keys",  tags=["Keys"])
