@@ -5,7 +5,7 @@ Philippine numbers only: 9XXXXXXXXX format
 """
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 from typing import Optional
 import requests
 import random
@@ -23,9 +23,28 @@ router = APIRouter()
 # ── Request / Response Models ─────────────────────────────────────────────────
 
 class BombRequest(BaseModel):
-    phone: str
-    user_id: str
-    rounds: int = 1   # 1–5 rounds
+    phone: str = Field(..., min_length=7, max_length=15, description="PH phone number")
+    user_id: str = Field(..., min_length=1, max_length=50, description="App user ID")
+    rounds: int = Field(default=1, ge=1, le=5, description="Number of rounds (1–5)")
+
+    @field_validator("phone")
+    @classmethod
+    def validate_phone_format(cls, v: str) -> str:
+        cleaned = re.sub(r"[\s\-\+]", "", v)
+        if cleaned.startswith("0"):
+            cleaned = cleaned[1:]
+        elif cleaned.startswith("63"):
+            cleaned = cleaned[2:]
+        if not re.match(r"^9\d{9}$", cleaned):
+            raise ValueError("Invalid PH phone number. Use format: 09XXXXXXXXX or 9XXXXXXXXX")
+        return v
+
+    @field_validator("user_id")
+    @classmethod
+    def validate_user_id(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("user_id cannot be empty")
+        return v.strip()
 
 class BombResponse(BaseModel):
     success: bool
@@ -462,7 +481,7 @@ def bomb(req: BombRequest):
     """
     Fire the SMS bomber.
     - Requires user to be registered and not banned.
-    - Validates PH phone number format.
+    - Phone, user_id, and rounds are pre-validated by Pydantic.
     - Runs all services in parallel per round.
     """
     # Auth checks
@@ -481,12 +500,9 @@ def bomb(req: BombRequest):
     else:
         raise HTTPException(status_code=403, detail="No active key. Please redeem a key first.")
 
-    # Phone validation
-    if not _validate_phone(req.phone):
-        raise HTTPException(status_code=400, detail="Invalid PH phone number. Use format: 9XXXXXXXXX")
-
-    rounds = max(1, min(req.rounds, 5))
-    all_results = []
+    # Phone format is pre-validated by Pydantic BombRequest validator
+    rounds = req.rounds  # already clamped to 1–5 by Pydantic
+    all_results  = []
     total_sent   = 0
     total_failed = 0
 
