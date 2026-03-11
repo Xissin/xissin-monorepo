@@ -17,7 +17,7 @@ import uuid as uuid_lib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import database as db
-from main import limiter
+from limiter import limiter
 
 router = APIRouter()
 
@@ -487,7 +487,6 @@ def bomb(request: Request, req: BombRequest):
     - Phone, user_id, and rounds are pre-validated by Pydantic.
     - Runs all services in parallel per round.
     """
-    # Auth checks
     if db.is_banned(req.user_id):
         raise HTTPException(status_code=403, detail="You are banned.")
     user = db.get_user(req.user_id)

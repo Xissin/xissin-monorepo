@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 
 import database as db
 from auth import require_admin
-from main import limiter
+from limiter import limiter
 
 router = APIRouter()
 PH_TZ = ZoneInfo("Asia/Manila")
@@ -78,14 +78,12 @@ def redeem_key(request: Request, req: RedeemKeyRequest):
     if now > expires:
         raise HTTPException(status_code=400, detail="Key has expired")
 
-    # Mark redeemed
     key_data["redeemed"]    = True
     key_data["redeemed_by"] = req.user_id
     key_data["redeemed_by_username"] = req.username or ""
     key_data["redeemed_at"] = now.isoformat()
     db.save_key(req.key, key_data)
 
-    # Save / update user record
     user = db.get_user(req.user_id) or {}
     user.update({
         "user_id":    req.user_id,

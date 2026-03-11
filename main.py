@@ -1,23 +1,18 @@
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from contextlib import asynccontextmanager
-from slowapi import Limiter, _rate_limit_exceeded_handler
-from slowapi.util import get_remote_address
+from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
+from contextlib import asynccontextmanager
 import uvicorn
 import os
 import logging
 
+from limiter import limiter
 from routers import keys, users, sms
 from database import init_db
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
-
-# ── Rate Limiter ──────────────────────────────────────────────────────────────
-# Shared limiter instance — imported by routers to apply @limiter.limit()
-limiter = Limiter(key_func=get_remote_address)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -33,7 +28,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# ── Attach limiter to app state ───────────────────────────────────────────────
+# ── Attach limiter ────────────────────────────────────────────────────────────
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
