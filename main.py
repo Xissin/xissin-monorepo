@@ -1,6 +1,10 @@
-from fastapi import FastAPI, HTTPException, Depends, Header
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 import uvicorn
 import os
 import logging
@@ -10,6 +14,10 @@ from database import init_db
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
+
+# ── Rate Limiter ──────────────────────────────────────────────────────────────
+# Shared limiter instance — imported by routers to apply @limiter.limit()
+limiter = Limiter(key_func=get_remote_address)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -25,6 +33,11 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# ── Attach limiter to app state ───────────────────────────────────────────────
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# ── CORS ──────────────────────────────────────────────────────────────────────
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -33,10 +46,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ── Routers ───────────────────────────────────────────────────────────────────
 app.include_router(keys.router,  prefix="/api/keys",  tags=["Keys"])
 app.include_router(users.router, prefix="/api/users", tags=["Users"])
 app.include_router(sms.router,   prefix="/api/sms",   tags=["SMS Bomber"])
 
+# ── Base routes ───────────────────────────────────────────────────────────────
 @app.get("/")
 def root():
     return {"status": "online", "app": "Xissin Multi-Tool API", "version": "1.0.0"}

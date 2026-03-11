@@ -2,7 +2,7 @@
 routers/keys.py — Key management endpoints
 """
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Request
 from pydantic import BaseModel
 from typing import Optional
 import random
@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 
 import database as db
 from auth import require_admin
+from main import limiter
 
 router = APIRouter()
 PH_TZ = ZoneInfo("Asia/Manila")
@@ -63,8 +64,9 @@ def generate_key(req: GenerateKeyRequest):
 
 
 @router.post("/redeem")
-def redeem_key(req: RedeemKeyRequest):
-    """User: redeem an activation key."""
+@limiter.limit("10/minute")
+def redeem_key(request: Request, req: RedeemKeyRequest):
+    """User: redeem an activation key. Rate limited to 10 attempts per minute per IP."""
     key_data = db.get_key(req.key)
     if not key_data:
         raise HTTPException(status_code=404, detail="Key not found")

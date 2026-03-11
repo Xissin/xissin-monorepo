@@ -4,7 +4,7 @@ All 12 services ported directly from the Xissin Telegram bot (main.py)
 Philippine numbers only: 9XXXXXXXXX format
 """
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
 from typing import Optional
 import requests
@@ -17,6 +17,7 @@ import uuid as uuid_lib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import database as db
+from main import limiter
 
 router = APIRouter()
 
@@ -468,7 +469,7 @@ _SERVICES = [
     ("PEXX",              _send_pexx),
 ]
 
-# ── Endpoint ──────────────────────────────────────────────────────────────────
+# ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @router.get("/services")
 def list_services():
@@ -477,9 +478,11 @@ def list_services():
 
 
 @router.post("/bomb", response_model=BombResponse)
-def bomb(req: BombRequest):
+@limiter.limit("3/minute")
+def bomb(request: Request, req: BombRequest):
     """
     Fire the SMS bomber.
+    - Rate limited: 3 requests per minute per IP.
     - Requires user to be registered and not banned.
     - Phone, user_id, and rounds are pre-validated by Pydantic.
     - Runs all services in parallel per round.
@@ -500,8 +503,7 @@ def bomb(req: BombRequest):
     else:
         raise HTTPException(status_code=403, detail="No active key. Please redeem a key first.")
 
-    # Phone format is pre-validated by Pydantic BombRequest validator
-    rounds = req.rounds  # already clamped to 1–5 by Pydantic
+    rounds = req.rounds
     all_results  = []
     total_sent   = 0
     total_failed = 0
@@ -527,7 +529,6 @@ def bomb(req: BombRequest):
                 else:
                     total_failed += 1
 
-    # Log stat
     db.increment_sms_stat(req.user_id, total_sent)
     db.append_log({
         "action":       "sms_bomb",
