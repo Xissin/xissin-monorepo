@@ -18,16 +18,19 @@ logger = logging.getLogger(__name__)
 PH_TZ = ZoneInfo("Asia/Manila")
 
 # ── Upstash credentials ───────────────────────────────────────────────────────
-_FALLBACK_URL   = "https://upward-glowworm-4939.upstash.io"
-_FALLBACK_TOKEN = "ARNLAAImcDFmY2FlZmY4MjcwMDA0Yzg1OTMzYjUzMDdmYjg5ZmNlYXAxNDkzOQ"
+# ⚠️ NEVER hardcode these — always set them in Railway environment variables!
 
 def _url() -> str:
     v = os.environ.get("UPSTASH_REDIS_REST_URL", "").strip().rstrip("/")
-    return v if v else _FALLBACK_URL
+    if not v:
+        raise RuntimeError("UPSTASH_REDIS_REST_URL environment variable is not set!")
+    return v
 
 def _token() -> str:
     v = os.environ.get("UPSTASH_REDIS_REST_TOKEN", "").strip()
-    return v if v else _FALLBACK_TOKEN
+    if not v:
+        raise RuntimeError("UPSTASH_REDIS_REST_TOKEN environment variable is not set!")
+    return v
 
 # ── Redis keys ────────────────────────────────────────────────────────────────
 RK_KEYS      = "xissin:app:keys"       # dict of key_string → key metadata
