@@ -3,7 +3,8 @@ database.py — Upstash Redis persistence layer for Xissin App API
 Uses REST API (no redis-py needed — works on Railway without a Redis addon)
 
 Changes:
-  - Replaced pickle with JSON (security fix — pickle allows arbitrary code execution)
+  - Replaced pickle with JSON (security fix)
+  - Replaced blocking requests with async httpx (performance fix)
   - Auto-prunes expired keys on every save (prevents Redis bloat)
 """
 
@@ -11,7 +12,8 @@ import os
 import json
 import time
 import logging
-import requests
+import asyncio
+import httpx
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -20,7 +22,6 @@ logger = logging.getLogger(__name__)
 PH_TZ = ZoneInfo("Asia/Manila")
 
 # ── Upstash credentials ───────────────────────────────────────────────────────
-# ⚠️ NEVER hardcode these — always set them in Railway environment variables!
 
 def _url() -> str:
     v = os.environ.get("UPSTASH_REDIS_REST_URL", "").strip().rstrip("/")
@@ -35,68 +36,85 @@ def _token() -> str:
     return v
 
 # ── Redis keys ────────────────────────────────────────────────────────────────
-RK_KEYS      = "xissin:app:keys"       # dict of key_string → key metadata
-RK_USERS     = "xissin:app:users"      # dict of user_id → user metadata
-RK_BANNED    = "xissin:app:banned"     # list of banned user_ids (JSON-safe)
-RK_LOGS      = "xissin:app:logs"       # list of action log dicts
-RK_SMS_STATS = "xissin:app:sms_stats"  # dict of user_id → total SMS sent
+RK_KEYS      = "xissin:app:keys"
+RK_USERS     = "xissin:app:users"
+RK_BANNED    = "xissin:app:banned"
+RK_LOGS      = "xissin:app:logs"
+RK_SMS_STATS = "xissin:app:sms_stats"
 
-# ── In-memory cache (survives process lifetime, refreshed from Redis) ─────────
+# ── In-memory cache ───────────────────────────────────────────────────────────
 _cache: dict = {}
 
 def ph_now() -> datetime:
     return datetime.now(PH_TZ).replace(tzinfo=None)
 
-# ── Low-level Upstash helpers ─────────────────────────────────────────────────
+# ── Low-level async Upstash helpers ──────────────────────────────────────────
 
-def _redis_get(key: str):
-    """Fetch a JSON value from Upstash Redis."""
+async def _redis_get_async(key: str):
+    """Async fetch a JSON value from Upstash Redis."""
     try:
-        resp = requests.get(
-            f"{_url()}/get/{key}",
-            headers={"Authorization": f"Bearer {_token()}"},
-            timeout=10,
-        )
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                f"{_url()}/get/{key}",
+                headers={"Authorization": f"Bearer {_token()}"},
+            )
         if resp.status_code != 200:
             return None
         body = resp.json()
         result = body.get("result")
         if result is None:
             return None
-        # Result is a JSON string stored as a plain string in Redis
         return json.loads(result)
     except Exception as e:
         logger.error(f"Redis GET {key} failed: {e}")
         return None
 
 
-def _redis_set(key: str, data) -> bool:
-    """Store a JSON-serialisable value in Upstash Redis."""
+async def _redis_set_async(key: str, data) -> bool:
+    """Async store a JSON value in Upstash Redis."""
     for attempt in range(1, 4):
         try:
-            encoded = json.dumps(data, default=str)  # default=str handles datetime objects
-            resp = requests.post(
-                f"{_url()}/set/{key}",
-                headers={"Authorization": f"Bearer {_token()}", "Content-Type": "text/plain"},
-                data=encoded,
-                timeout=10,
-            )
+            encoded = json.dumps(data, default=str)
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.post(
+                    f"{_url()}/set/{key}",
+                    headers={
+                        "Authorization": f"Bearer {_token()}",
+                        "Content-Type": "text/plain",
+                    },
+                    content=encoded,
+                )
             if resp.status_code == 200 and resp.json().get("result") == "OK":
                 return True
         except Exception as e:
             logger.error(f"Redis SET {key} attempt {attempt} failed: {e}")
             if attempt < 3:
-                time.sleep(attempt)
+                await asyncio.sleep(attempt)
     return False
+
+
+# ── Sync wrappers (called from FastAPI sync route functions) ──────────────────
+# FastAPI runs sync routes in a thread pool — we use asyncio.run() to safely
+# call our async Redis helpers from that sync context.
+
+def _redis_get(key: str):
+    try:
+        return asyncio.get_event_loop().run_until_complete(_redis_get_async(key))
+    except RuntimeError:
+        # No event loop in this thread — create a new one
+        return asyncio.run(_redis_get_async(key))
+
+def _redis_set(key: str, data) -> bool:
+    try:
+        return asyncio.get_event_loop().run_until_complete(_redis_set_async(key, data))
+    except RuntimeError:
+        return asyncio.run(_redis_set_async(key, data))
 
 
 # ── Expired key pruning ───────────────────────────────────────────────────────
 
 def _prune_expired_keys(keys_dict: dict) -> dict:
-    """
-    Remove keys that are expired AND already redeemed, or expired AND unredeemed.
-    This keeps Redis storage lean — no point storing keys nobody can ever use.
-    """
+    """Remove expired keys to keep Redis storage lean."""
     now = ph_now().isoformat()
     pruned = {}
     removed = 0
@@ -104,7 +122,6 @@ def _prune_expired_keys(keys_dict: dict) -> dict:
         expires_at = meta.get("expires_at", "")
         try:
             if expires_at and expires_at < now:
-                # Key is expired — remove it regardless of redeemed status
                 removed += 1
                 continue
         except Exception:
@@ -121,15 +138,12 @@ def init_db():
     """Load all data from Upstash into memory on startup."""
     global _cache
 
-    raw_keys = _redis_get(RK_KEYS) or {}
-    # Prune expired keys immediately on load
+    raw_keys   = _redis_get(RK_KEYS)   or {}
     clean_keys = _prune_expired_keys(raw_keys)
     if len(clean_keys) != len(raw_keys):
-        # Save pruned version back to Redis right away
         _redis_set(RK_KEYS, clean_keys)
 
     raw_banned = _redis_get(RK_BANNED) or []
-    # banned was previously a set — handle both list and set gracefully
     if isinstance(raw_banned, list):
         banned_set = set(raw_banned)
     elif isinstance(raw_banned, set):
@@ -158,7 +172,6 @@ def get_key(key_str: str) -> dict | None:
 
 def save_key(key_str: str, metadata: dict):
     _cache.setdefault("keys", {})[key_str] = metadata
-    # Prune expired keys every time we save to keep Redis lean
     _cache["keys"] = _prune_expired_keys(_cache["keys"])
     _redis_set(RK_KEYS, _cache["keys"])
 
@@ -183,7 +196,6 @@ def is_banned(user_id: str) -> bool:
 
 def ban_user(user_id: str):
     _cache.setdefault("banned", set()).add(str(user_id))
-    # Store as list for JSON compatibility
     _redis_set(RK_BANNED, list(_cache["banned"]))
 
 def unban_user(user_id: str):
