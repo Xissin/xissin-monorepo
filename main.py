@@ -13,8 +13,12 @@ from limiter import limiter
 from routers import keys, users, sms
 from database import init_db
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s"
+)
 logger = logging.getLogger(__name__)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -23,6 +27,7 @@ async def lifespan(app: FastAPI):
     yield
     logger.info("🛑 Xissin App Backend shutting down.")
 
+
 app = FastAPI(
     title="Xissin App API",
     description="Backend API for the Xissin Multi-Tool Flutter App",
@@ -30,11 +35,11 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# ── Rate limiter ──────────────────────────────────────────────────────────────
+# ── Rate limiter ───────────────────────────────────────────────────────────────
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-# ── CORS ──────────────────────────────────────────────────────────────────────
+# ── CORS ───────────────────────────────────────────────────────────────────────
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -43,33 +48,45 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── Request logging middleware ────────────────────────────────────────────────
+# ── Request logging middleware ─────────────────────────────────────────────────
+# IMPORTANT: wrapped in try/except so a logging crash NEVER kills the server
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
     start = time.time()
     response = await call_next(request)
-    duration = round(time.time() - start, 3)
-    logger.info(
-        f"{request.method} {request.url.path} "
-        f"→ {response.status_code} "
-        f"({duration}s) "
-        f"[{request.client.host if request.client else 'unknown'}]"
-    )
+    try:
+        duration = round(time.time() - start, 3)
+        client_ip = request.client.host if request.client else "unknown"
+        # Skip logging Railway's internal healthcheck spam
+        if request.url.path != "/health":
+            logger.info(
+                f"{request.method} {request.url.path} "
+                f"→ {response.status_code} "
+                f"({duration}s) "
+                f"[{client_ip}]"
+            )
+    except Exception as e:
+        # Logging must NEVER crash the server
+        logger.warning(f"Log middleware error (non-fatal): {e}")
     return response
 
-# ── Routers ───────────────────────────────────────────────────────────────────
+
+# ── Routers ────────────────────────────────────────────────────────────────────
 app.include_router(keys.router,  prefix="/api/keys",  tags=["Keys"])
 app.include_router(users.router, prefix="/api/users", tags=["Users"])
 app.include_router(sms.router,   prefix="/api/sms",   tags=["SMS Bomber"])
 
-# ── Base routes ───────────────────────────────────────────────────────────────
+
+# ── Base routes ────────────────────────────────────────────────────────────────
 @app.get("/")
 def root():
     return {"status": "online", "app": "Xissin Multi-Tool API", "version": "1.0.0"}
 
+
 @app.get("/health")
 def health():
     return {"status": "healthy"}
+
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
