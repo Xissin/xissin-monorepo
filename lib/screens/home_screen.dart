@@ -5,7 +5,6 @@ import '../services/api_service.dart';
 import '../services/theme_service.dart';
 import 'sms_bomber_screen.dart';
 import 'key_screen.dart';
-import 'stats_screen.dart';
 import 'about_screen.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -19,36 +18,10 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   bool _hasKey = false;
   bool _loading = true;
-  String? _expiresAt;
 
   // Announcements
   List<Map<String, dynamic>> _announcements = [];
   final Set<String> _dismissedIds = {};
-
-  // ── Expiry helpers ────────────────────────────────────────────────────────
-
-  int? get _daysLeft {
-    if (_expiresAt == null) return null;
-    try {
-      return DateTime.parse(_expiresAt!).difference(DateTime.now()).inDays;
-    } catch (_) {
-      return null;
-    }
-  }
-
-  bool get _isExpiringSoon {
-    final d = _daysLeft;
-    return d != null && d <= 3 && d >= 0;
-  }
-
-  String get _expiryLabel {
-    final d = _daysLeft;
-    if (d == null) return '';
-    if (d < 0) return 'Key EXPIRED';
-    if (d == 0) return '⚠️ Expires TODAY!';
-    if (d == 1) return '⚠️ Expires TOMORROW!';
-    return '⚠️ Expires in $d days!';
-  }
 
   // ── Init ──────────────────────────────────────────────────────────────────
 
@@ -71,7 +44,6 @@ class _HomeScreenState extends State<HomeScreen> {
       final data = await ApiService.keyStatus(widget.userId);
       setState(() {
         _hasKey = data['active'] == true;
-        _expiresAt = data['expires_at'];
         _loading = false;
       });
     } catch (_) {
@@ -102,13 +74,6 @@ class _HomeScreenState extends State<HomeScreen> {
       MaterialPageRoute(builder: (_) => KeyScreen(userId: widget.userId)),
     );
     _refreshKeyStatus();
-  }
-
-  void _goToStats() {
-    Navigator.push(
-      context,
-      MaterialPageRoute(builder: (_) => StatsScreen(userId: widget.userId)),
-    );
   }
 
   void _goToAbout() {
@@ -156,47 +121,55 @@ class _HomeScreenState extends State<HomeScreen> {
     return Scaffold(
       backgroundColor: c.background,
       body: SafeArea(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            _buildHeader(c),
-            const SizedBox(height: 8),
-            _buildKeyBanner(c),
-            if (!_loading && _hasKey && _isExpiringSoon) _buildExpiryWarning(c),
+        child: RefreshIndicator(
+          onRefresh: _refreshAll,
+          color: c.primary,
+          backgroundColor: c.surface,
+          displacement: 60,
+          child: CustomScrollView(
+            physics: const AlwaysScrollableScrollPhysics(),
+            slivers: [
+              // ── Header ────────────────────────────────────────────────────
+              SliverToBoxAdapter(child: _buildHeader(c)),
 
-            // 📣 Announcements
-            if (visible.isNotEmpty) ...[
-              const SizedBox(height: 8),
-              ...visible.map((a) => _AnnouncementBanner(
-                    announcement: a,
-                    onDismiss: () => setState(
-                        () => _dismissedIds.add(a['id']?.toString() ?? '')),
-                    c: c,
-                  )),
-            ],
+              // ── Announcements ─────────────────────────────────────────────
+              if (visible.isNotEmpty)
+                SliverToBoxAdapter(
+                  child: Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: Column(
+                      children: visible
+                          .map((a) => _AnnouncementBanner(
+                                announcement: a,
+                                onDismiss: () => setState(() =>
+                                    _dismissedIds.add(a['id']?.toString() ?? '')),
+                                c: c,
+                              ))
+                          .toList(),
+                    ),
+                  ),
+                ),
 
-            const SizedBox(height: 28),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 22),
-              child: Text(
-                'Features',
-                style: TextStyle(
-                  color: c.textPrimary,
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold,
+              // ── Features label ─────────────────────────────────────────────
+              SliverToBoxAdapter(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(22, 28, 22, 14),
+                  child: Text(
+                    'Features',
+                    style: TextStyle(
+                      color: c.textPrimary,
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
                 ),
               ),
-            ),
-            const SizedBox(height: 14),
-            Expanded(
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16),
-                child: GridView.count(
-                  crossAxisCount: 2,
-                  mainAxisSpacing: 14,
-                  crossAxisSpacing: 14,
-                  childAspectRatio: 0.88,
-                  children: [
+
+              // ── Feature grid ───────────────────────────────────────────────
+              SliverPadding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+                sliver: SliverGrid(
+                  delegate: SliverChildListDelegate([
                     _FeatureCard(
                       icon: Icons.sms_rounded,
                       title: 'SMS Bomber',
@@ -216,15 +189,6 @@ class _HomeScreenState extends State<HomeScreen> {
                       onTap: _goToKeys,
                     ),
                     _FeatureCard(
-                      icon: Icons.bar_chart_rounded,
-                      title: 'Stats',
-                      subtitle: 'SMS Usage',
-                      gradient: [c.accent, const Color(0xFF2DC9A0)],
-                      glowColor: c.accent,
-                      locked: false,
-                      onTap: _goToStats,
-                    ),
-                    _FeatureCard(
                       icon: Icons.info_outline_rounded,
                       title: 'About',
                       subtitle: 'Links & Info',
@@ -233,17 +197,23 @@ class _HomeScreenState extends State<HomeScreen> {
                       locked: false,
                       onTap: _goToAbout,
                     ),
-                  ],
+                  ]),
+                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: 2,
+                    mainAxisSpacing: 14,
+                    crossAxisSpacing: 14,
+                    childAspectRatio: 0.88,
+                  ),
                 ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
   }
 
-  // ── Header with theme toggle ───────────────────────────────────────────────
+  // ── Header ────────────────────────────────────────────────────────────────
 
   Widget _buildHeader(XissinColors c) {
     final themeService = context.watch<ThemeService>();
@@ -275,130 +245,26 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             ],
           ),
-          Row(
-            children: [
-              // 🌙 Theme toggle
-              GestureDetector(
-                onTap: () => themeService.toggle(),
-                child: Container(
-                  padding: const EdgeInsets.all(10),
-                  decoration: BoxDecoration(
-                    color: c.surface,
-                    borderRadius: BorderRadius.circular(14),
-                    border: Border.all(color: c.border),
-                  ),
-                  child: Icon(
-                    themeService.isDark
-                        ? Icons.light_mode_rounded
-                        : Icons.dark_mode_rounded,
-                    color: c.textSecondary,
-                    size: 20,
-                  ),
-                ),
+          // 🌙 Theme toggle only — pull-to-refresh replaces the refresh button
+          GestureDetector(
+            onTap: () => themeService.toggle(),
+            child: Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: c.surface,
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: c.border),
               ),
-              const SizedBox(width: 8),
-              // Refresh button
-              GestureDetector(
-                onTap: _refreshAll,
-                child: Container(
-                  padding: const EdgeInsets.all(10),
-                  decoration: BoxDecoration(
-                    color: c.surface,
-                    borderRadius: BorderRadius.circular(14),
-                    border: Border.all(color: c.border),
-                  ),
-                  child: _loading
-                      ? SizedBox(
-                          width: 18,
-                          height: 18,
-                          child: CircularProgressIndicator(
-                              strokeWidth: 2, color: c.primary),
-                        )
-                      : Icon(Icons.refresh_rounded,
-                          color: c.textSecondary, size: 20),
-                ),
+              child: Icon(
+                themeService.isDark
+                    ? Icons.light_mode_rounded
+                    : Icons.dark_mode_rounded,
+                color: c.textSecondary,
+                size: 20,
               ),
-            ],
+            ),
           ),
         ],
-      ),
-    );
-  }
-
-  Widget _buildKeyBanner(XissinColors c) {
-    if (_loading) return const SizedBox.shrink();
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 22),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-        decoration: BoxDecoration(
-          color: _hasKey
-              ? c.accent.withOpacity(0.1)
-              : c.error.withOpacity(0.1),
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(
-            color: _hasKey ? c.accent.withOpacity(0.35) : c.error.withOpacity(0.3),
-          ),
-        ),
-        child: Row(
-          children: [
-            Icon(
-              _hasKey ? Icons.verified_rounded : Icons.lock_outline,
-              size: 16,
-              color: _hasKey ? c.accent : c.error,
-            ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: Text(
-                _hasKey
-                    ? 'Key active${_expiresAt != null ? ' · Expires $_expiresAt' : ''}'
-                    : 'No active key — tap Key Manager to redeem',
-                style: TextStyle(
-                  color: _hasKey ? c.accent : c.error,
-                  fontSize: 12,
-                  fontWeight: FontWeight.w500,
-                ),
-                overflow: TextOverflow.ellipsis,
-                maxLines: 1,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildExpiryWarning(XissinColors c) {
-    final isToday = _daysLeft == 0;
-    final color = isToday ? c.error : const Color(0xFFFFA726);
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(22, 8, 22, 0),
-      child: GestureDetector(
-        onTap: _goToKeys,
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-          decoration: BoxDecoration(
-            color: color.withOpacity(0.1),
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(color: color.withOpacity(0.4)),
-          ),
-          child: Row(
-            children: [
-              Icon(Icons.access_time_rounded, size: 16, color: color),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  _expiryLabel,
-                  style: TextStyle(
-                      color: color, fontSize: 12, fontWeight: FontWeight.w600),
-                ),
-              ),
-              Text('Renew →',
-                  style: TextStyle(
-                      color: color, fontSize: 11, fontWeight: FontWeight.bold)),
-            ],
-          ),
-        ),
       ),
     );
   }
