@@ -1,6 +1,5 @@
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.routing import APIRoute
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from contextlib import asynccontextmanager
@@ -28,17 +27,11 @@ async def lifespan(app: FastAPI):
     logger.info("🛑 Xissin App Backend shutting down.")
 
 
-def unique_id(route: APIRoute) -> str:
-    """Prevent operation ID conflicts when same router is mounted at two prefixes."""
-    return f"{route.tags[0] if route.tags else 'default'}_{route.name}"
-
-
 app = FastAPI(
     title="Xissin App API",
     description="Backend API for the Xissin Multi-Tool Flutter App",
     version="1.1.0",
     lifespan=lifespan,
-    generate_unique_id_function=unique_id,
 )
 
 # ── Rate limiter ───────────────────────────────────────────────────────────────
@@ -75,16 +68,10 @@ async def log_requests(request: Request, call_next):
 
 
 # ── Routers ────────────────────────────────────────────────────────────────────
-# v1 — new versioned routes (Flutter should migrate to these)
-app.include_router(keys.router,  prefix="/api/v1/keys",  tags=["v1-Keys"])
-app.include_router(users.router, prefix="/api/v1/users", tags=["v1-Users"])
-app.include_router(sms.router,   prefix="/api/v1/sms",   tags=["v1-SMS"])
-
-# Legacy — same routers at old paths so current app never breaks
-# generate_unique_id_function above prevents operation ID conflicts
-app.include_router(keys.router,  prefix="/api/keys",  tags=["legacy-Keys"],  include_in_schema=False)
-app.include_router(users.router, prefix="/api/users", tags=["legacy-Users"], include_in_schema=False)
-app.include_router(sms.router,   prefix="/api/sms",   tags=["legacy-SMS"],   include_in_schema=False)
+# Single mount — no duplicates, no crashes
+app.include_router(keys.router,  prefix="/api/keys",  tags=["Keys"])
+app.include_router(users.router, prefix="/api/users", tags=["Users"])
+app.include_router(sms.router,   prefix="/api/sms",   tags=["SMS Bomber"])
 
 
 # ── Base routes ────────────────────────────────────────────────────────────────
@@ -102,13 +89,13 @@ def health():
     return {"status": "healthy"}
 
 
-# ── R1: /api/status ───────────────────────────────────────────────────────────
+# ── /api/status ───────────────────────────────────────────────────────────────
 # Flutter app calls this on every launch.
-# Control via Railway environment variables — no code changes needed.
+# Control everything via Railway env vars — no redeploy needed.
 #
 # Railway env vars to set:
-#   MAINTENANCE_MODE   = "true" / "false"    (default: false)
-#   MAINTENANCE_MSG    = "custom message"    (optional)
+#   MAINTENANCE_MODE   = "true" / "false"   (default: false)
+#   MAINTENANCE_MSG    = "custom message"   (optional)
 #   MIN_APP_VERSION    = "1.0.0"
 #   LATEST_APP_VERSION = "1.0.0"
 #   FEATURE_SMS        = "true" / "false"   (default: true)
