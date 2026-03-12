@@ -12,6 +12,8 @@ dependencies:
   http: ^1.2.1
   device_info_plus: ^10.1.0
   shared_preferences: ^2.2.3
+  flutter_secure_storage: ^9.2.2
+  connectivity_plus: ^6.0.3
   cupertino_icons: ^1.0.6
 
 dev_dependencies:

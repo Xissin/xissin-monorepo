@@ -1,7 +1,7 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:device_info_plus/device_info_plus.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import '../theme/app_theme.dart';
 import '../services/api_service.dart';
@@ -21,11 +21,18 @@ class _SplashScreenState extends State<SplashScreen>
   late Animation<double> _scale;
   String _status = 'Initializing...';
 
+  // ✅ Encrypted storage — replaces SharedPreferences
+  static const _storage = FlutterSecureStorage(
+    aOptions: AndroidOptions(encryptedSharedPreferences: true),
+    iOptions: IOSOptions(accessibility: KeychainAccessibility.first_unlock),
+  );
+
   @override
   void initState() {
     super.initState();
-    _ctrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 1000));
-    _fade  = CurvedAnimation(parent: _ctrl, curve: Curves.easeIn);
+    _ctrl = AnimationController(
+        vsync: this, duration: const Duration(milliseconds: 1000));
+    _fade = CurvedAnimation(parent: _ctrl, curve: Curves.easeIn);
     _scale = Tween<double>(begin: 0.85, end: 1.0).animate(
       CurvedAnimation(parent: _ctrl, curve: Curves.easeOutBack),
     );
@@ -40,8 +47,8 @@ class _SplashScreenState extends State<SplashScreen>
   }
 
   Future<String> _getOrCreateUserId() async {
-    final prefs = await SharedPreferences.getInstance();
-    final stored = prefs.getString('xissin_user_id');
+    // ✅ Read from encrypted storage
+    final stored = await _storage.read(key: 'xissin_user_id');
     if (stored != null && stored.isNotEmpty) return stored;
 
     String id;
@@ -59,7 +66,8 @@ class _SplashScreenState extends State<SplashScreen>
       id = DateTime.now().millisecondsSinceEpoch.toString();
     }
 
-    await prefs.setString('xissin_user_id', id);
+    // ✅ Write to encrypted storage
+    await _storage.write(key: 'xissin_user_id', value: id);
     return id;
   }
 
@@ -89,6 +97,10 @@ class _SplashScreenState extends State<SplashScreen>
               FadeTransition(opacity: anim, child: child),
         ),
       );
+    } on ApiException catch (e) {
+      _setStatus(e.userMessage);
+      await Future.delayed(const Duration(seconds: 3));
+      if (mounted) _initApp();
     } catch (e) {
       _setStatus('Connection error. Retrying...');
       await Future.delayed(const Duration(seconds: 3));
@@ -112,7 +124,6 @@ class _SplashScreenState extends State<SplashScreen>
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                // Logo circle
                 Container(
                   width: 110,
                   height: 110,
@@ -131,10 +142,10 @@ class _SplashScreenState extends State<SplashScreen>
                       ),
                     ],
                   ),
-                  child: const Icon(Icons.bolt_rounded, size: 58, color: Colors.white),
+                  child: const Icon(Icons.bolt_rounded,
+                      size: 58, color: Colors.white),
                 ),
                 const SizedBox(height: 30),
-                // App name
                 ShaderMask(
                   shaderCallback: (b) => const LinearGradient(
                     colors: [AppColors.primary, AppColors.secondary],
