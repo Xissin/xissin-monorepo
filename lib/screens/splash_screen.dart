@@ -19,9 +19,16 @@ class _SplashScreenState extends State<SplashScreen>
   late AnimationController _ctrl;
   late Animation<double> _fade;
   late Animation<double> _scale;
+
   String _status = 'Initializing...';
 
-  // ✅ Encrypted storage — replaces SharedPreferences
+  // BUG 6 FIX — track retry count so we can show a manual retry button
+  int _retryCount = 0;
+  static const int _maxAutoRetries = 3;
+  bool _showRetryButton = false;
+  String? _errorMessage;
+
+  // Encrypted storage — replaces SharedPreferences
   static const _storage = FlutterSecureStorage(
     aOptions: AndroidOptions(encryptedSharedPreferences: true),
     iOptions: IOSOptions(accessibility: KeychainAccessibility.first_unlock),
@@ -47,7 +54,6 @@ class _SplashScreenState extends State<SplashScreen>
   }
 
   Future<String> _getOrCreateUserId() async {
-    // ✅ Read from encrypted storage
     final stored = await _storage.read(key: 'xissin_user_id');
     if (stored != null && stored.isNotEmpty) return stored;
 
@@ -66,24 +72,63 @@ class _SplashScreenState extends State<SplashScreen>
       id = DateTime.now().millisecondsSinceEpoch.toString();
     }
 
-    // ✅ Write to encrypted storage
     await _storage.write(key: 'xissin_user_id', value: id);
     return id;
   }
 
   Future<void> _initApp() async {
+    // Reset UI state on each attempt
+    setState(() {
+      _showRetryButton = false;
+      _errorMessage = null;
+    });
+
     await Future.delayed(const Duration(milliseconds: 700));
 
     try {
+      // ── BUG 2 FIX — Check maintenance mode & min version FIRST ─────────────
+      _setStatus('Checking server status...');
+      try {
+        final status = await ApiService.getStatus();
+
+        // Maintenance mode check
+        if (status['maintenance'] == true) {
+          final msg = status['maintenance_message'] as String? ??
+              'Xissin is under maintenance. Please check back later.';
+          _showMaintenanceDialog(msg);
+          return;
+        }
+
+        // Minimum version check
+        final minVersion = status['min_app_version'] as String? ?? '1.0.0';
+        const currentVersion = '1.0.0'; // bump this with each release
+        if (_isVersionOutdated(currentVersion, minVersion)) {
+          _showUpdateDialog(minVersion);
+          return;
+        }
+      } catch (_) {
+        // If status check fails, we still proceed — don't hard-block the app
+        // on a non-critical endpoint failure
+      }
+
+      // ── Get device ID ────────────────────────────────────────────────────────
       _setStatus('Getting device info...');
       final userId = await _getOrCreateUserId();
 
+      // ── Register with backend ─────────────────────────────────────────────
       _setStatus('Connecting to server...');
-      await ApiService.registerUser(
+      final registerResponse = await ApiService.registerUser(
         userId: userId,
         deviceInfo: Platform.isAndroid ? 'android' : 'ios',
       );
 
+      // ── BUG 1 FIX — Check if user is banned ──────────────────────────────
+      if (registerResponse['banned'] == true) {
+        _showBannedDialog();
+        return;
+      }
+
+      // ── All good — go to home ─────────────────────────────────────────────
       _setStatus('Ready!');
       await Future.delayed(const Duration(milliseconds: 500));
 
@@ -98,13 +143,162 @@ class _SplashScreenState extends State<SplashScreen>
         ),
       );
     } on ApiException catch (e) {
-      _setStatus(e.userMessage);
-      await Future.delayed(const Duration(seconds: 3));
-      if (mounted) _initApp();
+      _handleError(e.userMessage);
     } catch (e) {
-      _setStatus('Connection error. Retrying...');
-      await Future.delayed(const Duration(seconds: 3));
-      if (mounted) _initApp();
+      _handleError('Connection error. Please check your internet.');
+    }
+  }
+
+  // ── BUG 6 FIX — max retries + manual retry button ────────────────────────
+  void _handleError(String message) {
+    _retryCount++;
+    if (_retryCount < _maxAutoRetries) {
+      _setStatus('$message Retrying...');
+      Future.delayed(const Duration(seconds: 3), () {
+        if (mounted) _initApp();
+      });
+    } else {
+      // Max auto-retries hit — show manual retry button
+      setState(() {
+        _errorMessage = message;
+        _showRetryButton = true;
+        _status = message;
+      });
+    }
+  }
+
+  void _manualRetry() {
+    _retryCount = 0;
+    _initApp();
+  }
+
+  // ── BUG 1 FIX — banned dialog ────────────────────────────────────────────
+  void _showBannedDialog() {
+    setState(() => _status = 'Account restricted.');
+    if (!mounted) return;
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => AlertDialog(
+        backgroundColor: AppColors.surface,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
+        title: const Row(
+          children: [
+            Icon(Icons.block_rounded, color: AppColors.error, size: 22),
+            SizedBox(width: 10),
+            Text('Account Banned',
+                style: TextStyle(
+                    color: AppColors.textPrimary,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 17)),
+          ],
+        ),
+        content: const Text(
+          'Your account has been banned.\n\nIf you believe this is a mistake, contact the admin on Telegram: @Xissin_0',
+          style: TextStyle(
+              color: AppColors.textSecondary, fontSize: 13, height: 1.6),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => exit(0),
+            child: const Text('Close App',
+                style: TextStyle(color: AppColors.error)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ── BUG 2 FIX — maintenance dialog ───────────────────────────────────────
+  void _showMaintenanceDialog(String message) {
+    setState(() => _status = 'Under maintenance.');
+    if (!mounted) return;
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => AlertDialog(
+        backgroundColor: AppColors.surface,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
+        title: const Row(
+          children: [
+            Icon(Icons.build_circle_rounded,
+                color: AppColors.secondary, size: 22),
+            SizedBox(width: 10),
+            Text('Maintenance',
+                style: TextStyle(
+                    color: AppColors.textPrimary,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 17)),
+          ],
+        ),
+        content: Text(
+          message,
+          style: const TextStyle(
+              color: AppColors.textSecondary, fontSize: 13, height: 1.6),
+        ),
+        actions: [
+          TextButton(
+            onPressed: _manualRetry,
+            child: const Text('Try Again',
+                style: TextStyle(color: AppColors.primary)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ── BUG 2 FIX — force update dialog ──────────────────────────────────────
+  void _showUpdateDialog(String minVersion) {
+    setState(() => _status = 'Update required.');
+    if (!mounted) return;
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => AlertDialog(
+        backgroundColor: AppColors.surface,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
+        title: const Row(
+          children: [
+            Icon(Icons.system_update_rounded,
+                color: AppColors.primary, size: 22),
+            SizedBox(width: 10),
+            Text('Update Required',
+                style: TextStyle(
+                    color: AppColors.textPrimary,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 17)),
+          ],
+        ),
+        content: Text(
+          'This version of Xissin is outdated.\nMinimum required version: $minVersion\n\nPlease update the app from the Xissin Telegram channel.',
+          style: const TextStyle(
+              color: AppColors.textSecondary, fontSize: 13, height: 1.6),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => exit(0),
+            child: const Text('Close',
+                style: TextStyle(color: AppColors.textSecondary)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Compares semver strings. Returns true if current < minimum.
+  bool _isVersionOutdated(String current, String minimum) {
+    try {
+      final cur = current.split('.').map(int.parse).toList();
+      final min = minimum.split('.').map(int.parse).toList();
+      for (int i = 0; i < 3; i++) {
+        final c = i < cur.length ? cur[i] : 0;
+        final m = i < min.length ? min[i] : 0;
+        if (c < m) return true;
+        if (c > m) return false;
+      }
+      return false;
+    } catch (_) {
+      return false;
     }
   }
 
@@ -171,22 +365,55 @@ class _SplashScreenState extends State<SplashScreen>
                   ),
                 ),
                 const SizedBox(height: 70),
-                const SizedBox(
-                  width: 26,
-                  height: 26,
-                  child: CircularProgressIndicator(
-                    color: AppColors.primary,
-                    strokeWidth: 2.5,
+
+                // BUG 6 FIX — show spinner OR retry button
+                if (!_showRetryButton) ...[
+                  const SizedBox(
+                    width: 26,
+                    height: 26,
+                    child: CircularProgressIndicator(
+                      color: AppColors.primary,
+                      strokeWidth: 2.5,
+                    ),
                   ),
-                ),
-                const SizedBox(height: 14),
-                Text(
-                  _status,
-                  style: const TextStyle(
-                    color: AppColors.textSecondary,
-                    fontSize: 13,
+                  const SizedBox(height: 14),
+                  Text(
+                    _status,
+                    style: const TextStyle(
+                      color: AppColors.textSecondary,
+                      fontSize: 13,
+                    ),
                   ),
-                ),
+                ] else ...[
+                  const Icon(Icons.wifi_off_rounded,
+                      color: AppColors.error, size: 32),
+                  const SizedBox(height: 12),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 40),
+                    child: Text(
+                      _errorMessage ?? 'Connection failed.',
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                          color: AppColors.textSecondary,
+                          fontSize: 13,
+                          height: 1.5),
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                  ElevatedButton.icon(
+                    onPressed: _manualRetry,
+                    icon: const Icon(Icons.refresh_rounded, size: 18),
+                    label: const Text('Retry'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppColors.primary,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 28, vertical: 14),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(16)),
+                    ),
+                  ),
+                ],
               ],
             ),
           ),

@@ -134,6 +134,19 @@ class ApiService {
     }
   }
 
+  // ── Status (BUG 2 FIX — was never called before) ─────────────────────────
+
+  /// Called on every app launch.
+  /// Returns maintenance mode, min version, and feature flags from Railway env.
+  static Future<Map<String, dynamic>> getStatus() async {
+    return _requestWithRetry(
+      (timeout) => http
+          .get(Uri.parse('$_base/api/status'), headers: _headers)
+          .timeout(timeout),
+      coldStart: true, // First call on launch — Railway may be sleeping
+    );
+  }
+
   // ── Users ─────────────────────────────────────────────────────────────────
 
   static Future<Map<String, dynamic>> registerUser({
