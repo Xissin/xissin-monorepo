@@ -35,6 +35,17 @@ RK_USERS     = "xissin:app:users"
 RK_BANNED    = "xissin:app:banned"
 RK_LOGS      = "xissin:app:logs"
 RK_SMS_STATS = "xissin:app:sms_stats"
+RK_SETTINGS  = "xissin:app:settings"   # ← NEW: server control settings
+
+# ── Default server settings ───────────────────────────────────────────────────
+DEFAULT_SETTINGS = {
+    "maintenance":          False,
+    "maintenance_message":  "Xissin is under maintenance. We'll be back shortly!",
+    "min_app_version":      "1.0.0",
+    "latest_app_version":   "1.0.0",
+    "feature_sms":          True,
+    "feature_keys":         True,
+}
 
 # ── In-memory cache ───────────────────────────────────────────────────────────
 _cache: dict = {}
@@ -87,9 +98,7 @@ async def _redis_set_async(key: str, data) -> bool:
     return False
 
 
-# ── Sync wrappers (called from FastAPI sync route handlers) ───────────────────
-# FastAPI runs sync routes in a threadpool — asyncio.run() is safe there
-# because there is NO running event loop in that thread.
+# ── Sync wrappers ─────────────────────────────────────────────────────────────
 
 def _redis_get(key: str):
     return asyncio.run(_redis_get_async(key))
@@ -141,16 +150,22 @@ async def init_db():
     else:
         banned_set = set()
 
+    # Load settings — merge with defaults so new fields always exist
+    raw_settings = await _redis_get_async(RK_SETTINGS) or {}
+    merged_settings = {**DEFAULT_SETTINGS, **raw_settings}
+
     _cache["keys"]      = clean_keys
     _cache["users"]     = await _redis_get_async(RK_USERS)     or {}
     _cache["banned"]    = banned_set
     _cache["logs"]      = await _redis_get_async(RK_LOGS)      or []
     _cache["sms_stats"] = await _redis_get_async(RK_SMS_STATS) or {}
+    _cache["settings"]  = merged_settings
 
     logger.info(
         f"✅ DB loaded — keys:{len(_cache['keys'])} "
         f"users:{len(_cache['users'])} "
-        f"banned:{len(_cache['banned'])}"
+        f"banned:{len(_cache['banned'])} "
+        f"maintenance:{merged_settings.get('maintenance', False)}"
     )
 
 # ── Keys ──────────────────────────────────────────────────────────────────────
@@ -216,3 +231,17 @@ def increment_sms_stat(user_id: str, count: int = 1):
 
 def get_sms_stat(user_id: str) -> int:
     return _cache.get("sms_stats", {}).get(str(user_id), 0)
+
+# ── Server Settings ───────────────────────────────────────────────────────────
+
+def get_server_settings() -> dict:
+    """Get current server settings, merged with defaults."""
+    stored = _cache.get("settings", {})
+    return {**DEFAULT_SETTINGS, **stored}
+
+def save_server_settings(data: dict):
+    """Save server settings to cache and Redis."""
+    merged = {**DEFAULT_SETTINGS, **data}
+    _cache["settings"] = merged
+    _redis_set(RK_SETTINGS, merged)
+    logger.info(f"⚙️ Server settings updated: maintenance={merged.get('maintenance')}")

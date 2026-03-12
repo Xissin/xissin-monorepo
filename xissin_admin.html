@@ -317,6 +317,24 @@
   }
   .key-result .key-sub { font-size: 11px; color: var(--muted); margin-top: 6px; }
 
+
+  /* ── Toggle switch ── */
+  .toggle-switch { position:relative; display:inline-block; width:48px; height:26px; cursor:pointer; flex-shrink:0; }
+  .toggle-switch input { opacity:0; width:0; height:0; }
+  .toggle-slider {
+    position:absolute; inset:0; border-radius:26px;
+    background:var(--surface2); border:1px solid var(--border);
+    transition:.25s; cursor:pointer;
+  }
+  .toggle-slider::before {
+    content:''; position:absolute;
+    width:18px; height:18px; border-radius:50%;
+    background:var(--muted); bottom:3px; left:3px;
+    transition:.25s;
+  }
+  .toggle-switch input:checked + .toggle-slider { background:rgba(91,140,255,0.25); border-color:var(--primary); }
+  .toggle-switch input:checked + .toggle-slider::before { background:var(--primary); transform:translateX(22px); }
+
   .flex { display: flex; }
   .gap-2 { gap: 8px; }
   .gap-3 { gap: 12px; }
@@ -369,6 +387,10 @@
     </div>
     <div class="nav-item" onclick="showPage('logs')">
       <span class="nav-icon">📋</span> Activity Logs
+    </div>
+    <div class="nav-label">SERVER</div>
+    <div class="nav-item" onclick="showPage('control')">
+      <span class="nav-icon">⚙️</span> Server Control
     </div>
     <div class="sidebar-bottom">
       <div class="admin-label">LOGGED IN AS</div>
@@ -488,7 +510,102 @@
       </div>
     </div>
 
+
+    <!-- ── SERVER CONTROL ── -->
+    <div class="page" id="page-control">
+      <div class="page-header">
+        <div>
+          <h2>Server Control</h2>
+          <p>Manage maintenance mode, app versions and feature flags</p>
+        </div>
+        <button class="btn btn-ghost" onclick="loadControl()">🔄 Refresh</button>
+      </div>
+
+      <div id="control-status-bar" style="margin-bottom:24px;display:none">
+        <div id="control-status-pill" style="display:inline-flex;align-items:center;gap:8px;padding:8px 18px;border-radius:30px;font-size:13px;font-weight:700"></div>
+      </div>
+
+      <div class="grid-2" style="margin-bottom:24px">
+        <div class="card">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px">
+            <div>
+              <h3 style="font-size:15px;font-weight:700">🚧 Maintenance Mode</h3>
+              <p style="color:var(--muted);font-size:12px;margin-top:3px">Blocks all users from entering the app</p>
+            </div>
+            <label class="toggle-switch">
+              <input type="checkbox" id="ctrl-maintenance" onchange="onMaintenanceToggle()"/>
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+          <div class="form-group">
+            <label>MAINTENANCE MESSAGE</label>
+            <input type="text" id="ctrl-msg" placeholder="We'll be back shortly!" value="Xissin is under maintenance. We'll be back shortly!"/>
+          </div>
+          <div id="maintenance-warning" style="display:none;margin-top:12px;padding:10px 14px;background:rgba(255,107,107,0.08);border:1px solid rgba(255,107,107,0.25);border-radius:10px;font-size:12px;color:var(--error)">
+            ⚠️ Maintenance is currently <strong>ON</strong> — all users are blocked from the app.
+          </div>
+        </div>
+
+        <div class="card">
+          <h3 style="font-size:15px;font-weight:700;margin-bottom:18px">🎛️ Feature Flags</h3>
+          <div style="display:flex;flex-direction:column;gap:18px">
+            <div style="display:flex;align-items:center;justify-content:space-between">
+              <div>
+                <div style="font-size:14px;font-weight:600">SMS Bomber</div>
+                <div style="font-size:11px;color:var(--muted);margin-top:2px">Enable / disable SMS tool for all users</div>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="ctrl-sms" checked/>
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <hr class="divider" style="margin:0"/>
+            <div style="display:flex;align-items:center;justify-content:space-between">
+              <div>
+                <div style="font-size:14px;font-weight:600">Key Manager</div>
+                <div style="font-size:11px;color:var(--muted);margin-top:2px">Enable / disable key redemption for all users</div>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="ctrl-keys" checked/>
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-bottom:24px">
+        <h3 style="font-size:15px;font-weight:700;margin-bottom:6px">📱 App Version Control</h3>
+        <p style="color:var(--muted);font-size:12px;margin-bottom:18px">Users below the minimum version will be forced to update.</p>
+        <div class="grid-2">
+          <div class="form-group">
+            <label>MINIMUM VERSION (force update below this)</label>
+            <input type="text" id="ctrl-min-ver" placeholder="1.0.0"/>
+          </div>
+          <div class="form-group">
+            <label>LATEST VERSION (informational)</label>
+            <input type="text" id="ctrl-latest-ver" placeholder="1.0.0"/>
+          </div>
+        </div>
+        <div style="margin-top:14px;padding:10px 14px;background:rgba(91,140,255,0.07);border:1px solid rgba(91,140,255,0.18);border-radius:10px;font-size:12px;color:var(--muted)">
+          💡 After bumping the min version here, also update <code style="color:var(--accent);font-family:Space Mono,monospace">currentVersion</code> in <code style="color:var(--accent);font-family:Space Mono,monospace">splash_screen.dart</code> and rebuild the APK.
+        </div>
+      </div>
+
+      <button class="btn btn-primary" style="width:100%;padding:16px;font-size:15px" onclick="saveControl()">
+        💾 Save All Settings
+      </button>
+
+      <div class="card" style="margin-top:24px">
+        <h3 style="font-size:14px;font-weight:700;margin-bottom:14px;color:var(--muted)">CURRENT VALUES (live from server)</h3>
+        <div id="ctrl-readout" style="font-family:Space Mono,monospace;font-size:12px;color:var(--muted);line-height:2">
+          <div class="empty-state"><div class="spinner"></div></div>
+        </div>
+      </div>
+    </div>
+
   </main>
+
 </div>
 
 <!-- Revoke modal -->
@@ -550,6 +667,7 @@ async function doLogin() {
     loadKeys();
     loadUsers();
     loadLogs();
+    loadControl();
   } catch {
     toast('Connection error — check your network', 'error');
     document.getElementById('login-btn').disabled = false;
@@ -561,11 +679,14 @@ document.getElementById('login-key').addEventListener('keydown', e => { if (e.ke
 
 // ── Navigation ────────────────────────────────────────────────────────────────
 
+const _loaders = { dashboard: () => loadDashboard(), keys: () => loadKeys(), users: () => loadUsers(), logs: () => loadLogs(), control: () => loadControl() };
+
 function showPage(name) {
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
   document.getElementById('page-' + name).classList.add('active');
   event.currentTarget.classList.add('active');
+  if (_loaders[name]) _loaders[name]();
 }
 
 // ── API helpers ───────────────────────────────────────────────────────────────
@@ -801,6 +922,88 @@ function renderLogs(logs) {
         </div>
       </div>
     </div>`).join('');
+}
+
+
+// ── Server Control ────────────────────────────────────────────────────────────
+
+async function loadControl() {
+  try {
+    const s = await api('GET', '/api/settings/');
+    populateControl(s);
+    renderReadout(s);
+  } catch {
+    document.getElementById('ctrl-readout').innerHTML =
+      '<div class="empty-state">Failed to load settings</div>';
+  }
+}
+
+function populateControl(s) {
+  document.getElementById('ctrl-maintenance').checked = !!s.maintenance;
+  document.getElementById('ctrl-msg').value           = s.maintenance_message || '';
+  document.getElementById('ctrl-sms').checked         = s.feature_sms !== false;
+  document.getElementById('ctrl-keys').checked        = s.feature_keys !== false;
+  document.getElementById('ctrl-min-ver').value       = s.min_app_version || '1.0.0';
+  document.getElementById('ctrl-latest-ver').value    = s.latest_app_version || '1.0.0';
+
+  // Update warning banner
+  onMaintenanceToggle();
+
+  // Status pill
+  const bar  = document.getElementById('control-status-bar');
+  const pill = document.getElementById('control-status-pill');
+  bar.style.display = 'block';
+  if (s.maintenance) {
+    pill.style.cssText = 'display:inline-flex;align-items:center;gap:8px;padding:8px 18px;border-radius:30px;font-size:13px;font-weight:700;background:rgba(255,107,107,0.12);color:var(--error);border:1px solid rgba(255,107,107,0.3)';
+    pill.innerHTML = '🔴 APP IS IN MAINTENANCE MODE';
+  } else {
+    pill.style.cssText = 'display:inline-flex;align-items:center;gap:8px;padding:8px 18px;border-radius:30px;font-size:13px;font-weight:700;background:rgba(126,231,193,0.12);color:var(--accent);border:1px solid rgba(126,231,193,0.3)';
+    pill.innerHTML = '🟢 APP IS ONLINE';
+  }
+}
+
+function onMaintenanceToggle() {
+  const on = document.getElementById('ctrl-maintenance').checked;
+  document.getElementById('maintenance-warning').style.display = on ? 'block' : 'none';
+}
+
+function renderReadout(s) {
+  const rows = [
+    ['maintenance',        s.maintenance ? '🔴 ON' : '🟢 OFF'],
+    ['maintenance_message',s.maintenance_message || '—'],
+    ['min_app_version',    s.min_app_version || '—'],
+    ['latest_app_version', s.latest_app_version || '—'],
+    ['feature_sms',        s.feature_sms !== false ? '✅ enabled' : '❌ disabled'],
+    ['feature_keys',       s.feature_keys !== false ? '✅ enabled' : '❌ disabled'],
+  ];
+  document.getElementById('ctrl-readout').innerHTML = rows.map(([k, v]) =>
+    `<div style="display:flex;gap:12px">
+       <span style="color:var(--primary);min-width:180px">${k}</span>
+       <span>${v}</span>
+     </div>`
+  ).join('');
+}
+
+async function saveControl() {
+  const payload = {
+    maintenance:          document.getElementById('ctrl-maintenance').checked,
+    maintenance_message:  document.getElementById('ctrl-msg').value.trim() || 'Xissin is under maintenance. We'll be back shortly!',
+    min_app_version:      document.getElementById('ctrl-min-ver').value.trim() || '1.0.0',
+    latest_app_version:   document.getElementById('ctrl-latest-ver').value.trim() || '1.0.0',
+    feature_sms:          document.getElementById('ctrl-sms').checked,
+    feature_keys:         document.getElementById('ctrl-keys').checked,
+  };
+  try {
+    const data = await api('POST', '/api/settings/', payload);
+    if (data.success) {
+      toast('Settings saved!', 'success');
+      populateControl(data.settings);
+      renderReadout(data.settings);
+      loadDashboard();
+    } else {
+      toast(data.detail || 'Failed to save', 'error');
+    }
+  } catch { toast('Request failed', 'error'); }
 }
 
 // ── Toast ─────────────────────────────────────────────────────────────────────

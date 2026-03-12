@@ -9,7 +9,7 @@ import time
 import logging
 
 from limiter import limiter
-from routers import keys, users, sms
+from routers import keys, users, sms, settings
 from database import init_db
 
 logging.basicConfig(
@@ -72,9 +72,10 @@ async def log_requests(request: Request, call_next):
 
 
 # ── Routers ────────────────────────────────────────────────────────────────────
-app.include_router(keys.router,  prefix="/api/keys",  tags=["Keys"])
-app.include_router(users.router, prefix="/api/users", tags=["Users"])
-app.include_router(sms.router,   prefix="/api/sms",   tags=["SMS Bomber"])
+app.include_router(keys.router,     prefix="/api/keys",     tags=["Keys"])
+app.include_router(users.router,    prefix="/api/users",    tags=["Users"])
+app.include_router(sms.router,      prefix="/api/sms",      tags=["SMS Bomber"])
+app.include_router(settings.router, prefix="/api/settings", tags=["Settings"])  # ← NEW
 
 
 # ── Base routes ────────────────────────────────────────────────────────────────
@@ -93,32 +94,35 @@ def health():
 
 
 # ── /api/status ───────────────────────────────────────────────────────────────
-# Flutter app calls this on every launch.
-# Control via Railway env vars — no redeploy needed.
-#
-# Railway env vars:
-#   MAINTENANCE_MODE   = "true" / "false"   (default: false)
-#   MAINTENANCE_MSG    = "custom message"   (optional)
-#   MIN_APP_VERSION    = "1.0.0"
-#   LATEST_APP_VERSION = "1.0.0"
-#   FEATURE_SMS        = "true" / "false"   (default: true)
-#   FEATURE_KEYS       = "true" / "false"   (default: true)
+# Priority order:
+#   1. Redis settings (set via admin dashboard) ← checked FIRST
+#   2. Railway env vars                         ← fallback
 @app.get("/api/status")
 def api_status():
-    maintenance = os.environ.get("MAINTENANCE_MODE", "false").lower() == "true"
-    maintenance_msg = os.environ.get(
-        "MAINTENANCE_MSG",
-        "Xissin is under maintenance. We'll be back shortly!"
+    import database as db
+    s = db.get_server_settings()
+
+    # Railway env var can still force maintenance even if Redis says false
+    maintenance = s.get("maintenance", False)
+    if not maintenance:
+        maintenance = os.environ.get("MAINTENANCE_MODE", "false").lower() == "true"
+
+    maintenance_msg = s.get(
+        "maintenance_message",
+        os.environ.get("MAINTENANCE_MSG", "Xissin is under maintenance. We'll be back shortly!")
     )
+    min_ver = s.get("min_app_version",    os.environ.get("MIN_APP_VERSION",    "1.0.0"))
+    lat_ver = s.get("latest_app_version", os.environ.get("LATEST_APP_VERSION", "1.0.0"))
+
     return {
         "api_version":        "1.1.0",
-        "min_app_version":    os.environ.get("MIN_APP_VERSION",    "1.0.0"),
-        "latest_app_version": os.environ.get("LATEST_APP_VERSION", "1.0.0"),
+        "min_app_version":    min_ver,
+        "latest_app_version": lat_ver,
         "maintenance":         maintenance,
         "maintenance_message": maintenance_msg if maintenance else None,
         "features": {
-            "sms_bomber":  os.environ.get("FEATURE_SMS",  "true").lower() == "true",
-            "key_manager": os.environ.get("FEATURE_KEYS", "true").lower() == "true",
+            "sms_bomber":  s.get("feature_sms",  os.environ.get("FEATURE_SMS",  "true").lower() == "true"),
+            "key_manager": s.get("feature_keys", os.environ.get("FEATURE_KEYS", "true").lower() == "true"),
         },
         "links": {
             "channel":    "https://t.me/Xissin_0",
