@@ -1,6 +1,6 @@
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.routing import APIRoute
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from contextlib import asynccontextmanager
@@ -28,11 +28,17 @@ async def lifespan(app: FastAPI):
     logger.info("🛑 Xissin App Backend shutting down.")
 
 
+def unique_id(route: APIRoute) -> str:
+    """Prevent operation ID conflicts when same router is mounted at two prefixes."""
+    return f"{route.tags[0] if route.tags else 'default'}_{route.name}"
+
+
 app = FastAPI(
     title="Xissin App API",
     description="Backend API for the Xissin Multi-Tool Flutter App",
     version="1.1.0",
     lifespan=lifespan,
+    generate_unique_id_function=unique_id,
 )
 
 # ── Rate limiter ───────────────────────────────────────────────────────────────
@@ -56,7 +62,6 @@ async def log_requests(request: Request, call_next):
     try:
         duration = round(time.time() - start, 3)
         client_ip = request.client.host if request.client else "unknown"
-        # Skip logging health + status spam
         if request.url.path not in ("/health", "/api/status"):
             logger.info(
                 f"{request.method} {request.url.path} "
@@ -69,16 +74,17 @@ async def log_requests(request: Request, call_next):
     return response
 
 
-# ── Routers — v1 (new versioned routes) ───────────────────────────────────────
-# Flutter app should use these going forward
-app.include_router(keys.router,  prefix="/api/v1/keys",  tags=["v1 - Keys"])
-app.include_router(users.router, prefix="/api/v1/users", tags=["v1 - Users"])
-app.include_router(sms.router,   prefix="/api/v1/sms",   tags=["v1 - SMS Bomber"])
+# ── Routers ────────────────────────────────────────────────────────────────────
+# v1 — new versioned routes (Flutter should migrate to these)
+app.include_router(keys.router,  prefix="/api/v1/keys",  tags=["v1-Keys"])
+app.include_router(users.router, prefix="/api/v1/users", tags=["v1-Users"])
+app.include_router(sms.router,   prefix="/api/v1/sms",   tags=["v1-SMS"])
 
-# ── Routers — legacy (old routes kept so current app version never breaks) ─────
-app.include_router(keys.router,  prefix="/api/keys",  tags=["Legacy - Keys"],  include_in_schema=False)
-app.include_router(users.router, prefix="/api/users", tags=["Legacy - Users"], include_in_schema=False)
-app.include_router(sms.router,   prefix="/api/sms",   tags=["Legacy - SMS"],   include_in_schema=False)
+# Legacy — same routers at old paths so current app never breaks
+# generate_unique_id_function above prevents operation ID conflicts
+app.include_router(keys.router,  prefix="/api/keys",  tags=["legacy-Keys"],  include_in_schema=False)
+app.include_router(users.router, prefix="/api/users", tags=["legacy-Users"], include_in_schema=False)
+app.include_router(sms.router,   prefix="/api/sms",   tags=["legacy-SMS"],   include_in_schema=False)
 
 
 # ── Base routes ────────────────────────────────────────────────────────────────
@@ -98,15 +104,15 @@ def health():
 
 # ── R1: /api/status ───────────────────────────────────────────────────────────
 # Flutter app calls this on every launch.
-# Control everything via Railway environment variables — no code changes needed.
+# Control via Railway environment variables — no code changes needed.
 #
 # Railway env vars to set:
-#   MAINTENANCE_MODE   = "true" or "false"   (default: false)
-#   MAINTENANCE_MSG    = "We'll be back soon" (optional custom message)
-#   MIN_APP_VERSION    = "1.0.0"             (force update if app is older)
-#   LATEST_APP_VERSION = "1.0.0"             (latest version available)
-#   FEATURE_SMS        = "true" or "false"   (toggle SMS bomber on/off)
-#   FEATURE_KEYS       = "true" or "false"   (toggle Key Manager on/off)
+#   MAINTENANCE_MODE   = "true" / "false"    (default: false)
+#   MAINTENANCE_MSG    = "custom message"    (optional)
+#   MIN_APP_VERSION    = "1.0.0"
+#   LATEST_APP_VERSION = "1.0.0"
+#   FEATURE_SMS        = "true" / "false"   (default: true)
+#   FEATURE_KEYS       = "true" / "false"   (default: true)
 @app.get("/api/status")
 def api_status():
     maintenance = os.environ.get("MAINTENANCE_MODE", "false").lower() == "true"
@@ -114,24 +120,16 @@ def api_status():
         "MAINTENANCE_MSG",
         "Xissin is under maintenance. We'll be back shortly!"
     )
-
     return {
-        # Versioning
         "api_version":        "1.1.0",
         "min_app_version":    os.environ.get("MIN_APP_VERSION",    "1.0.0"),
         "latest_app_version": os.environ.get("LATEST_APP_VERSION", "1.0.0"),
-
-        # Maintenance — Flutter shows a full maintenance screen if True
         "maintenance":         maintenance,
         "maintenance_message": maintenance_msg if maintenance else None,
-
-        # Feature flags — disable tools without shipping a new app build
         "features": {
             "sms_bomber":  os.environ.get("FEATURE_SMS",  "true").lower() == "true",
             "key_manager": os.environ.get("FEATURE_KEYS", "true").lower() == "true",
         },
-
-        # Community links shown in app
         "links": {
             "channel":    "https://t.me/Xissin_0",
             "discussion": "https://t.me/Xissin_1",
