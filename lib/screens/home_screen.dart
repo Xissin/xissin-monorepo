@@ -1,8 +1,12 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 import '../theme/app_theme.dart';
 import '../services/api_service.dart';
+import '../services/theme_service.dart';
 import 'sms_bomber_screen.dart';
 import 'key_screen.dart';
+import 'stats_screen.dart';
+import 'about_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   final String userId;
@@ -17,12 +21,16 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _loading = true;
   String? _expiresAt;
 
-  // ✅ Bug 13 — expiry warning helpers
+  // Announcements
+  List<Map<String, dynamic>> _announcements = [];
+  final Set<String> _dismissedIds = {};
+
+  // ── Expiry helpers ────────────────────────────────────────────────────────
+
   int? get _daysLeft {
     if (_expiresAt == null) return null;
     try {
-      final exp = DateTime.parse(_expiresAt!);
-      return exp.difference(DateTime.now()).inDays;
+      return DateTime.parse(_expiresAt!).difference(DateTime.now()).inDays;
     } catch (_) {
       return null;
     }
@@ -42,10 +50,19 @@ class _HomeScreenState extends State<HomeScreen> {
     return '⚠️ Expires in $d days!';
   }
 
+  // ── Init ──────────────────────────────────────────────────────────────────
+
   @override
   void initState() {
     super.initState();
-    _refreshKeyStatus();
+    _refreshAll();
+  }
+
+  Future<void> _refreshAll() async {
+    await Future.wait([
+      _refreshKeyStatus(),
+      _loadAnnouncements(),
+    ]);
   }
 
   Future<void> _refreshKeyStatus() async {
@@ -62,11 +79,17 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  Future<void> _loadAnnouncements() async {
+    try {
+      final list = await ApiService.getAnnouncements();
+      if (mounted) setState(() => _announcements = list);
+    } catch (_) {}
+  }
+
+  // ── Navigation ────────────────────────────────────────────────────────────
+
   void _goToSms() {
-    if (!_hasKey) {
-      _showNoKeyDialog();
-      return;
-    }
+    if (!_hasKey) { _showNoKeyDialog(); return; }
     Navigator.push(
       context,
       MaterialPageRoute(builder: (_) => SmsBomberScreen(userId: widget.userId)),
@@ -81,30 +104,37 @@ class _HomeScreenState extends State<HomeScreen> {
     _refreshKeyStatus();
   }
 
+  void _goToStats() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => StatsScreen(userId: widget.userId)),
+    );
+  }
+
+  void _goToAbout() {
+    Navigator.push(context, MaterialPageRoute(builder: (_) => const AboutScreen()));
+  }
+
   void _showNoKeyDialog() {
+    final c = AppColors.of(context);
     showDialog(
       context: context,
       builder: (_) => AlertDialog(
-        backgroundColor: AppColors.surface,
+        backgroundColor: c.surface,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
-        title: const Text('Key Required',
-            style: TextStyle(
-                color: AppColors.textPrimary, fontWeight: FontWeight.bold)),
-        content: const Text(
+        title: Text('Key Required',
+            style: TextStyle(color: c.textPrimary, fontWeight: FontWeight.bold)),
+        content: Text(
           'You need an active key to use this feature.\nGo to Key Manager to redeem one.',
-          style: TextStyle(color: AppColors.textSecondary, height: 1.5),
+          style: TextStyle(color: c.textSecondary, height: 1.5),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel',
-                style: TextStyle(color: AppColors.textSecondary)),
+            child: Text('Cancel', style: TextStyle(color: c.textSecondary)),
           ),
           ElevatedButton(
-            onPressed: () {
-              Navigator.pop(context);
-              _goToKeys();
-            },
+            onPressed: () { Navigator.pop(context); _goToKeys(); },
             child: const Text('Get Key'),
           ),
         ],
@@ -112,27 +142,46 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  // ── Build ─────────────────────────────────────────────────────────────────
+
   @override
   Widget build(BuildContext context) {
+    final c = AppColors.of(context);
+
+    // Visible (non-dismissed) announcements
+    final visible = _announcements
+        .where((a) => !_dismissedIds.contains(a['id']?.toString()))
+        .toList();
+
     return Scaffold(
-      backgroundColor: AppColors.background,
+      backgroundColor: c.background,
       body: SafeArea(
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            _buildHeader(),
+            _buildHeader(c),
             const SizedBox(height: 8),
-            _buildKeyBanner(),
-            // ✅ Bug 13 — shows orange/red warning when key expires in ≤3 days
-            if (!_loading && _hasKey && _isExpiringSoon)
-              _buildExpiryWarning(),
+            _buildKeyBanner(c),
+            if (!_loading && _hasKey && _isExpiringSoon) _buildExpiryWarning(c),
+
+            // 📣 Announcements
+            if (visible.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              ...visible.map((a) => _AnnouncementBanner(
+                    announcement: a,
+                    onDismiss: () => setState(
+                        () => _dismissedIds.add(a['id']?.toString() ?? '')),
+                    c: c,
+                  )),
+            ],
+
             const SizedBox(height: 28),
-            const Padding(
-              padding: EdgeInsets.symmetric(horizontal: 22),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 22),
               child: Text(
                 'Features',
                 style: TextStyle(
-                  color: AppColors.textPrimary,
+                  color: c.textPrimary,
                   fontSize: 18,
                   fontWeight: FontWeight.bold,
                 ),
@@ -152,8 +201,8 @@ class _HomeScreenState extends State<HomeScreen> {
                       icon: Icons.sms_rounded,
                       title: 'SMS Bomber',
                       subtitle: '14 PH Services',
-                      gradient: [AppColors.primary, AppColors.secondary],
-                      glowColor: AppColors.primary,
+                      gradient: [c.primary, c.secondary],
+                      glowColor: c.primary,
                       locked: !_hasKey,
                       onTap: _goToSms,
                     ),
@@ -161,13 +210,28 @@ class _HomeScreenState extends State<HomeScreen> {
                       icon: Icons.vpn_key_rounded,
                       title: 'Key Manager',
                       subtitle: _hasKey ? 'Key Active ✓' : 'Redeem Key',
-                      gradient: [
-                        AppColors.secondary,
-                        const Color(0xFF7B6FFF),
-                      ],
-                      glowColor: AppColors.secondary,
+                      gradient: [c.secondary, const Color(0xFF7B6FFF)],
+                      glowColor: c.secondary,
                       locked: false,
                       onTap: _goToKeys,
+                    ),
+                    _FeatureCard(
+                      icon: Icons.bar_chart_rounded,
+                      title: 'Stats',
+                      subtitle: 'SMS Usage',
+                      gradient: [c.accent, const Color(0xFF2DC9A0)],
+                      glowColor: c.accent,
+                      locked: false,
+                      onTap: _goToStats,
+                    ),
+                    _FeatureCard(
+                      icon: Icons.info_outline_rounded,
+                      title: 'About',
+                      subtitle: 'Links & Info',
+                      gradient: [const Color(0xFFFFA726), const Color(0xFFFF7043)],
+                      glowColor: const Color(0xFFFFA726),
+                      locked: false,
+                      onTap: _goToAbout,
                     ),
                   ],
                 ),
@@ -179,7 +243,10 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _buildHeader() {
+  // ── Header with theme toggle ───────────────────────────────────────────────
+
+  Widget _buildHeader(XissinColors c) {
+    final themeService = context.watch<ThemeService>();
     return Padding(
       padding: const EdgeInsets.fromLTRB(22, 24, 22, 0),
       child: Row(
@@ -189,8 +256,8 @@ class _HomeScreenState extends State<HomeScreen> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               ShaderMask(
-                shaderCallback: (b) => const LinearGradient(
-                  colors: [AppColors.primary, AppColors.secondary],
+                shaderCallback: (b) => LinearGradient(
+                  colors: [c.primary, c.secondary],
                 ).createShader(b),
                 child: const Text(
                   'XISSIN',
@@ -202,39 +269,63 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ),
               ),
-              const Text(
+              Text(
                 'Multi-Tool',
-                style:
-                    TextStyle(color: AppColors.textSecondary, fontSize: 13),
+                style: TextStyle(color: c.textSecondary, fontSize: 13),
               ),
             ],
           ),
-          GestureDetector(
-            onTap: _refreshKeyStatus,
-            child: Container(
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                color: AppColors.surface,
-                borderRadius: BorderRadius.circular(14),
-                border: Border.all(color: AppColors.border),
+          Row(
+            children: [
+              // 🌙 Theme toggle
+              GestureDetector(
+                onTap: () => themeService.toggle(),
+                child: Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: c.surface,
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(color: c.border),
+                  ),
+                  child: Icon(
+                    themeService.isDark
+                        ? Icons.light_mode_rounded
+                        : Icons.dark_mode_rounded,
+                    color: c.textSecondary,
+                    size: 20,
+                  ),
+                ),
               ),
-              child: _loading
-                  ? const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(
-                          strokeWidth: 2, color: AppColors.primary),
-                    )
-                  : const Icon(Icons.refresh_rounded,
-                      color: AppColors.textSecondary, size: 20),
-            ),
+              const SizedBox(width: 8),
+              // Refresh button
+              GestureDetector(
+                onTap: _refreshAll,
+                child: Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: c.surface,
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(color: c.border),
+                  ),
+                  child: _loading
+                      ? SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(
+                              strokeWidth: 2, color: c.primary),
+                        )
+                      : Icon(Icons.refresh_rounded,
+                          color: c.textSecondary, size: 20),
+                ),
+              ),
+            ],
           ),
         ],
       ),
     );
   }
 
-  Widget _buildKeyBanner() {
+  Widget _buildKeyBanner(XissinColors c) {
     if (_loading) return const SizedBox.shrink();
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 22),
@@ -242,13 +333,11 @@ class _HomeScreenState extends State<HomeScreen> {
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
         decoration: BoxDecoration(
           color: _hasKey
-              ? AppColors.accent.withOpacity(0.1)
-              : AppColors.error.withOpacity(0.1),
+              ? c.accent.withOpacity(0.1)
+              : c.error.withOpacity(0.1),
           borderRadius: BorderRadius.circular(14),
           border: Border.all(
-            color: _hasKey
-                ? AppColors.accent.withOpacity(0.35)
-                : AppColors.error.withOpacity(0.3),
+            color: _hasKey ? c.accent.withOpacity(0.35) : c.error.withOpacity(0.3),
           ),
         ),
         child: Row(
@@ -256,7 +345,7 @@ class _HomeScreenState extends State<HomeScreen> {
             Icon(
               _hasKey ? Icons.verified_rounded : Icons.lock_outline,
               size: 16,
-              color: _hasKey ? AppColors.accent : AppColors.error,
+              color: _hasKey ? c.accent : c.error,
             ),
             const SizedBox(width: 8),
             Expanded(
@@ -265,7 +354,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     ? 'Key active${_expiresAt != null ? ' · Expires $_expiresAt' : ''}'
                     : 'No active key — tap Key Manager to redeem',
                 style: TextStyle(
-                  color: _hasKey ? AppColors.accent : AppColors.error,
+                  color: _hasKey ? c.accent : c.error,
                   fontSize: 12,
                   fontWeight: FontWeight.w500,
                 ),
@@ -279,11 +368,9 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  // ✅ Bug 13 — orange warning banner, tappable → goes to Key Manager
-  Widget _buildExpiryWarning() {
+  Widget _buildExpiryWarning(XissinColors c) {
     final isToday = _daysLeft == 0;
-    final color = isToday ? AppColors.error : const Color(0xFFFFA726);
-
+    final color = isToday ? c.error : const Color(0xFFFFA726);
     return Padding(
       padding: const EdgeInsets.fromLTRB(22, 8, 22, 0),
       child: GestureDetector(
@@ -303,22 +390,107 @@ class _HomeScreenState extends State<HomeScreen> {
                 child: Text(
                   _expiryLabel,
                   style: TextStyle(
-                    color: color,
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
-                  ),
+                      color: color, fontSize: 12, fontWeight: FontWeight.w600),
                 ),
               ),
-              Text(
-                'Renew →',
-                style: TextStyle(
-                  color: color,
-                  fontSize: 11,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
+              Text('Renew →',
+                  style: TextStyle(
+                      color: color, fontSize: 11, fontWeight: FontWeight.bold)),
             ],
           ),
+        ),
+      ),
+    );
+  }
+}
+
+// ── Announcement Banner ───────────────────────────────────────────────────────
+
+class _AnnouncementBanner extends StatelessWidget {
+  final Map<String, dynamic> announcement;
+  final VoidCallback onDismiss;
+  final XissinColors c;
+
+  const _AnnouncementBanner({
+    required this.announcement,
+    required this.onDismiss,
+    required this.c,
+  });
+
+  Color _typeColor(String? type) {
+    switch (type) {
+      case 'warning': return const Color(0xFFFFA726);
+      case 'error':   return const Color(0xFFFF6B6B);
+      case 'success': return const Color(0xFF7EE7C1);
+      default:        return const Color(0xFF5B8CFF); // info
+    }
+  }
+
+  IconData _typeIcon(String? type) {
+    switch (type) {
+      case 'warning': return Icons.warning_amber_rounded;
+      case 'error':   return Icons.error_outline_rounded;
+      case 'success': return Icons.check_circle_outline_rounded;
+      default:        return Icons.campaign_rounded;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final type  = announcement['type'] as String? ?? 'info';
+    final title = announcement['title'] as String? ?? 'Announcement';
+    final msg   = announcement['message'] as String? ?? '';
+    final color = _typeColor(type);
+    final icon  = _typeIcon(type);
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(22, 0, 22, 0),
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 8),
+        padding: const EdgeInsets.fromLTRB(14, 10, 10, 10),
+        decoration: BoxDecoration(
+          color: color.withOpacity(0.08),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: color.withOpacity(0.35)),
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Padding(
+              padding: const EdgeInsets.only(top: 2),
+              child: Icon(icon, size: 16, color: color),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: TextStyle(
+                      color: color,
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  if (msg.isNotEmpty) ...[
+                    const SizedBox(height: 2),
+                    Text(
+                      msg,
+                      style: TextStyle(color: c.textSecondary, fontSize: 12, height: 1.4),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            GestureDetector(
+              onTap: onDismiss,
+              child: Padding(
+                padding: const EdgeInsets.all(4),
+                child: Icon(Icons.close_rounded, size: 14, color: c.textSecondary),
+              ),
+            ),
+          ],
         ),
       ),
     );
@@ -329,8 +501,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
 class _FeatureCard extends StatefulWidget {
   final IconData icon;
-  final String title;
-  final String subtitle;
+  final String title, subtitle;
   final List<Color> gradient;
   final Color glowColor;
   final bool locked;
@@ -376,20 +547,18 @@ class _FeatureCardState extends State<_FeatureCard>
 
   @override
   Widget build(BuildContext context) {
+    final c = AppColors.of(context);
     return GestureDetector(
       onTapDown: (_) => _ctrl.reverse(),
-      onTapUp: (_) {
-        _ctrl.forward();
-        widget.onTap();
-      },
+      onTapUp: (_) { _ctrl.forward(); widget.onTap(); },
       onTapCancel: () => _ctrl.forward(),
       child: ScaleTransition(
         scale: _scale,
         child: Container(
           decoration: BoxDecoration(
-            color: AppColors.surface,
+            color: c.surface,
             borderRadius: BorderRadius.circular(22),
-            border: Border.all(color: AppColors.border, width: 1),
+            border: Border.all(color: c.border, width: 1),
             boxShadow: [
               BoxShadow(
                 color: widget.glowColor.withOpacity(0.12),
@@ -422,15 +591,14 @@ class _FeatureCardState extends State<_FeatureCard>
                 ),
                 const Spacer(),
                 if (widget.locked)
-                  const Padding(
-                    padding: EdgeInsets.only(bottom: 6),
-                    child: Icon(Icons.lock_outline,
-                        color: AppColors.textSecondary, size: 15),
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 6),
+                    child: Icon(Icons.lock_outline, color: c.textSecondary, size: 15),
                   ),
                 Text(
                   widget.title,
-                  style: const TextStyle(
-                    color: AppColors.textPrimary,
+                  style: TextStyle(
+                    color: c.textPrimary,
                     fontSize: 15,
                     fontWeight: FontWeight.bold,
                   ),
@@ -438,8 +606,7 @@ class _FeatureCardState extends State<_FeatureCard>
                 const SizedBox(height: 3),
                 Text(
                   widget.subtitle,
-                  style: const TextStyle(
-                      color: AppColors.textSecondary, fontSize: 12),
+                  style: TextStyle(color: c.textSecondary, fontSize: 12),
                 ),
               ],
             ),
