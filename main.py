@@ -9,8 +9,17 @@ import time
 import logging
 
 from limiter import limiter
-from routers import keys, users, sms, settings
+from routers import keys, users, sms
 from database import init_db
+
+# settings router is optional — backend won't crash if routers/settings.py not yet deployed
+try:
+    from routers import settings as settings_router
+    _HAS_SETTINGS = True
+except ImportError:
+    _HAS_SETTINGS = False
+    import logging as _log
+    _log.getLogger(__name__).warning("routers/settings.py not found — deploy it to enable Server Control page.")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -72,10 +81,11 @@ async def log_requests(request: Request, call_next):
 
 
 # ── Routers ────────────────────────────────────────────────────────────────────
-app.include_router(keys.router,     prefix="/api/keys",     tags=["Keys"])
-app.include_router(users.router,    prefix="/api/users",    tags=["Users"])
-app.include_router(sms.router,      prefix="/api/sms",      tags=["SMS Bomber"])
-app.include_router(settings.router, prefix="/api/settings", tags=["Settings"])  # ← NEW
+app.include_router(keys.router,  prefix="/api/keys",  tags=["Keys"])
+app.include_router(users.router, prefix="/api/users", tags=["Users"])
+app.include_router(sms.router,   prefix="/api/sms",   tags=["SMS Bomber"])
+if _HAS_SETTINGS:
+    app.include_router(settings_router.router, prefix="/api/settings", tags=["Settings"])
 
 
 # ── Base routes ────────────────────────────────────────────────────────────────

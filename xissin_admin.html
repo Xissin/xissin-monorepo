@@ -335,6 +335,19 @@
   .toggle-switch input:checked + .toggle-slider { background:rgba(91,140,255,0.25); border-color:var(--primary); }
   .toggle-switch input:checked + .toggle-slider::before { background:var(--primary); transform:translateX(22px); }
 
+
+  /* ── Toggle switch ── */
+  .toggle-switch { position:relative; display:inline-block; width:48px; height:26px; cursor:pointer; flex-shrink:0; }
+  .toggle-switch input { opacity:0; width:0; height:0; }
+  .toggle-slider { position:absolute; inset:0; border-radius:26px; background:var(--surface2); border:1px solid var(--border); transition:.25s; cursor:pointer; }
+  .toggle-slider::before { content:''; position:absolute; width:18px; height:18px; border-radius:50%; background:var(--muted); bottom:3px; left:3px; transition:.25s; }
+  .toggle-switch input:checked + .toggle-slider { background:rgba(91,140,255,0.25); border-color:var(--primary); }
+  .toggle-switch input:checked + .toggle-slider::before { background:var(--primary); transform:translateX(22px); }
+  .remember-row { display:flex; align-items:center; gap:10px; cursor:pointer; }
+  .remember-row input[type=checkbox] { width:16px; height:16px; accent-color:var(--primary); cursor:pointer; }
+  .remember-row span { font-size:13px; color:var(--muted); }
+  #login-info { font-size:12px; text-align:center; padding:10px 14px; border-radius:10px; display:none; }
+  #login-info.show { display:block; }
   .flex { display: flex; }
   .gap-2 { gap: 8px; }
   .gap-3 { gap: 12px; }
@@ -360,8 +373,11 @@
       <label>ADMIN API KEY</label>
       <input type="password" id="login-key" placeholder="xissin-admin-xxxx" autocomplete="off"/>
     </div>
-    <span id="login-error">❌ Invalid admin key</span>
+    <label class="remember-row"><input type="checkbox" id="remember-me" checked/><span>Remember me on this device</span></label>
+    <div id="login-info"></div>
+    <span id="login-error">❌ Wrong key — check it and try again</span>
     <button class="btn btn-primary" id="login-btn" onclick="doLogin()">Login</button>
+    <button class="btn btn-ghost" id="test-btn" onclick="testConnection()" style="font-size:12px">🔍 Test Backend Connection</button>
   </div>
 </div>
 
@@ -387,6 +403,10 @@
     </div>
     <div class="nav-item" onclick="showPage('logs')">
       <span class="nav-icon">📋</span> Activity Logs
+    </div>
+    <div class="nav-label">SERVER</div>
+    <div class="nav-item" onclick="showPage('control')">
+      <span class="nav-icon">⚙️</span> Server Control
     </div>
     <div class="nav-label">SERVER</div>
     <div class="nav-item" onclick="showPage('control')">
@@ -604,6 +624,55 @@
       </div>
     </div>
 
+    <!-- ── SERVER CONTROL ── -->
+    <div class="page" id="page-control">
+      <div class="page-header">
+        <div><h2>Server Control</h2><p>Maintenance mode, versions and feature flags</p></div>
+        <button class="btn btn-ghost" onclick="loadControl()">🔄 Refresh</button>
+      </div>
+      <div id="control-status-bar" style="margin-bottom:24px;display:none">
+        <div id="control-status-pill" style="display:inline-flex;align-items:center;gap:8px;padding:8px 18px;border-radius:30px;font-size:13px;font-weight:700"></div>
+      </div>
+      <div class="grid-2" style="margin-bottom:24px">
+        <div class="card">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px">
+            <div><h3 style="font-size:15px;font-weight:700">🚧 Maintenance Mode</h3><p style="color:var(--muted);font-size:12px;margin-top:3px">Blocks all users from entering the app</p></div>
+            <label class="toggle-switch"><input type="checkbox" id="ctrl-maintenance" onchange="onMaintenanceToggle()"/><span class="toggle-slider"></span></label>
+          </div>
+          <div class="form-group"><label>MAINTENANCE MESSAGE</label><input type="text" id="ctrl-msg" placeholder="We'll be back shortly!" value="Xissin is under maintenance. We'll be back shortly!"/></div>
+          <div id="maintenance-warning" style="display:none;margin-top:12px;padding:10px 14px;background:rgba(255,107,107,0.08);border:1px solid rgba(255,107,107,0.25);border-radius:10px;font-size:12px;color:var(--error)">⚠️ Maintenance is <strong>ON</strong> — all users are blocked.</div>
+        </div>
+        <div class="card">
+          <h3 style="font-size:15px;font-weight:700;margin-bottom:18px">🎛️ Feature Flags</h3>
+          <div style="display:flex;flex-direction:column;gap:18px">
+            <div style="display:flex;align-items:center;justify-content:space-between">
+              <div><div style="font-size:14px;font-weight:600">SMS Bomber</div><div style="font-size:11px;color:var(--muted)">Enable / disable for all users</div></div>
+              <label class="toggle-switch"><input type="checkbox" id="ctrl-sms" checked/><span class="toggle-slider"></span></label>
+            </div>
+            <hr class="divider" style="margin:0"/>
+            <div style="display:flex;align-items:center;justify-content:space-between">
+              <div><div style="font-size:14px;font-weight:600">Key Manager</div><div style="font-size:11px;color:var(--muted)">Enable / disable for all users</div></div>
+              <label class="toggle-switch"><input type="checkbox" id="ctrl-keys" checked/><span class="toggle-slider"></span></label>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="card" style="margin-bottom:24px">
+        <h3 style="font-size:15px;font-weight:700;margin-bottom:6px">📱 App Version Control</h3>
+        <p style="color:var(--muted);font-size:12px;margin-bottom:18px">Users below min version will be force-updated.</p>
+        <div class="grid-2">
+          <div class="form-group"><label>MINIMUM VERSION (force update below this)</label><input type="text" id="ctrl-min-ver" placeholder="1.0.0"/></div>
+          <div class="form-group"><label>LATEST VERSION (informational)</label><input type="text" id="ctrl-latest-ver" placeholder="1.0.0"/></div>
+        </div>
+      </div>
+      <button class="btn btn-primary" style="width:100%;padding:16px;font-size:15px" onclick="saveControl()">💾 Save All Settings</button>
+      <div class="card" style="margin-top:24px">
+        <h3 style="font-size:14px;font-weight:700;margin-bottom:14px;color:var(--muted)">LIVE VALUES FROM SERVER</h3>
+        <div id="ctrl-readout" style="font-family:monospace;font-size:12px;color:var(--muted);line-height:2.2"><div class="empty-state"><div class="spinner"></div></div></div>
+      </div>
+    </div>
+
+
   </main>
 
 </div>
@@ -648,31 +717,64 @@ let ADMIN_KEY = '';
 
 async function doLogin() {
   const k = document.getElementById('login-key').value.trim();
-  if (!k) return;
+  if (!k) { loginInfo('\u26a0\ufe0f Please enter your admin API key.', true); return; }
   document.getElementById('login-btn').disabled = true;
   document.getElementById('login-btn').innerHTML = '<span class="spinner"></span> Verifying...';
+  hideLoginErr(); loginInfo('\ud83d\udd04 Connecting to backend...', false);
   try {
-    const r = await fetch(`${API}/api/keys/list`, { headers: { 'X-Admin-Key': k } });
+    const r = await fetch(`${API}/api/keys/list`, {
+      headers: { 'X-Admin-Key': k },
+      signal: AbortSignal.timeout(12000),
+    });
     if (r.status === 403) {
-      document.getElementById('login-error').style.display = 'block';
       document.getElementById('login-btn').disabled = false;
       document.getElementById('login-btn').textContent = 'Login';
-      return;
+      showLoginErr(); loginInfo('\u274c Wrong key \u2014 got 403 Forbidden from server.', true); return;
     }
+    if (!r.ok) {
+      document.getElementById('login-btn').disabled = false;
+      document.getElementById('login-btn').textContent = 'Login';
+      loginInfo(`\u26a0\ufe0f Server returned ${r.status}. Try again in 30s \u2014 Railway may be restarting.`, true); return;
+    }
+    // Success
     ADMIN_KEY = k;
+    if (document.getElementById('remember-me').checked) {
+      try { localStorage.setItem('xissin_admin_key', k); } catch(e) {}
+    } else {
+      try { localStorage.removeItem('xissin_admin_key'); } catch(e) {}
+    }
     document.getElementById('login-overlay').style.display = 'none';
     document.getElementById('app').style.display = 'block';
-    document.getElementById('sidebar-key-display').textContent = k;
-    loadDashboard();
-    loadKeys();
-    loadUsers();
-    loadLogs();
-    loadControl();
-  } catch {
-    toast('Connection error — check your network', 'error');
+    document.getElementById('sidebar-key-display').textContent = k.slice(0,6)+'\u2022\u2022\u2022\u2022\u2022\u2022'+k.slice(-4);
+    loadDashboard(); loadKeys(); loadUsers(); loadLogs(); loadControl();
+  } catch(e) {
     document.getElementById('login-btn').disabled = false;
     document.getElementById('login-btn').textContent = 'Login';
+    loginInfo(e.name === 'TimeoutError'
+      ? '\u23f1\ufe0f Request timed out \u2014 backend not responding. Check Railway and retry in ~1 min.'
+      : '\ud83c\udf10 Cannot reach backend \u2014 check internet connection.', true);
   }
+}
+function showLoginErr() { document.getElementById('login-error').style.display = 'block'; }
+function hideLoginErr()  { document.getElementById('login-error').style.display = 'none'; }
+function loginInfo(msg, warn) {
+  const el = document.getElementById('login-info');
+  el.textContent = msg; el.className = 'show';
+  el.style.color      = warn ? 'var(--error)' : 'var(--muted)';
+  el.style.background = warn ? 'rgba(255,107,107,0.07)' : 'rgba(91,140,255,0.07)';
+  el.style.border     = warn ? '1px solid rgba(255,107,107,0.2)' : '1px solid rgba(91,140,255,0.15)';
+}
+async function testConnection() {
+  const btn = document.getElementById('test-btn');
+  btn.disabled = true; btn.textContent = '\u23f3 Testing...';
+  loginInfo('\ud83d\udd04 Pinging /health ...', false);
+  try {
+    const r = await fetch(`${API}/health`, { signal: AbortSignal.timeout(8000) });
+    loginInfo(r.ok ? '\u2705 Backend is online! Click Login.' : `\u26a0\ufe0f Backend returned ${r.status}.`, !r.ok);
+  } catch(e) {
+    loginInfo(e.name==='TimeoutError' ? '\u23f1\ufe0f Timed out \u2014 backend not responding.' : '\u274c Cannot reach backend.', true);
+  }
+  btn.disabled = false; btn.textContent = '\ud83d\udd0d Test Backend Connection';
 }
 
 document.getElementById('login-key').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
@@ -1006,6 +1108,63 @@ async function saveControl() {
   } catch { toast('Request failed', 'error'); }
 }
 
+// ── Server Control ────────────────────────────────────────────────────────────
+
+async function loadControl() {
+  try {
+    const s = await api('GET', '/api/settings/');
+    _populateCtrl(s); _renderReadout(s);
+  } catch {
+    document.getElementById('ctrl-readout').innerHTML =
+      '<div style="color:var(--error);font-size:12px;padding:8px">⚠️ Could not load settings. Deploy routers/settings.py and restart.</div>';
+  }
+}
+function _populateCtrl(s) {
+  document.getElementById('ctrl-maintenance').checked = !!s.maintenance;
+  document.getElementById('ctrl-msg').value           = s.maintenance_message || '';
+  document.getElementById('ctrl-sms').checked         = s.feature_sms !== false;
+  document.getElementById('ctrl-keys').checked        = s.feature_keys !== false;
+  document.getElementById('ctrl-min-ver').value       = s.min_app_version || '1.0.0';
+  document.getElementById('ctrl-latest-ver').value    = s.latest_app_version || '1.0.0';
+  onMaintenanceToggle();
+  const bar = document.getElementById('control-status-bar');
+  const pill = document.getElementById('control-status-pill');
+  bar.style.display = 'block';
+  if (s.maintenance) {
+    pill.style.cssText='display:inline-flex;align-items:center;gap:8px;padding:8px 18px;border-radius:30px;font-size:13px;font-weight:700;background:rgba(255,107,107,0.12);color:var(--error);border:1px solid rgba(255,107,107,0.3)';
+    pill.innerHTML='🔴 APP IS IN MAINTENANCE MODE';
+  } else {
+    pill.style.cssText='display:inline-flex;align-items:center;gap:8px;padding:8px 18px;border-radius:30px;font-size:13px;font-weight:700;background:rgba(126,231,193,0.12);color:var(--accent);border:1px solid rgba(126,231,193,0.3)';
+    pill.innerHTML='🟢 APP IS ONLINE';
+  }
+}
+function onMaintenanceToggle() {
+  document.getElementById('maintenance-warning').style.display =
+    document.getElementById('ctrl-maintenance').checked ? 'block' : 'none';
+}
+function _renderReadout(s) {
+  const rows=[['maintenance',s.maintenance?'🔴 ON':'🟢 OFF'],['maintenance_message',s.maintenance_message||'—'],
+    ['min_app_version',s.min_app_version||'—'],['latest_app_version',s.latest_app_version||'—'],
+    ['feature_sms',s.feature_sms!==false?'✅ enabled':'❌ disabled'],['feature_keys',s.feature_keys!==false?'✅ enabled':'❌ disabled']];
+  document.getElementById('ctrl-readout').innerHTML=rows.map(([k,v])=>
+    `<div style="display:flex;gap:12px"><span style="color:var(--primary);min-width:180px">${k}</span><span>${v}</span></div>`).join('');
+}
+async function saveControl() {
+  const payload={
+    maintenance:document.getElementById('ctrl-maintenance').checked,
+    maintenance_message:document.getElementById('ctrl-msg').value.trim()||"Xissin is under maintenance.",
+    min_app_version:document.getElementById('ctrl-min-ver').value.trim()||'1.0.0',
+    latest_app_version:document.getElementById('ctrl-latest-ver').value.trim()||'1.0.0',
+    feature_sms:document.getElementById('ctrl-sms').checked,
+    feature_keys:document.getElementById('ctrl-keys').checked,
+  };
+  try {
+    const d=await api('POST','/api/settings/',payload);
+    if(d.success){toast('Settings saved!','success');_populateCtrl(d.settings);_renderReadout(d.settings);loadDashboard();}
+    else toast(d.detail||'Failed','error');
+  } catch{toast('Request failed','error');}
+}
+
 // ── Toast ─────────────────────────────────────────────────────────────────────
 
 let _toastTimer;
@@ -1016,6 +1175,18 @@ function toast(msg, type = 'success') {
   clearTimeout(_toastTimer);
   _toastTimer = setTimeout(() => el.classList.remove('show'), 3000);
 }
+
+// ── Auto-fill saved admin key on page load ───────────────────────────────────
+document.addEventListener('DOMContentLoaded', function() {
+  try {
+    var saved = localStorage.getItem('xissin_admin_key');
+    if (saved) {
+      document.getElementById('login-key').value = saved;
+      document.getElementById('remember-me').checked = true;
+      loginInfo('🔑 Saved key loaded — press Enter or click Login.', false);
+    }
+  } catch(e) {}
+});
 </script>
 </body>
 </html>
