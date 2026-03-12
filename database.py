@@ -1,16 +1,10 @@
 """
 database.py — Upstash Redis persistence layer for Xissin App API
 Uses REST API (no redis-py needed — works on Railway without a Redis addon)
-
-Changes:
-  - Replaced pickle with JSON (security fix)
-  - Replaced blocking requests with async httpx (performance fix)
-  - Auto-prunes expired keys on every save (prevents Redis bloat)
 """
 
 import os
 import json
-import time
 import logging
 import asyncio
 import httpx
@@ -93,22 +87,15 @@ async def _redis_set_async(key: str, data) -> bool:
     return False
 
 
-# ── Sync wrappers (called from FastAPI sync route functions) ──────────────────
-# FastAPI runs sync routes in a thread pool — we use asyncio.run() to safely
-# call our async Redis helpers from that sync context.
+# ── Sync wrappers (called from FastAPI sync route handlers) ───────────────────
+# FastAPI runs sync routes in a threadpool — asyncio.run() is safe there
+# because there is NO running event loop in that thread.
 
 def _redis_get(key: str):
-    try:
-        return asyncio.get_event_loop().run_until_complete(_redis_get_async(key))
-    except RuntimeError:
-        # No event loop in this thread — create a new one
-        return asyncio.run(_redis_get_async(key))
+    return asyncio.run(_redis_get_async(key))
 
 def _redis_set(key: str, data) -> bool:
-    try:
-        return asyncio.get_event_loop().run_until_complete(_redis_set_async(key, data))
-    except RuntimeError:
-        return asyncio.run(_redis_set_async(key, data))
+    return asyncio.run(_redis_set_async(key, data))
 
 
 # ── Expired key pruning ───────────────────────────────────────────────────────
@@ -134,16 +121,19 @@ def _prune_expired_keys(keys_dict: dict) -> dict:
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
-def init_db():
-    """Load all data from Upstash into memory on startup."""
+async def init_db():
+    """
+    ✅ ASYNC — awaited from FastAPI lifespan.
+    Loads all data from Upstash into in-memory cache on startup.
+    """
     global _cache
 
-    raw_keys   = _redis_get(RK_KEYS)   or {}
+    raw_keys   = await _redis_get_async(RK_KEYS)   or {}
     clean_keys = _prune_expired_keys(raw_keys)
     if len(clean_keys) != len(raw_keys):
-        _redis_set(RK_KEYS, clean_keys)
+        await _redis_set_async(RK_KEYS, clean_keys)
 
-    raw_banned = _redis_get(RK_BANNED) or []
+    raw_banned = await _redis_get_async(RK_BANNED) or []
     if isinstance(raw_banned, list):
         banned_set = set(raw_banned)
     elif isinstance(raw_banned, set):
@@ -152,10 +142,11 @@ def init_db():
         banned_set = set()
 
     _cache["keys"]      = clean_keys
-    _cache["users"]     = _redis_get(RK_USERS)     or {}
+    _cache["users"]     = await _redis_get_async(RK_USERS)     or {}
     _cache["banned"]    = banned_set
-    _cache["logs"]      = _redis_get(RK_LOGS)      or []
-    _cache["sms_stats"] = _redis_get(RK_SMS_STATS) or {}
+    _cache["logs"]      = await _redis_get_async(RK_LOGS)      or []
+    _cache["sms_stats"] = await _redis_get_async(RK_SMS_STATS) or {}
+
     logger.info(
         f"✅ DB loaded — keys:{len(_cache['keys'])} "
         f"users:{len(_cache['users'])} "

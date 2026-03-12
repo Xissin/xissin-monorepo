@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("🚀 Xissin App Backend starting up...")
-    init_db()
+    await init_db()  # ✅ properly awaited — no more asyncio.run() conflict
     yield
     logger.info("🛑 Xissin App Backend shutting down.")
 
@@ -68,7 +68,6 @@ async def log_requests(request: Request, call_next):
 
 
 # ── Routers ────────────────────────────────────────────────────────────────────
-# Single mount — no duplicates, no crashes
 app.include_router(keys.router,  prefix="/api/keys",  tags=["Keys"])
 app.include_router(users.router, prefix="/api/users", tags=["Users"])
 app.include_router(sms.router,   prefix="/api/sms",   tags=["SMS Bomber"])
@@ -91,9 +90,9 @@ def health():
 
 # ── /api/status ───────────────────────────────────────────────────────────────
 # Flutter app calls this on every launch.
-# Control everything via Railway env vars — no redeploy needed.
+# Control via Railway env vars — no redeploy needed.
 #
-# Railway env vars to set:
+# Railway env vars:
 #   MAINTENANCE_MODE   = "true" / "false"   (default: false)
 #   MAINTENANCE_MSG    = "custom message"   (optional)
 #   MIN_APP_VERSION    = "1.0.0"
