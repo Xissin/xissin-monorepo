@@ -17,6 +17,31 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _loading = true;
   String? _expiresAt;
 
+  // ✅ Bug 13 — expiry warning helpers
+  int? get _daysLeft {
+    if (_expiresAt == null) return null;
+    try {
+      final exp = DateTime.parse(_expiresAt!);
+      return exp.difference(DateTime.now()).inDays;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  bool get _isExpiringSoon {
+    final d = _daysLeft;
+    return d != null && d <= 3 && d >= 0;
+  }
+
+  String get _expiryLabel {
+    final d = _daysLeft;
+    if (d == null) return '';
+    if (d < 0) return 'Key EXPIRED';
+    if (d == 0) return '⚠️ Expires TODAY!';
+    if (d == 1) return '⚠️ Expires TOMORROW!';
+    return '⚠️ Expires in $d days!';
+  }
+
   @override
   void initState() {
     super.initState();
@@ -98,6 +123,9 @@ class _HomeScreenState extends State<HomeScreen> {
             _buildHeader(),
             const SizedBox(height: 8),
             _buildKeyBanner(),
+            // ✅ Bug 13 — shows orange/red warning when key expires in ≤3 days
+            if (!_loading && _hasKey && _isExpiringSoon)
+              _buildExpiryWarning(),
             const SizedBox(height: 28),
             const Padding(
               padding: EdgeInsets.symmetric(horizontal: 22),
@@ -133,7 +161,10 @@ class _HomeScreenState extends State<HomeScreen> {
                       icon: Icons.vpn_key_rounded,
                       title: 'Key Manager',
                       subtitle: _hasKey ? 'Key Active ✓' : 'Redeem Key',
-                      gradient: [AppColors.secondary, const Color(0xFF7B6FFF)],
+                      gradient: [
+                        AppColors.secondary,
+                        const Color(0xFF7B6FFF),
+                      ],
                       glowColor: AppColors.secondary,
                       locked: false,
                       onTap: _goToKeys,
@@ -173,11 +204,11 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
               const Text(
                 'Multi-Tool',
-                style: TextStyle(color: AppColors.textSecondary, fontSize: 13),
+                style:
+                    TextStyle(color: AppColors.textSecondary, fontSize: 13),
               ),
             ],
           ),
-          // Refresh button
           GestureDetector(
             onTap: _refreshKeyStatus,
             child: Container(
@@ -243,6 +274,51 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+
+  // ✅ Bug 13 — orange warning banner, tappable → goes to Key Manager
+  Widget _buildExpiryWarning() {
+    final isToday = _daysLeft == 0;
+    final color = isToday ? AppColors.error : const Color(0xFFFFA726);
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(22, 8, 22, 0),
+      child: GestureDetector(
+        onTap: _goToKeys,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          decoration: BoxDecoration(
+            color: color.withOpacity(0.1),
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: color.withOpacity(0.4)),
+          ),
+          child: Row(
+            children: [
+              Icon(Icons.access_time_rounded, size: 16, color: color),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  _expiryLabel,
+                  style: TextStyle(
+                    color: color,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+              Text(
+                'Renew →',
+                style: TextStyle(
+                  color: color,
+                  fontSize: 11,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -328,7 +404,6 @@ class _FeatureCardState extends State<_FeatureCard>
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // Icon box
                 Container(
                   width: 54,
                   height: 54,
