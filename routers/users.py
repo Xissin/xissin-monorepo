@@ -58,6 +58,32 @@ def list_users():
     }
 
 
+@router.get("/logs/recent", dependencies=[Depends(require_admin)])
+def get_logs(limit: int = 50):
+    """Admin: get recent action logs."""
+    return {"logs": db.get_logs(limit=limit)}
+
+
+# ── 📊 Stats endpoint — NEW ───────────────────────────────────────────────────
+
+@router.get("/stats/{user_id}")
+def get_user_stats(user_id: str):
+    """
+    App: get SMS usage stats for a user.
+    Returns total SMS sent + recent session history.
+    History items: { ts, phone_masked, success, total }
+    """
+    total  = db.get_sms_stat(user_id)
+    history = db.get_sms_history(user_id)
+    return {
+        "user_id":   user_id,
+        "total_sms": total,
+        "history":   history,
+    }
+
+
+# ── Standard user routes ──────────────────────────────────────────────────────
+
 @router.get("/{user_id}", dependencies=[Depends(require_admin)])
 def get_user(user_id: str):
     """Admin: get a single user by ID."""
@@ -91,12 +117,6 @@ def unban_user(req: BanRequest):
         db.save_user(req.user_id, user)
     db.append_log({"action": "user_unbanned", "user_id": req.user_id})
     return {"success": True, "message": f"User {req.user_id} unbanned"}
-
-
-@router.get("/logs/recent", dependencies=[Depends(require_admin)])
-def get_logs(limit: int = 50):
-    """Admin: get recent action logs."""
-    return {"logs": db.get_logs(limit=limit)}
 
 
 @router.get("/check/{user_id}")

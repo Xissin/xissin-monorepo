@@ -12,14 +12,24 @@ from limiter import limiter
 from routers import keys, users, sms
 from database import init_db
 
-# settings router is optional — backend won't crash if routers/settings.py not yet deployed
+# Optional routers — backend won't crash if file doesn't exist yet
 try:
     from routers import settings as settings_router
     _HAS_SETTINGS = True
 except ImportError:
     _HAS_SETTINGS = False
-    import logging as _log
-    _log.getLogger(__name__).warning("routers/settings.py not found — deploy it to enable Server Control page.")
+    logging.getLogger(__name__).warning(
+        "routers/settings.py not found — deploy it to enable Server Control page."
+    )
+
+try:
+    from routers import announcements as announcements_router
+    _HAS_ANNOUNCEMENTS = True
+except ImportError:
+    _HAS_ANNOUNCEMENTS = False
+    logging.getLogger(__name__).warning(
+        "routers/announcements.py not found — deploy it to enable announcements."
+    )
 
 logging.basicConfig(
     level=logging.INFO,
@@ -39,7 +49,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Xissin App API",
     description="Backend API for the Xissin Multi-Tool Flutter App",
-    version="1.1.0",
+    version="1.2.0",
     lifespan=lifespan,
 )
 
@@ -48,14 +58,10 @@ app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # ── CORS ───────────────────────────────────────────────────────────────────────
-# BUG 4 FIX:
-# allow_origins=["*"] + allow_credentials=True is INVALID per the CORS spec.
-# Browsers reject this combination. Since the Flutter app sends auth data
-# in request bodies (not cookies), allow_credentials must be False.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=False,  # ✅ FIXED — was True, incompatible with wildcard origin
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -84,8 +90,16 @@ async def log_requests(request: Request, call_next):
 app.include_router(keys.router,  prefix="/api/keys",  tags=["Keys"])
 app.include_router(users.router, prefix="/api/users", tags=["Users"])
 app.include_router(sms.router,   prefix="/api/sms",   tags=["SMS Bomber"])
+
 if _HAS_SETTINGS:
     app.include_router(settings_router.router, prefix="/api/settings", tags=["Settings"])
+
+if _HAS_ANNOUNCEMENTS:
+    app.include_router(
+        announcements_router.router,
+        prefix="/api/announcements",
+        tags=["Announcements"],
+    )
 
 
 # ── Base routes ────────────────────────────────────────────────────────────────
@@ -94,7 +108,7 @@ def root():
     return {
         "status":  "online",
         "app":     "Xissin Multi-Tool API",
-        "version": "1.1.0",
+        "version": "1.2.0",
     }
 
 
@@ -104,15 +118,11 @@ def health():
 
 
 # ── /api/status ───────────────────────────────────────────────────────────────
-# Priority order:
-#   1. Redis settings (set via admin dashboard) ← checked FIRST
-#   2. Railway env vars                         ← fallback
 @app.get("/api/status")
 def api_status():
     import database as db
     s = db.get_server_settings()
 
-    # Railway env var can still force maintenance even if Redis says false
     maintenance = s.get("maintenance", False)
     if not maintenance:
         maintenance = os.environ.get("MAINTENANCE_MODE", "false").lower() == "true"
@@ -125,14 +135,15 @@ def api_status():
     lat_ver = s.get("latest_app_version", os.environ.get("LATEST_APP_VERSION", "1.0.0"))
 
     return {
-        "api_version":        "1.1.0",
+        "api_version":        "1.2.0",
         "min_app_version":    min_ver,
         "latest_app_version": lat_ver,
         "maintenance":         maintenance,
         "maintenance_message": maintenance_msg if maintenance else None,
         "features": {
-            "sms_bomber":  s.get("feature_sms",  os.environ.get("FEATURE_SMS",  "true").lower() == "true"),
-            "key_manager": s.get("feature_keys", os.environ.get("FEATURE_KEYS", "true").lower() == "true"),
+            "sms_bomber":      s.get("feature_sms",  os.environ.get("FEATURE_SMS",  "true").lower() == "true"),
+            "key_manager":     s.get("feature_keys", os.environ.get("FEATURE_KEYS", "true").lower() == "true"),
+            "announcements":   _HAS_ANNOUNCEMENTS,
         },
         "links": {
             "channel":    "https://t.me/Xissin_0",
