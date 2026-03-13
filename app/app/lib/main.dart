@@ -11,22 +11,18 @@ import 'screens/splash_screen.dart';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
+  // Load saved theme BEFORE running the app so there's no flash of wrong theme
+  final themeService = ThemeService();
+  await themeService.init();
+
   SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
 
-  SystemChrome.setSystemUIOverlayStyle(
-    const SystemUiOverlayStyle(
-      statusBarColor: Colors.transparent,
-      statusBarIconBrightness: Brightness.light,
-      systemNavigationBarColor: Color(0xFF0B1020),
-      systemNavigationBarIconBrightness: Brightness.light,
-    ),
-  );
-
-  runApp(const XissinApp());
+  runApp(XissinApp(themeService: themeService));
 }
 
 class XissinApp extends StatefulWidget {
-  const XissinApp({super.key});
+  final ThemeService themeService;
+  const XissinApp({super.key, required this.themeService});
 
   @override
   State<XissinApp> createState() => _XissinAppState();
@@ -34,15 +30,13 @@ class XissinApp extends StatefulWidget {
 
 class _XissinAppState extends State<XissinApp> {
   bool _isOffline = false;
-  late StreamSubscription<List<ConnectivityResult>> _sub;
-  final ThemeService _themeService = ThemeService();
+  late StreamSubscription<List<ConnectivityResult>> _connectivitySub;
 
   @override
   void initState() {
     super.initState();
-    _themeService.init();
-    
-    _sub = Connectivity().onConnectivityChanged.listen((results) {
+    _connectivitySub =
+        Connectivity().onConnectivityChanged.listen((results) {
       final offline = results.every((r) => r == ConnectivityResult.none);
       if (offline != _isOffline) {
         setState(() => _isOffline = offline);
@@ -52,47 +46,78 @@ class _XissinAppState extends State<XissinApp> {
 
   @override
   void dispose() {
-    _sub.cancel();
+    _connectivitySub.cancel();
     super.dispose();
+  }
+
+  /// Update the system UI bars to match the current theme.
+  void _applySystemUI(bool isDark) {
+    SystemChrome.setSystemUIOverlayStyle(
+      SystemUiOverlayStyle(
+        statusBarColor: Colors.transparent,
+        statusBarIconBrightness:
+            isDark ? Brightness.light : Brightness.dark,
+        systemNavigationBarColor:
+            isDark ? const Color(0xFF0B1020) : const Color(0xFFF0F4FF),
+        systemNavigationBarIconBrightness:
+            isDark ? Brightness.light : Brightness.dark,
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
-    return ChangeNotifierProvider.value(
-      value: _themeService,
-      child: MaterialApp(
-        title: 'Xissin',
-        debugShowCheckedModeBanner: false,
-        theme: AppTheme.theme,
-        home: const SplashScreen(),
-        builder: (context, child) {
-          return Column(
-            children: [
-              AnimatedContainer(
-                duration: AppDurations.normal,
-                height: _isOffline ? 36 : 0,
-                color: const Color(0xFFFF6B6B),
-                child: _isOffline
-                    ? const Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Icon(Icons.wifi_off_rounded,
-                              color: Colors.white, size: 14),
-                          SizedBox(width: 6),
-                          Text(
-                            'No internet connection',
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontSize: 12,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                        ],
-                      )
-                    : const SizedBox.shrink(),
-              ),
-              Expanded(child: child!),
-            ],
+    // ChangeNotifierProvider makes ThemeService available to the whole tree
+    return ChangeNotifierProvider<ThemeService>.value(
+      value: widget.themeService,
+      // Consumer rebuilds MaterialApp whenever isDark changes
+      child: Consumer<ThemeService>(
+        builder: (_, themeService, __) {
+          // Keep system bars in sync with the active theme
+          _applySystemUI(themeService.isDark);
+
+          return MaterialApp(
+            title: 'Xissin',
+            debugShowCheckedModeBanner: false,
+
+            // ── THE FIX: wire both themes + themeMode ───────────────────────
+            theme: AppTheme.lightTheme,
+            darkTheme: AppTheme.darkTheme,
+            themeMode: themeService.isDark ? ThemeMode.dark : ThemeMode.light,
+            // ────────────────────────────────────────────────────────────────
+
+            home: const SplashScreen(),
+            builder: (context, child) {
+              return Column(
+                children: [
+                  // Offline banner
+                  AnimatedContainer(
+                    duration: AppDurations.normal,
+                    height: _isOffline ? 36 : 0,
+                    color: const Color(0xFFFF6B6B),
+                    child: _isOffline
+                        ? const Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(Icons.wifi_off_rounded,
+                                  color: Colors.white, size: 14),
+                              SizedBox(width: 6),
+                              Text(
+                                'No internet connection',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ],
+                          )
+                        : const SizedBox.shrink(),
+                  ),
+                  Expanded(child: child!),
+                ],
+              );
+            },
           );
         },
       ),
