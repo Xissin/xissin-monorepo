@@ -60,7 +60,8 @@ class _AttackRecord {
 const _kHistoryKey  = 'sms_bomb_history';
 const _kLastFireKey = 'sms_bomb_last_fire';
 const _kCooldown    = Duration(minutes: 1);
-const _kMaxHistory  = 50;
+// ↓ Auto-clear history when it hits this limit
+const _kMaxHistory  = 10;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Screen
@@ -214,6 +215,12 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
 
       setState(() {
         _history.insert(0, record);
+
+        // ── Auto-clear: keep only the last 10 entries ──────────────
+        if (_history.length > _kMaxHistory) {
+          _history = _history.take(_kMaxHistory).toList();
+        }
+
         if (sent > 0) {
           _showConfetti = true;
           _confettiCtrl.play();
@@ -222,15 +229,9 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
 
       await _saveHistory();
 
-      // scroll to history
-      await Future.delayed(const Duration(milliseconds: 300));
-      if (_scrollCtrl.hasClients) {
-        _scrollCtrl.animateTo(
-          _scrollCtrl.position.maxScrollExtent,
-          duration: const Duration(milliseconds: 600),
-          curve: Curves.easeOut,
-        );
-      }
+      // ── NOTE: Auto-scroll removed intentionally ─────────────────
+      // (do NOT scroll to bottom after attack completes)
+
     } on ApiException catch (e) {
       _snack(e.userMessage, error: true);
     } catch (e) {
@@ -254,7 +255,8 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
   // ── Attack-again helper ──────────────────────────────────────────────────
   void _repeatAttack(_AttackRecord r) {
     _phoneCtrl.text = r.phone;
-    setState(() => _rounds = r.rounds.clamp(1, 5));
+    // ↓ Clamp to 3 (max rounds allowed)
+    setState(() => _rounds = r.rounds.clamp(1, 3));
     _scrollCtrl.animateTo(
       0,
       duration: const Duration(milliseconds: 500),
@@ -352,7 +354,7 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
 
                 const SizedBox(height: 26),
 
-                // ── Rounds ────────────────────────────────────────────
+                // ── Rounds (max 3) ────────────────────────────────────
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
@@ -381,8 +383,9 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
 
                 const SizedBox(height: 10),
 
+                // ↓ Only 3 round buttons (was 5)
                 Row(
-                  children: List.generate(5, (i) {
+                  children: List.generate(3, (i) {
                     final n   = i + 1;
                     final sel = _rounds == n;
                     return Expanded(
@@ -392,7 +395,7 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
                           setState(() => _rounds = n);
                         },
                         child: Container(
-                          margin: EdgeInsets.only(right: i < 4 ? 8 : 0),
+                          margin: EdgeInsets.only(right: i < 2 ? 8 : 0),
                           padding: const EdgeInsets.symmetric(vertical: 13),
                           decoration: BoxDecoration(
                             gradient: sel
@@ -529,7 +532,7 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
                           color: AppColors.textSecondary, size: 16),
                       const SizedBox(width: 6),
                       Text(
-                        'Attack History  (${_history.length})',
+                        'Attack History  (${_history.length}/$_kMaxHistory)',
                         style: const TextStyle(
                             color: AppColors.textSecondary,
                             fontSize: 13,
