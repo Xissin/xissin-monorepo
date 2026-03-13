@@ -41,14 +41,17 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _refreshKeyStatus() async {
+    if (!mounted) return;
     setState(() => _loading = true);
     try {
       final data = await ApiService.keyStatus(widget.userId);
+      if (!mounted) return;
       setState(() {
         _hasKey = data['active'] == true;
         _loading = false;
       });
     } catch (_) {
+      if (!mounted) return;
       setState(() => _loading = false);
     }
   }
@@ -56,7 +59,8 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _loadAnnouncements() async {
     try {
       final list = await ApiService.getAnnouncements();
-      if (mounted) setState(() => _announcements = list);
+      if (!mounted) return;
+      setState(() => _announcements = list);
     } catch (_) {}
   }
 
@@ -82,7 +86,7 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  void _goToKeys() async {
+  Future<void> _goToKeys() async {
     HapticFeedback.selectionClick();
     await Navigator.push(
       context,
@@ -98,12 +102,14 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
       ),
     );
+    // Refresh key status after returning from key screen
     _refreshKeyStatus();
   }
 
   void _goToAbout() {
     HapticFeedback.selectionClick();
-    Navigator.push(context, MaterialPageRoute(builder: (_) => const AboutScreen()));
+    Navigator.push(
+        context, MaterialPageRoute(builder: (_) => const AboutScreen()));
   }
 
   void _showNoKeyDialog() {
@@ -112,20 +118,29 @@ class _HomeScreenState extends State<HomeScreen> {
       context: context,
       builder: (_) => AlertDialog(
         backgroundColor: c.surface,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
-        title: Text('Key Required',
-            style: TextStyle(color: c.textPrimary, fontWeight: FontWeight.bold)),
+        shape:
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
+        title: Text(
+          'Key Required',
+          style: TextStyle(
+              color: c.textPrimary, fontWeight: FontWeight.bold),
+        ),
         content: Text(
-          'You need an active key to use this feature.\nGo to Key Manager to redeem one.',
+          'You need an active key to use this feature.\n'
+          'Go to Key Manager to redeem one.',
           style: TextStyle(color: c.textSecondary, height: 1.5),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: Text('Cancel', style: TextStyle(color: c.textSecondary)),
+            child:
+                Text('Cancel', style: TextStyle(color: c.textSecondary)),
           ),
           ElevatedButton(
-            onPressed: () { Navigator.pop(context); _goToKeys(); },
+            onPressed: () {
+              Navigator.pop(context);
+              _goToKeys();
+            },
             child: const Text('Get Key'),
           ),
         ],
@@ -153,25 +168,28 @@ class _HomeScreenState extends State<HomeScreen> {
             physics: const AlwaysScrollableScrollPhysics(),
             slivers: [
               SliverToBoxAdapter(child: _buildHeader(c)),
+
+              // Announcements
               if (visible.isNotEmpty)
                 SliverToBoxAdapter(
                   child: Padding(
                     padding: const EdgeInsets.only(top: 8),
                     child: Column(
-                      children: visible
-                          .asMap()
-                          .entries
-                          .map((e) => _AnnouncementBanner(
-                                announcement: e.value,
-                                onDismiss: () => setState(
-                                    () => _dismissedIds.add(e.value['id']?.toString() ?? '')),
-                                c: c,
-                                index: e.key,
-                              ))
-                          .toList(),
+                      children: List.generate(visible.length, (i) {
+                        return _AnnouncementBanner(
+                          announcement: visible[i],
+                          onDismiss: () => setState(() =>
+                              _dismissedIds
+                                  .add(visible[i]['id']?.toString() ?? '')),
+                          c: c,
+                          index: i,
+                        );
+                      }),
                     ),
                   ),
                 ),
+
+              // Section heading
               SliverToBoxAdapter(
                 child: Padding(
                   padding: const EdgeInsets.fromLTRB(22, 28, 22, 14),
@@ -185,6 +203,8 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ),
               ),
+
+              // Feature grid
               SliverPadding(
                 padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
                 sliver: SliverGrid(
@@ -196,6 +216,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       gradient: [c.primary, c.secondary],
                       glowColor: c.primary,
                       locked: !_hasKey,
+                      loading: _loading,
                       onTap: _goToSms,
                       index: 0,
                     ),
@@ -206,6 +227,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       gradient: [c.secondary, const Color(0xFF7B6FFF)],
                       glowColor: c.secondary,
                       locked: false,
+                      loading: false,
                       onTap: _goToKeys,
                       index: 1,
                     ),
@@ -213,14 +235,16 @@ class _HomeScreenState extends State<HomeScreen> {
                       icon: Icons.info_outline_rounded,
                       title: 'About',
                       subtitle: 'Links & Info',
-                      gradient: [const Color(0xFFFFA726), const Color(0xFFFF7043)],
+                      gradient: const [Color(0xFFFFA726), Color(0xFFFF7043)],
                       glowColor: const Color(0xFFFFA726),
                       locked: false,
+                      loading: false,
                       onTap: _goToAbout,
                       index: 2,
                     ),
                   ]),
-                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                  gridDelegate:
+                      const SliverGridDelegateWithFixedCrossAxisCount(
                     crossAxisCount: 2,
                     mainAxisSpacing: 14,
                     crossAxisSpacing: 14,
@@ -236,12 +260,15 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _buildHeader(XissinColors c) {
+    // watch rebuilds this subtree when the theme toggles
     final themeService = context.watch<ThemeService>();
+
     return Padding(
       padding: const EdgeInsets.fromLTRB(22, 24, 22, 0),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
+          // Logo / title
           Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -268,6 +295,8 @@ class _HomeScreenState extends State<HomeScreen> {
               .animate()
               .fadeIn(duration: 500.ms)
               .slideX(begin: -0.2, end: 0, duration: 500.ms),
+
+          // Theme toggle button
           HapticIconButton(
             icon: themeService.isDark
                 ? Icons.light_mode_rounded
@@ -281,12 +310,15 @@ class _HomeScreenState extends State<HomeScreen> {
           )
               .animate()
               .fadeIn(duration: 500.ms)
-              .scale(begin: const Offset(0.8, 0.8), duration: 500.ms),
+              .scale(
+                  begin: const Offset(0.8, 0.8), duration: 500.ms),
         ],
       ),
     );
   }
 }
+
+// ── Announcement banner ─────────────────────────────────────────────────────
 
 class _AnnouncementBanner extends StatelessWidget {
   final Map<String, dynamic> announcement;
@@ -356,7 +388,10 @@ class _AnnouncementBanner extends StatelessWidget {
                     const SizedBox(height: 2),
                     Text(
                       msg,
-                      style: TextStyle(color: c.textSecondary, fontSize: 12, height: 1.4),
+                      style: TextStyle(
+                          color: c.textSecondary,
+                          fontSize: 12,
+                          height: 1.4),
                     ),
                   ],
                 ],
@@ -369,25 +404,31 @@ class _AnnouncementBanner extends StatelessWidget {
               },
               child: Padding(
                 padding: const EdgeInsets.all(4),
-                child: Icon(Icons.close_rounded, size: 14, color: c.textSecondary),
+                child: Icon(Icons.close_rounded,
+                    size: 14, color: c.textSecondary),
               ),
             ),
           ],
         ),
       ),
     )
-        .animate(delay: Duration(milliseconds: 100 * index))
+        // FIX: minimum delay of 50 ms so even index=0 has a visible fade-in
+        .animate(delay: Duration(milliseconds: 50 + 100 * index))
         .fadeIn(duration: 400.ms)
         .slideY(begin: -0.2, end: 0, duration: 400.ms);
   }
 }
 
-class _FeatureCard extends StatefulWidget {
+// ── Feature card ─────────────────────────────────────────────────────────────
+
+class _FeatureCard extends StatelessWidget {
   final IconData icon;
-  final String title, subtitle;
+  final String title;
+  final String subtitle;
   final List<Color> gradient;
   final Color glowColor;
   final bool locked;
+  final bool loading;
   final VoidCallback onTap;
   final int index;
 
@@ -398,61 +439,49 @@ class _FeatureCard extends StatefulWidget {
     required this.gradient,
     required this.glowColor,
     required this.locked,
+    required this.loading,
     required this.onTap,
     required this.index,
   });
 
   @override
-  State<_FeatureCard> createState() => _FeatureCardState();
-}
-
-class _FeatureCardState extends State<_FeatureCard>
-    with SingleTickerProviderStateMixin {
-  late AnimationController _ctrl;
-  late Animation<double> _scale;
-
-  @override
-  void initState() {
-    super.initState();
-    _ctrl = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 100),
-      lowerBound: 0.95,
-      upperBound: 1.0,
-      value: 1.0,
-    );
-    _scale = _ctrl;
-  }
-
-  @override
-  void dispose() {
-    _ctrl.dispose();
-    super.dispose();
-  }
-
-  @override
   Widget build(BuildContext context) {
     final c = context.c;
+
     return GlassNeumorphicCard(
-      glowColor: widget.glowColor,
-      onTap: widget.locked ? null : widget.onTap,
+      glowColor: glowColor,
+      // Disable tap while loading to avoid ghost presses
+      onTap: (locked || loading) ? null : onTap,
       padding: const EdgeInsets.all(18),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           GlassIconContainer(
-            icon: widget.icon,
-            gradient: widget.gradient,
-            glowColor: widget.glowColor,
+            icon: icon,
+            gradient: gradient,
+            glowColor: glowColor,
           ),
           const Spacer(),
-          if (widget.locked)
+          if (locked && !loading)
             Padding(
               padding: const EdgeInsets.only(bottom: 6),
-              child: Icon(Icons.lock_outline, color: c.textSecondary, size: 15),
+              child: Icon(Icons.lock_outline,
+                  color: c.textSecondary, size: 15),
+            ),
+          if (loading)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: SizedBox(
+                width: 14,
+                height: 14,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: c.textSecondary,
+                ),
+              ),
             ),
           Text(
-            widget.title,
+            title,
             style: TextStyle(
               color: c.textPrimary,
               fontSize: 15,
@@ -461,14 +490,18 @@ class _FeatureCardState extends State<_FeatureCard>
           ),
           const SizedBox(height: 3),
           Text(
-            widget.subtitle,
+            subtitle,
             style: TextStyle(color: c.textSecondary, fontSize: 12),
           ),
         ],
       ),
     )
-        .animate(delay: Duration(milliseconds: 100 * widget.index))
+        .animate(delay: Duration(milliseconds: 80 + 100 * index))
         .fadeIn(duration: 400.ms)
-        .slideY(begin: 0.2, end: 0, duration: 400.ms, curve: Curves.easeOutCubic);
+        .slideY(
+            begin: 0.2,
+            end: 0,
+            duration: 400.ms,
+            curve: Curves.easeOutCubic);
   }
 }
