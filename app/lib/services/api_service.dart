@@ -4,10 +4,6 @@ import 'dart:io';
 
 import 'package:http/http.dart' as http;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Custom exception — always thrown instead of raw errors crashing the app
-// ─────────────────────────────────────────────────────────────────────────────
-
 class ApiException implements Exception {
   final String message;
   final int? statusCode;
@@ -24,29 +20,23 @@ class ApiException implements Exception {
   @override
   String toString() => message;
 
-  /// User-friendly message shown in UI
   String get userMessage {
-    if (isNetworkError) return 'No internet connection. Please check your network.';
+    if (isNetworkError)
+      return 'No internet connection. Please check your network.';
     if (isTimeout) return 'Server is waking up, please try again in a moment.';
     if (statusCode == 429) return 'Too many requests. Please slow down.';
     if (statusCode == 403) return 'Access denied. Your key may be expired.';
-    if (statusCode != null && statusCode! >= 500) return 'Server error. Please try again.';
+    if (statusCode != null && statusCode! >= 500)
+      return 'Server error. Please try again.';
     return message;
   }
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// ApiService
-// ─────────────────────────────────────────────────────────────────────────────
 
 class ApiService {
   static const String _base =
       'https://xissin-app-backend-production.up.railway.app';
 
-  /// Max number of retry attempts
   static const int _maxRetries = 3;
-
-  /// Base delay between retries (doubles each attempt: 1s → 2s → 4s)
   static const Duration _baseDelay = Duration(seconds: 1);
 
   static Map<String, String> get _headers => {
@@ -54,10 +44,6 @@ class ApiService {
         'Accept': 'application/json',
       };
 
-  // ── Core retry engine ─────────────────────────────────────────────────────
-
-  /// Executes [request] with automatic retry + exponential backoff.
-  /// [coldStart] extends the first-attempt timeout to handle Railway sleep.
   static Future<Map<String, dynamic>> _requestWithRetry(
     Future<http.Response> Function(Duration timeout) request, {
     bool coldStart = false,
@@ -67,7 +53,6 @@ class ApiService {
     while (true) {
       attempt++;
 
-      // First attempt gets a longer timeout to absorb Railway cold starts (~3s)
       final timeout = (attempt == 1 && coldStart)
           ? const Duration(seconds: 20)
           : Duration(seconds: 10 + (attempt * 2));
@@ -75,12 +60,10 @@ class ApiService {
       try {
         final res = await request(timeout);
 
-        // ── Success ──────────────────────────────────────────────────────────
         if (res.statusCode >= 200 && res.statusCode < 300) {
           return jsonDecode(res.body) as Map<String, dynamic>;
         }
 
-        // ── Server returned an error body ────────────────────────────────────
         Map<String, dynamic> body = {};
         try {
           body = jsonDecode(res.body) as Map<String, dynamic>;
@@ -90,19 +73,15 @@ class ApiService {
             body['message'] as String? ??
             'Request failed (${res.statusCode})';
 
-        // 4xx errors are NOT retried — they are user/logic errors
         if (res.statusCode >= 400 && res.statusCode < 500) {
           throw ApiException(message: serverMsg, statusCode: res.statusCode);
         }
 
-        // 5xx — retry if attempts remain
         if (attempt >= _maxRetries) {
           throw ApiException(message: serverMsg, statusCode: res.statusCode);
         }
-
       } on ApiException {
-        rethrow; // Already formatted, don't wrap again
-
+        rethrow;
       } on SocketException {
         if (attempt >= _maxRetries) {
           throw const ApiException(
@@ -110,7 +89,6 @@ class ApiService {
             isNetworkError: true,
           );
         }
-
       } on TimeoutException {
         if (attempt >= _maxRetries) {
           throw const ApiException(
@@ -118,32 +96,56 @@ class ApiService {
             isTimeout: true,
           );
         }
-
       } on FormatException {
         throw const ApiException(message: 'Invalid response from server.');
-
       } catch (e) {
         if (attempt >= _maxRetries) {
           throw ApiException(message: 'Unexpected error: $e');
         }
       }
 
-      // ── Wait before retrying (exponential backoff) ────────────────────────
-      final delay = _baseDelay * (1 << (attempt - 1)); // 1s, 2s, 4s
+      final delay = _baseDelay * (1 << (attempt - 1));
       await Future.delayed(delay);
     }
   }
 
-  // ── Status (BUG 2 FIX — was never called before) ─────────────────────────
+  // ── Announcements ─────────────────────────────────────────────────────────
 
-  /// Called on every app launch.
-  /// Returns maintenance mode, min version, and feature flags from Railway env.
+  static Future<List<Map<String, dynamic>>> getAnnouncements() async {
+    int attempt = 0;
+    while (true) {
+      attempt++;
+      final timeout = Duration(seconds: 10 + (attempt * 2));
+      try {
+        final res = await http
+            .get(Uri.parse('$_base/api/announcements'), headers: _headers)
+            .timeout(timeout);
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          final decoded = jsonDecode(res.body);
+          if (decoded is List) {
+            return decoded.cast<Map<String, dynamic>>();
+          }
+          if (decoded is Map && decoded['data'] is List) {
+            return (decoded['data'] as List).cast<Map<String, dynamic>>();
+          }
+          return [];
+        }
+        if (attempt >= _maxRetries) return [];
+      } catch (_) {
+        if (attempt >= _maxRetries) return [];
+      }
+      await Future.delayed(Duration(seconds: 1 << (attempt - 1)));
+    }
+  }
+
+  // ── Status ────────────────────────────────────────────────────────────────
+
   static Future<Map<String, dynamic>> getStatus() async {
     return _requestWithRetry(
       (timeout) => http
           .get(Uri.parse('$_base/api/status'), headers: _headers)
           .timeout(timeout),
-      coldStart: true, // First call on launch — Railway may be sleeping
+      coldStart: true,
     );
   }
 
@@ -155,16 +157,18 @@ class ApiService {
     String? deviceInfo,
   }) async {
     return _requestWithRetry(
-      (timeout) => http.post(
-        Uri.parse('$_base/api/users/register'),
-        headers: _headers,
-        body: jsonEncode({
-          'user_id': userId,
-          'username': username,
-          'device_info': deviceInfo,
-        }),
-      ).timeout(timeout),
-      coldStart: true, // First launch — Railway may be sleeping
+      (timeout) => http
+          .post(
+            Uri.parse('$_base/api/users/register'),
+            headers: _headers,
+            body: jsonEncode({
+              'user_id': userId,
+              'username': username,
+              'device_info': deviceInfo,
+            }),
+          )
+          .timeout(timeout),
+      coldStart: true,
     );
   }
 
@@ -185,15 +189,17 @@ class ApiService {
     String? username,
   }) async {
     return _requestWithRetry(
-      (timeout) => http.post(
-        Uri.parse('$_base/api/keys/redeem'),
-        headers: _headers,
-        body: jsonEncode({
-          'key': key,
-          'user_id': userId,
-          'username': username,
-        }),
-      ).timeout(timeout),
+      (timeout) => http
+          .post(
+            Uri.parse('$_base/api/keys/redeem'),
+            headers: _headers,
+            body: jsonEncode({
+              'key': key,
+              'user_id': userId,
+              'username': username,
+            }),
+          )
+          .timeout(timeout),
     );
   }
 
@@ -221,16 +227,17 @@ class ApiService {
     int rounds = 1,
   }) async {
     return _requestWithRetry(
-      // SMS bomb is slow — give it a much longer base timeout
-      (timeout) => http.post(
-        Uri.parse('$_base/api/sms/bomb'),
-        headers: _headers,
-        body: jsonEncode({
-          'phone': phone,
-          'user_id': userId,
-          'rounds': rounds,
-        }),
-      ).timeout(const Duration(seconds: 90)), // Fixed long timeout for SMS
+      (timeout) => http
+          .post(
+            Uri.parse('$_base/api/sms/bomb'),
+            headers: _headers,
+            body: jsonEncode({
+              'phone': phone,
+              'user_id': userId,
+              'rounds': rounds,
+            }),
+          )
+          .timeout(const Duration(seconds: 90)),
     );
   }
 
