@@ -1,7 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_animate/flutter_animate.dart';
+import 'package:confetti/confetti.dart';
 import '../theme/app_theme.dart';
 import '../services/api_service.dart';
+import '../widgets/glass_neumorphic_card.dart';
+import '../widgets/shimmer_skeleton.dart';
+import '../widgets/animated_counter.dart';
+import '../widgets/service_status_indicator.dart';
+import '../widgets/haptic_button.dart';
 
 class SmsBomberScreen extends StatefulWidget {
   final String userId;
@@ -13,20 +20,22 @@ class SmsBomberScreen extends StatefulWidget {
 
 class _SmsBomberScreenState extends State<SmsBomberScreen> {
   final _phoneCtrl = TextEditingController();
+  final _confettiController = ConfettiController(duration: const Duration(seconds: 3));
   int _rounds = 1;
   bool _loading = false;
   Map<String, dynamic>? _result;
+  bool _showConfetti = false;
 
   @override
   void dispose() {
     _phoneCtrl.dispose();
+    _confettiController.dispose();
     super.dispose();
   }
 
   Future<void> _fire() async {
     final phone = _phoneCtrl.text.trim();
 
-    // ✅ Client-side validation — must be exactly 10 digits starting with 9
     if (phone.isEmpty) {
       _snack('Enter a phone number', error: true);
       return;
@@ -44,9 +53,12 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
       return;
     }
 
+    HapticFeedback.heavyImpact();
+    
     setState(() {
       _loading = true;
       _result = null;
+      _showConfetti = false;
     });
     try {
       final data = await ApiService.smsBomb(
@@ -55,6 +67,13 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
         rounds: _rounds,
       );
       setState(() => _result = data);
+      
+      // Trigger confetti on successful completion
+      final sent = data['total_sent'] as int? ?? 0;
+      if (sent > 0) {
+        setState(() => _showConfetti = true);
+        _confettiController.play();
+      }
     } on ApiException catch (e) {
       _snack(e.userMessage, error: true);
     } catch (e) {
@@ -77,8 +96,10 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final c = context.c;
+    
     return Scaffold(
-      backgroundColor: AppColors.background,
+      backgroundColor: c.background,
       appBar: AppBar(
         title: const Text('SMS Bomber'),
         leading: IconButton(
@@ -86,200 +107,220 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
           onPressed: () => Navigator.pop(context),
         ),
       ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // Warning banner
-            Container(
-              padding: const EdgeInsets.all(14),
-              decoration: BoxDecoration(
-                color: AppColors.error.withOpacity(0.08),
-                borderRadius: BorderRadius.circular(14),
-                border: Border.all(color: AppColors.error.withOpacity(0.25)),
-              ),
-              child: const Row(
-                children: [
-                  Icon(Icons.warning_amber_rounded,
-                      color: AppColors.error, size: 18),
-                  SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
-                      'For educational use only. PH numbers (9XXXXXXXXX) only.',
-                      style: TextStyle(
-                          color: AppColors.error, fontSize: 12, height: 1.4),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 26),
-
-            // Phone number
-            const Text('Target Number',
-                style: TextStyle(
-                    color: AppColors.textSecondary,
-                    fontSize: 13,
-                    fontWeight: FontWeight.w500)),
-            const SizedBox(height: 8),
-            TextField(
-              controller: _phoneCtrl,
-              keyboardType: TextInputType.phone,
-              inputFormatters: [
-                FilteringTextInputFormatter.digitsOnly,
-                LengthLimitingTextInputFormatter(10),
-              ],
-              style: const TextStyle(
-                  color: AppColors.textPrimary,
-                  fontSize: 16,
-                  letterSpacing: 1),
-              decoration: InputDecoration(
-                hintText: '9XXXXXXXXX',
-                prefixIcon: const Icon(Icons.phone_android_rounded,
-                    color: AppColors.primary),
-                prefix: const Text('+63 ',
-                    style: TextStyle(
-                        color: AppColors.primary,
-                        fontWeight: FontWeight.bold,
-                        fontSize: 15)),
-                suffixIcon: IconButton(
-                  icon: const Icon(Icons.clear_rounded,
-                      color: AppColors.textSecondary, size: 18),
-                  onPressed: () => _phoneCtrl.clear(),
-                ),
-              ),
-            ),
-            const SizedBox(height: 26),
-
-            // Rounds
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      body: Stack(
+        children: [
+          SingleChildScrollView(
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text('Rounds',
+                // Warning banner
+                GlassNeumorphicCard(
+                  glowColor: c.error,
+                  padding: const EdgeInsets.all(14),
+                  child: Row(
+                    children: [
+                      Icon(Icons.warning_amber_rounded,
+                          color: c.error, size: 18),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          'For educational use only. PH numbers (9XXXXXXXXX) only.',
+                          style: TextStyle(
+                              color: c.error, fontSize: 12, height: 1.4),
+                        ),
+                      ),
+                    ],
+                  ),
+                )
+                    .animate()
+                    .fadeIn(duration: 400.ms)
+                    .slideY(begin: -0.1, end: 0, duration: 400.ms),
+                const SizedBox(height: 26),
+
+                // Service Status
+                ServiceStatusGrid(isLoading: _loading)
+                    .animate(delay: 100.ms)
+                    .fadeIn(duration: 400.ms),
+                const SizedBox(height: 26),
+
+                // Phone number
+                const Text('Target Number',
                     style: TextStyle(
                         color: AppColors.textSecondary,
                         fontSize: 13,
-                        fontWeight: FontWeight.w500)),
-                Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: AppColors.primary.withOpacity(0.15),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Text(
-                    '$_rounds × 14 = ${_rounds * 14} SMS',
-                    style: const TextStyle(
-                        color: AppColors.primary,
-                        fontSize: 12,
-                        fontWeight: FontWeight.bold),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 10),
-            Row(
-              children: List.generate(5, (i) {
-                final n = i + 1;
-                final sel = _rounds == n;
-                return Expanded(
-                  child: GestureDetector(
-                    onTap: () => setState(() => _rounds = n),
-                    child: AnimatedContainer(
-                      duration: const Duration(milliseconds: 150),
-                      margin: EdgeInsets.only(right: i < 4 ? 8 : 0),
-                      padding: const EdgeInsets.symmetric(vertical: 13),
-                      decoration: BoxDecoration(
-                        gradient: sel
-                            ? const LinearGradient(
-                                colors: [
-                                  AppColors.primary,
-                                  AppColors.secondary
-                                ],
-                              )
-                            : null,
-                        color: sel ? null : AppColors.surface,
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(
-                            color:
-                                sel ? AppColors.primary : AppColors.border),
-                        boxShadow: sel
-                            ? [
-                                BoxShadow(
-                                    color:
-                                        AppColors.primary.withOpacity(0.3),
-                                    blurRadius: 8)
-                              ]
-                            : null,
-                      ),
-                      child: Center(
-                        child: Text(
-                          '$n',
-                          style: TextStyle(
-                            color: sel
-                                ? Colors.white
-                                : AppColors.textSecondary,
+                        fontWeight: FontWeight.w500))
+                    .animate(delay: 150.ms)
+                    .fadeIn(duration: 400.ms),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: _phoneCtrl,
+                  keyboardType: TextInputType.phone,
+                  inputFormatters: [
+                    FilteringTextInputFormatter.digitsOnly,
+                    LengthLimitingTextInputFormatter(10),
+                  ],
+                  style: const TextStyle(
+                      color: AppColors.textPrimary,
+                      fontSize: 16,
+                      letterSpacing: 1),
+                  decoration: InputDecoration(
+                    hintText: '9XXXXXXXXX',
+                    prefixIcon: const Icon(Icons.phone_android_rounded,
+                        color: AppColors.primary),
+                    prefix: const Text('+63 ',
+                        style: TextStyle(
+                            color: AppColors.primary,
                             fontWeight: FontWeight.bold,
-                            fontSize: 15,
+                            fontSize: 15)),
+                    suffixIcon: IconButton(
+                      icon: const Icon(Icons.clear_rounded,
+                          color: AppColors.textSecondary, size: 18),
+                      onPressed: () => _phoneCtrl.clear(),
+                    ),
+                  ),
+                )
+                    .animate(delay: 200.ms)
+                    .fadeIn(duration: 400.ms)
+                    .slideX(begin: -0.1, end: 0, duration: 400.ms),
+                const SizedBox(height: 26),
+
+                // Rounds
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text('Rounds',
+                        style: TextStyle(
+                            color: AppColors.textSecondary,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w500)),
+                    Container(
+                      padding:
+                          const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: AppColors.primary.withOpacity(0.15),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Text(
+                        '$_rounds × 14 = ${_rounds * 14} SMS',
+                        style: const TextStyle(
+                            color: AppColors.primary,
+                            fontSize: 12,
+                            fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                  ],
+                )
+                    .animate(delay: 250.ms)
+                    .fadeIn(duration: 400.ms),
+                const SizedBox(height: 10),
+                Row(
+                  children: List.generate(5, (i) {
+                    final n = i + 1;
+                    final sel = _rounds == n;
+                    return Expanded(
+                      child: GestureDetector(
+                        onTap: () {
+                          HapticFeedback.selectionClick();
+                          setState(() => _rounds = n);
+                        },
+                        child: AnimatedContainer(
+                          duration: const Duration(milliseconds: 200),
+                          margin: EdgeInsets.only(right: i < 4 ? 8 : 0),
+                          padding: const EdgeInsets.symmetric(vertical: 13),
+                          decoration: BoxDecoration(
+                            gradient: sel
+                                ? const LinearGradient(
+                                    colors: [
+                                      AppColors.primary,
+                                      AppColors.secondary
+                                    ],
+                                  )
+                                : null,
+                            color: sel ? null : AppColors.surface,
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(
+                                color:
+                                    sel ? AppColors.primary : AppColors.border),
+                            boxShadow: sel
+                                ? [
+                                    BoxShadow(
+                                        color:
+                                            AppColors.primary.withOpacity(0.3),
+                                        blurRadius: 12,
+                                        offset: const Offset(0, 4))
+                                  ]
+                                : null,
+                          ),
+                          child: Center(
+                            child: Text(
+                              '$n',
+                              style: TextStyle(
+                                color: sel
+                                    ? Colors.white
+                                    : AppColors.textSecondary,
+                                fontWeight: FontWeight.bold,
+                                fontSize: 15,
+                              ),
+                            ),
                           ),
                         ),
                       ),
-                    ),
+                    );
+                  }),
+                )
+                    .animate(delay: 300.ms)
+                    .fadeIn(duration: 400.ms),
+                const SizedBox(height: 32),
+
+                // Fire button
+                SizedBox(
+                  width: double.infinity,
+                  child: HapticButton(
+                    hapticType: HapticType.heavy,
+                    onPressed: _loading ? null : _fire,
+                    isLoading: _loading,
+                    child: _loading
+                        ? const SizedBox(
+                            width: 22,
+                            height: 22,
+                            child: CircularProgressIndicator(
+                                color: Colors.white, strokeWidth: 2.5),
+                          )
+                        : const Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(Icons.send_rounded, size: 18),
+                              SizedBox(width: 8),
+                              Text('FIRE',
+                                  style: TextStyle(
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.w900,
+                                      letterSpacing: 3)),
+                            ],
+                          ),
                   ),
-                );
-              }),
-            ),
-            const SizedBox(height: 32),
+                )
+                    .animate(delay: 350.ms)
+                    .fadeIn(duration: 400.ms)
+                    .slideY(begin: 0.2, end: 0, duration: 400.ms),
 
-            // Fire button
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton(
-                onPressed: _loading ? null : _fire,
-                style: ElevatedButton.styleFrom(
-                  padding: const EdgeInsets.symmetric(vertical: 18),
-                  backgroundColor: AppColors.primary,
-                  disabledBackgroundColor:
-                      AppColors.primary.withOpacity(0.4),
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(18)),
-                ),
-                child: _loading
-                    ? const SizedBox(
-                        width: 22,
-                        height: 22,
-                        child: CircularProgressIndicator(
-                            color: Colors.white, strokeWidth: 2.5),
-                      )
-                    : const Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Icon(Icons.send_rounded, size: 18),
-                          SizedBox(width: 8),
-                          Text('FIRE',
-                              style: TextStyle(
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.w900,
-                                  letterSpacing: 3)),
-                        ],
-                      ),
-              ),
+                // Results
+                if (_result != null) ...[
+                  const SizedBox(height: 30),
+                  _ResultSection(result: _result!),
+                ],
+              ],
             ),
-
-            // Results
-            if (_result != null) ...[
-              const SizedBox(height: 30),
-              _ResultSection(result: _result!),
-            ],
-          ],
-        ),
+          ),
+          // Confetti overlay
+          if (_showConfetti)
+            CelebrationConfetti(controller: _confettiController),
+        ],
       ),
     );
   }
 }
-
-// ── Results section ───────────────────────────────────────────────────────────
 
 class _ResultSection extends StatelessWidget {
   final Map<String, dynamic> result;
@@ -304,44 +345,46 @@ class _ResultSection extends StatelessWidget {
           children: [
             Expanded(
                 child: _StatBox(
-                    label: 'Sent', value: '$sent', color: AppColors.accent)),
+                    label: 'Sent', value: sent, color: AppColors.accent)),
             const SizedBox(width: 12),
             Expanded(
                 child: _StatBox(
                     label: 'Failed',
-                    value: '$failed',
+                    value: failed,
                     color: AppColors.error)),
           ],
         ),
         const SizedBox(height: 16),
-        ...results.map((r) => _ServiceRow(data: r)),
+        ...results.asMap().entries.map((e) => _ServiceRow(data: e.value, index: e.key)),
       ],
-    );
+    )
+        .animate()
+        .fadeIn(duration: 400.ms)
+        .slideY(begin: 0.1, end: 0, duration: 400.ms);
   }
 }
 
 class _StatBox extends StatelessWidget {
-  final String label, value;
+  final String label;
+  final int value;
   final Color color;
   const _StatBox(
       {required this.label, required this.value, required this.color});
 
   @override
   Widget build(BuildContext context) {
-    return Container(
+    return GlassNeumorphicCard(
+      glowColor: color,
       padding: const EdgeInsets.symmetric(vertical: 18),
-      decoration: BoxDecoration(
-        color: color.withOpacity(0.1),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: color.withOpacity(0.3)),
-      ),
       child: Column(
         children: [
-          Text(value,
-              style: TextStyle(
-                  color: color,
-                  fontSize: 26,
-                  fontWeight: FontWeight.bold)),
+          AnimatedCounter(
+            targetValue: value,
+            style: TextStyle(
+                color: color,
+                fontSize: 26,
+                fontWeight: FontWeight.bold),
+          ),
           const SizedBox(height: 4),
           Text(label,
               style: const TextStyle(
@@ -354,7 +397,8 @@ class _StatBox extends StatelessWidget {
 
 class _ServiceRow extends StatelessWidget {
   final Map data;
-  const _ServiceRow({required this.data});
+  final int index;
+  const _ServiceRow({required this.data, required this.index});
 
   @override
   Widget build(BuildContext context) {
@@ -398,6 +442,9 @@ class _ServiceRow extends StatelessWidget {
           ),
         ],
       ),
-    );
+    )
+        .animate(delay: Duration(milliseconds: 50 * index))
+        .fadeIn(duration: 300.ms)
+        .slideX(begin: 0.1, end: 0, duration: 300.ms);
   }
 }
