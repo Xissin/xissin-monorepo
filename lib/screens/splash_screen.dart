@@ -1,10 +1,14 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_animate/flutter_animate.dart';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import '../theme/app_theme.dart';
 import '../services/api_service.dart';
+import '../widgets/pulse_animation.dart';
+import '../widgets/shimmer_skeleton.dart';
 import 'home_screen.dart';
 
 class SplashScreen extends StatefulWidget {
@@ -15,20 +19,19 @@ class SplashScreen extends StatefulWidget {
 }
 
 class _SplashScreenState extends State<SplashScreen>
-    with SingleTickerProviderStateMixin {
+    with TickerProviderStateMixin {
   late AnimationController _ctrl;
+  late AnimationController _pulseController;
   late Animation<double> _fade;
   late Animation<double> _scale;
+  late Animation<double> _pulse;
 
   String _status = 'Initializing...';
-
-  // BUG 6 FIX — track retry count so we can show a manual retry button
   int _retryCount = 0;
   static const int _maxAutoRetries = 3;
   bool _showRetryButton = false;
   String? _errorMessage;
 
-  // Encrypted storage — replaces SharedPreferences
   static const _storage = FlutterSecureStorage(
     aOptions: AndroidOptions(encryptedSharedPreferences: true),
     iOptions: IOSOptions(accessibility: KeychainAccessibility.first_unlock),
@@ -38,18 +41,27 @@ class _SplashScreenState extends State<SplashScreen>
   void initState() {
     super.initState();
     _ctrl = AnimationController(
-        vsync: this, duration: const Duration(milliseconds: 1000));
+        vsync: this, duration: const Duration(milliseconds: 1200));
+    _pulseController = AnimationController(
+        vsync: this, duration: const Duration(milliseconds: 2000));
+    
     _fade = CurvedAnimation(parent: _ctrl, curve: Curves.easeIn);
-    _scale = Tween<double>(begin: 0.85, end: 1.0).animate(
+    _scale = Tween<double>(begin: 0.7, end: 1.0).animate(
       CurvedAnimation(parent: _ctrl, curve: Curves.easeOutBack),
     );
+    _pulse = Tween<double>(begin: 0.9, end: 1.1).animate(
+      CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut),
+    );
+    
     _ctrl.forward();
+    _pulseController.repeat(reverse: true);
     _initApp();
   }
 
   @override
   void dispose() {
     _ctrl.dispose();
+    _pulseController.dispose();
     super.dispose();
   }
 
@@ -77,21 +89,18 @@ class _SplashScreenState extends State<SplashScreen>
   }
 
   Future<void> _initApp() async {
-    // Reset UI state on each attempt
     setState(() {
       _showRetryButton = false;
       _errorMessage = null;
     });
 
-    await Future.delayed(const Duration(milliseconds: 700));
+    await Future.delayed(const Duration(milliseconds: 800));
 
     try {
-      // ── BUG 2 FIX — Check maintenance mode & min version FIRST ─────────────
       _setStatus('Checking server status...');
       try {
         final status = await ApiService.getStatus();
 
-        // Maintenance mode check
         if (status['maintenance'] == true) {
           final msg = status['maintenance_message'] as String? ??
               'Xissin is under maintenance. Please check back later.';
@@ -99,44 +108,36 @@ class _SplashScreenState extends State<SplashScreen>
           return;
         }
 
-        // Minimum version check
         final minVersion = status['min_app_version'] as String? ?? '1.0.0';
-        const currentVersion = '1.0.0'; // bump this with each release
+        const currentVersion = '1.0.0';
         if (_isVersionOutdated(currentVersion, minVersion)) {
           _showUpdateDialog(minVersion);
           return;
         }
-      } catch (_) {
-        // If status check fails, we still proceed — don't hard-block the app
-        // on a non-critical endpoint failure
-      }
+      } catch (_) {}
 
-      // ── Get device ID ────────────────────────────────────────────────────────
       _setStatus('Getting device info...');
       final userId = await _getOrCreateUserId();
 
-      // ── Register with backend ─────────────────────────────────────────────
       _setStatus('Connecting to server...');
       final registerResponse = await ApiService.registerUser(
         userId: userId,
         deviceInfo: Platform.isAndroid ? 'android' : 'ios',
       );
 
-      // ── BUG 1 FIX — Check if user is banned ──────────────────────────────
       if (registerResponse['banned'] == true) {
         _showBannedDialog();
         return;
       }
 
-      // ── All good — go to home ─────────────────────────────────────────────
       _setStatus('Ready!');
-      await Future.delayed(const Duration(milliseconds: 500));
+      await Future.delayed(const Duration(milliseconds: 600));
 
       if (!mounted) return;
       Navigator.pushReplacement(
         context,
         PageRouteBuilder(
-          transitionDuration: const Duration(milliseconds: 400),
+          transitionDuration: const Duration(milliseconds: 500),
           pageBuilder: (_, __, ___) => HomeScreen(userId: userId),
           transitionsBuilder: (_, anim, __, child) =>
               FadeTransition(opacity: anim, child: child),
@@ -149,7 +150,6 @@ class _SplashScreenState extends State<SplashScreen>
     }
   }
 
-  // ── BUG 6 FIX — max retries + manual retry button ────────────────────────
   void _handleError(String message) {
     _retryCount++;
     if (_retryCount < _maxAutoRetries) {
@@ -158,7 +158,6 @@ class _SplashScreenState extends State<SplashScreen>
         if (mounted) _initApp();
       });
     } else {
-      // Max auto-retries hit — show manual retry button
       setState(() {
         _errorMessage = message;
         _showRetryButton = true;
@@ -172,7 +171,6 @@ class _SplashScreenState extends State<SplashScreen>
     _initApp();
   }
 
-  // ── BUG 1 FIX — banned dialog ────────────────────────────────────────────
   void _showBannedDialog() {
     setState(() => _status = 'Account restricted.');
     if (!mounted) return;
@@ -209,7 +207,6 @@ class _SplashScreenState extends State<SplashScreen>
     );
   }
 
-  // ── BUG 2 FIX — maintenance dialog ───────────────────────────────────────
   void _showMaintenanceDialog(String message) {
     setState(() => _status = 'Under maintenance.');
     if (!mounted) return;
@@ -247,7 +244,6 @@ class _SplashScreenState extends State<SplashScreen>
     );
   }
 
-  // ── BUG 2 FIX — force update dialog ──────────────────────────────────────
   void _showUpdateDialog(String minVersion) {
     setState(() => _status = 'Update required.');
     if (!mounted) return;
@@ -285,7 +281,6 @@ class _SplashScreenState extends State<SplashScreen>
     );
   }
 
-  /// Compares semver strings. Returns true if current < minimum.
   bool _isVersionOutdated(String current, String minimum) {
     try {
       final cur = current.split('.').map(int.parse).toList();
@@ -318,27 +313,72 @@ class _SplashScreenState extends State<SplashScreen>
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                Container(
-                  width: 110,
-                  height: 110,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    gradient: const LinearGradient(
-                      colors: [AppColors.primary, AppColors.secondary],
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                    ),
-                    boxShadow: [
-                      BoxShadow(
-                        color: AppColors.primary.withOpacity(0.45),
-                        blurRadius: 36,
-                        spreadRadius: 6,
-                      ),
-                    ],
-                  ),
-                  child: const Icon(Icons.bolt_rounded,
-                      size: 58, color: Colors.white),
-                ),
+                // Pulsing rings behind logo
+                AnimatedBuilder(
+                  animation: _pulse,
+                  builder: (context, child) {
+                    return Stack(
+                      alignment: Alignment.center,
+                      children: [
+                        // Outer ring
+                        Transform.scale(
+                          scale: _pulse.value,
+                          child: Container(
+                            width: 160,
+                            height: 160,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              border: Border.all(
+                                color: AppColors.primary.withOpacity(0.2),
+                                width: 2,
+                              ),
+                            ),
+                          ),
+                        ),
+                        // Middle ring
+                        Transform.scale(
+                          scale: _pulse.value * 0.9,
+                          child: Container(
+                            width: 130,
+                            height: 130,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              border: Border.all(
+                                color: AppColors.secondary.withOpacity(0.25),
+                                width: 2,
+                              ),
+                            ),
+                          ),
+                        ),
+                        // Logo container
+                        Container(
+                          width: 110,
+                          height: 110,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            gradient: const LinearGradient(
+                              colors: [AppColors.primary, AppColors.secondary],
+                              begin: Alignment.topLeft,
+                              end: Alignment.bottomRight,
+                            ),
+                            boxShadow: [
+                              BoxShadow(
+                                color: AppColors.primary.withOpacity(0.45),
+                                blurRadius: 36,
+                                spreadRadius: 6,
+                              ),
+                            ],
+                          ),
+                          child: const Icon(Icons.bolt_rounded,
+                              size: 58, color: Colors.white),
+                        ),
+                      ],
+                    );
+                  },
+                )
+                    .animate()
+                    .fadeIn(duration: 600.ms)
+                    .scale(begin: const Offset(0.8, 0.8), duration: 600.ms),
                 const SizedBox(height: 30),
                 ShaderMask(
                   shaderCallback: (b) => const LinearGradient(
@@ -353,7 +393,10 @@ class _SplashScreenState extends State<SplashScreen>
                       letterSpacing: 10,
                     ),
                   ),
-                ),
+                )
+                    .animate(delay: 200.ms)
+                    .fadeIn(duration: 500.ms)
+                    .slideY(begin: 0.3, end: 0, duration: 500.ms),
                 const SizedBox(height: 6),
                 const Text(
                   'MULTI-TOOL',
@@ -363,10 +406,12 @@ class _SplashScreenState extends State<SplashScreen>
                     fontWeight: FontWeight.w600,
                     letterSpacing: 5,
                   ),
-                ),
+                )
+                    .animate(delay: 300.ms)
+                    .fadeIn(duration: 500.ms)
+                    .slideY(begin: 0.3, end: 0, duration: 500.ms),
                 const SizedBox(height: 70),
 
-                // BUG 6 FIX — show spinner OR retry button
                 if (!_showRetryButton) ...[
                   const SizedBox(
                     width: 26,
@@ -375,7 +420,9 @@ class _SplashScreenState extends State<SplashScreen>
                       color: AppColors.primary,
                       strokeWidth: 2.5,
                     ),
-                  ),
+                  )
+                      .animate(delay: 400.ms)
+                      .fadeIn(duration: 400.ms),
                   const SizedBox(height: 14),
                   Text(
                     _status,
@@ -383,10 +430,20 @@ class _SplashScreenState extends State<SplashScreen>
                       color: AppColors.textSecondary,
                       fontSize: 13,
                     ),
-                  ),
+                  )
+                      .animate(delay: 500.ms)
+                      .fadeIn(duration: 400.ms)
+                      .shimmer(
+                        duration: 1500.ms,
+                        delay: 800.ms,
+                        color: AppColors.textSecondary.withOpacity(0.3),
+                      ),
                 ] else ...[
                   const Icon(Icons.wifi_off_rounded,
-                      color: AppColors.error, size: 32),
+                      color: AppColors.error, size: 32)
+                      .animate()
+                      .fadeIn(duration: 400.ms)
+                      .shake(delay: 200.ms, duration: 400.ms),
                   const SizedBox(height: 12),
                   Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 40),
@@ -412,7 +469,10 @@ class _SplashScreenState extends State<SplashScreen>
                       shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(16)),
                     ),
-                  ),
+                  )
+                      .animate(delay: 200.ms)
+                      .fadeIn(duration: 400.ms)
+                      .slideY(begin: 0.2, end: 0, duration: 400.ms),
                 ],
               ],
             ),

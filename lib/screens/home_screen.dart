@@ -1,8 +1,14 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
+import 'package:flutter_animate/flutter_animate.dart';
 import '../theme/app_theme.dart';
 import '../services/api_service.dart';
 import '../services/theme_service.dart';
+import '../widgets/glass_neumorphic_card.dart';
+import '../widgets/shimmer_skeleton.dart';
+import '../widgets/staggered_grid.dart';
+import '../widgets/haptic_button.dart';
 import 'sms_bomber_screen.dart';
 import 'key_screen.dart';
 import 'about_screen.dart';
@@ -18,12 +24,8 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   bool _hasKey = false;
   bool _loading = true;
-
-  // Announcements
   List<Map<String, dynamic>> _announcements = [];
   final Set<String> _dismissedIds = {};
-
-  // ── Init ──────────────────────────────────────────────────────────────────
 
   @override
   void initState() {
@@ -58,30 +60,54 @@ class _HomeScreenState extends State<HomeScreen> {
     } catch (_) {}
   }
 
-  // ── Navigation ────────────────────────────────────────────────────────────
-
   void _goToSms() {
-    if (!_hasKey) { _showNoKeyDialog(); return; }
+    if (!_hasKey) {
+      _showNoKeyDialog();
+      return;
+    }
+    HapticFeedback.mediumImpact();
     Navigator.push(
       context,
-      MaterialPageRoute(builder: (_) => SmsBomberScreen(userId: widget.userId)),
+      PageRouteBuilder(
+        transitionDuration: const Duration(milliseconds: 400),
+        pageBuilder: (_, __, ___) => SmsBomberScreen(userId: widget.userId),
+        transitionsBuilder: (_, anim, __, child) => SlideTransition(
+          position: Tween<Offset>(
+            begin: const Offset(1.0, 0.0),
+            end: Offset.zero,
+          ).animate(CurvedAnimation(parent: anim, curve: Curves.easeOutCubic)),
+          child: child,
+        ),
+      ),
     );
   }
 
   void _goToKeys() async {
+    HapticFeedback.selectionClick();
     await Navigator.push(
       context,
-      MaterialPageRoute(builder: (_) => KeyScreen(userId: widget.userId)),
+      PageRouteBuilder(
+        transitionDuration: const Duration(milliseconds: 400),
+        pageBuilder: (_, __, ___) => KeyScreen(userId: widget.userId),
+        transitionsBuilder: (_, anim, __, child) => SlideTransition(
+          position: Tween<Offset>(
+            begin: const Offset(1.0, 0.0),
+            end: Offset.zero,
+          ).animate(CurvedAnimation(parent: anim, curve: Curves.easeOutCubic)),
+          child: child,
+        ),
+      ),
     );
     _refreshKeyStatus();
   }
 
   void _goToAbout() {
+    HapticFeedback.selectionClick();
     Navigator.push(context, MaterialPageRoute(builder: (_) => const AboutScreen()));
   }
 
   void _showNoKeyDialog() {
-    final c = AppColors.of(context);
+    final c = context.c;
     showDialog(
       context: context,
       builder: (_) => AlertDialog(
@@ -107,13 +133,10 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  // ── Build ─────────────────────────────────────────────────────────────────
-
   @override
   Widget build(BuildContext context) {
-    final c = AppColors.of(context);
+    final c = context.c;
 
-    // Visible (non-dismissed) announcements
     final visible = _announcements
         .where((a) => !_dismissedIds.contains(a['id']?.toString()))
         .toList();
@@ -129,28 +152,26 @@ class _HomeScreenState extends State<HomeScreen> {
           child: CustomScrollView(
             physics: const AlwaysScrollableScrollPhysics(),
             slivers: [
-              // ── Header ────────────────────────────────────────────────────
               SliverToBoxAdapter(child: _buildHeader(c)),
-
-              // ── Announcements ─────────────────────────────────────────────
               if (visible.isNotEmpty)
                 SliverToBoxAdapter(
                   child: Padding(
                     padding: const EdgeInsets.only(top: 8),
                     child: Column(
                       children: visible
-                          .map((a) => _AnnouncementBanner(
-                                announcement: a,
-                                onDismiss: () => setState(() =>
-                                    _dismissedIds.add(a['id']?.toString() ?? '')),
+                          .asMap()
+                          .entries
+                          .map((e) => _AnnouncementBanner(
+                                announcement: e.value,
+                                onDismiss: () => setState(
+                                    () => _dismissedIds.add(e.value['id']?.toString() ?? '')),
                                 c: c,
+                                index: e.key,
                               ))
                           .toList(),
                     ),
                   ),
                 ),
-
-              // ── Features label ─────────────────────────────────────────────
               SliverToBoxAdapter(
                 child: Padding(
                   padding: const EdgeInsets.fromLTRB(22, 28, 22, 14),
@@ -164,8 +185,6 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ),
               ),
-
-              // ── Feature grid ───────────────────────────────────────────────
               SliverPadding(
                 padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
                 sliver: SliverGrid(
@@ -178,6 +197,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       glowColor: c.primary,
                       locked: !_hasKey,
                       onTap: _goToSms,
+                      index: 0,
                     ),
                     _FeatureCard(
                       icon: Icons.vpn_key_rounded,
@@ -187,6 +207,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       glowColor: c.secondary,
                       locked: false,
                       onTap: _goToKeys,
+                      index: 1,
                     ),
                     _FeatureCard(
                       icon: Icons.info_outline_rounded,
@@ -196,6 +217,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       glowColor: const Color(0xFFFFA726),
                       locked: false,
                       onTap: _goToAbout,
+                      index: 2,
                     ),
                   ]),
                   gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
@@ -212,8 +234,6 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
     );
   }
-
-  // ── Header ────────────────────────────────────────────────────────────────
 
   Widget _buildHeader(XissinColors c) {
     final themeService = context.watch<ThemeService>();
@@ -244,43 +264,41 @@ class _HomeScreenState extends State<HomeScreen> {
                 style: TextStyle(color: c.textSecondary, fontSize: 13),
               ),
             ],
-          ),
-          // 🌙 Theme toggle only — pull-to-refresh replaces the refresh button
-          GestureDetector(
-            onTap: () => themeService.toggle(),
-            child: Container(
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                color: c.surface,
-                borderRadius: BorderRadius.circular(14),
-                border: Border.all(color: c.border),
-              ),
-              child: Icon(
-                themeService.isDark
-                    ? Icons.light_mode_rounded
-                    : Icons.dark_mode_rounded,
-                color: c.textSecondary,
-                size: 20,
-              ),
-            ),
-          ),
+          )
+              .animate()
+              .fadeIn(duration: 500.ms)
+              .slideX(begin: -0.2, end: 0, duration: 500.ms),
+          HapticIconButton(
+            icon: themeService.isDark
+                ? Icons.light_mode_rounded
+                : Icons.dark_mode_rounded,
+            onPressed: () {
+              HapticFeedback.selectionClick();
+              themeService.toggle();
+            },
+            color: c.textSecondary,
+            backgroundColor: c.surface,
+          )
+              .animate()
+              .fadeIn(duration: 500.ms)
+              .scale(begin: const Offset(0.8, 0.8), duration: 500.ms),
         ],
       ),
     );
   }
 }
 
-// ── Announcement Banner ───────────────────────────────────────────────────────
-
 class _AnnouncementBanner extends StatelessWidget {
   final Map<String, dynamic> announcement;
   final VoidCallback onDismiss;
   final XissinColors c;
+  final int index;
 
   const _AnnouncementBanner({
     required this.announcement,
     required this.onDismiss,
     required this.c,
+    required this.index,
   });
 
   Color _typeColor(String? type) {
@@ -288,7 +306,7 @@ class _AnnouncementBanner extends StatelessWidget {
       case 'warning': return const Color(0xFFFFA726);
       case 'error':   return const Color(0xFFFF6B6B);
       case 'success': return const Color(0xFF7EE7C1);
-      default:        return const Color(0xFF5B8CFF); // info
+      default:        return const Color(0xFF5B8CFF);
     }
   }
 
@@ -310,15 +328,10 @@ class _AnnouncementBanner extends StatelessWidget {
     final icon  = _typeIcon(type);
 
     return Padding(
-      padding: const EdgeInsets.fromLTRB(22, 0, 22, 0),
-      child: Container(
-        margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.fromLTRB(22, 0, 22, 8),
+      child: GlassNeumorphicCard(
+        glowColor: color,
         padding: const EdgeInsets.fromLTRB(14, 10, 10, 10),
-        decoration: BoxDecoration(
-          color: color.withOpacity(0.08),
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: color.withOpacity(0.35)),
-        ),
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -350,7 +363,10 @@ class _AnnouncementBanner extends StatelessWidget {
               ),
             ),
             GestureDetector(
-              onTap: onDismiss,
+              onTap: () {
+                HapticFeedback.selectionClick();
+                onDismiss();
+              },
               child: Padding(
                 padding: const EdgeInsets.all(4),
                 child: Icon(Icons.close_rounded, size: 14, color: c.textSecondary),
@@ -359,11 +375,12 @@ class _AnnouncementBanner extends StatelessWidget {
           ],
         ),
       ),
-    );
+    )
+        .animate(delay: Duration(milliseconds: 100 * index))
+        .fadeIn(duration: 400.ms)
+        .slideY(begin: -0.2, end: 0, duration: 400.ms);
   }
 }
-
-// ── Feature Card ──────────────────────────────────────────────────────────────
 
 class _FeatureCard extends StatefulWidget {
   final IconData icon;
@@ -372,6 +389,7 @@ class _FeatureCard extends StatefulWidget {
   final Color glowColor;
   final bool locked;
   final VoidCallback onTap;
+  final int index;
 
   const _FeatureCard({
     required this.icon,
@@ -381,6 +399,7 @@ class _FeatureCard extends StatefulWidget {
     required this.glowColor,
     required this.locked,
     required this.onTap,
+    required this.index,
   });
 
   @override
@@ -413,72 +432,43 @@ class _FeatureCardState extends State<_FeatureCard>
 
   @override
   Widget build(BuildContext context) {
-    final c = AppColors.of(context);
-    return GestureDetector(
-      onTapDown: (_) => _ctrl.reverse(),
-      onTapUp: (_) { _ctrl.forward(); widget.onTap(); },
-      onTapCancel: () => _ctrl.forward(),
-      child: ScaleTransition(
-        scale: _scale,
-        child: Container(
-          decoration: BoxDecoration(
-            color: c.surface,
-            borderRadius: BorderRadius.circular(22),
-            border: Border.all(color: c.border, width: 1),
-            boxShadow: [
-              BoxShadow(
-                color: widget.glowColor.withOpacity(0.12),
-                blurRadius: 20,
-                spreadRadius: 2,
-                offset: const Offset(0, 4),
-              ),
-            ],
+    final c = context.c;
+    return GlassNeumorphicCard(
+      glowColor: widget.glowColor,
+      onTap: widget.locked ? null : widget.onTap,
+      padding: const EdgeInsets.all(18),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          GlassIconContainer(
+            icon: widget.icon,
+            gradient: widget.gradient,
+            glowColor: widget.glowColor,
           ),
-          child: Padding(
-            padding: const EdgeInsets.all(18),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Container(
-                  width: 54,
-                  height: 54,
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(colors: widget.gradient),
-                    borderRadius: BorderRadius.circular(16),
-                    boxShadow: [
-                      BoxShadow(
-                        color: widget.glowColor.withOpacity(0.4),
-                        blurRadius: 14,
-                        offset: const Offset(0, 4),
-                      ),
-                    ],
-                  ),
-                  child: Icon(widget.icon, color: Colors.white, size: 26),
-                ),
-                const Spacer(),
-                if (widget.locked)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 6),
-                    child: Icon(Icons.lock_outline, color: c.textSecondary, size: 15),
-                  ),
-                Text(
-                  widget.title,
-                  style: TextStyle(
-                    color: c.textPrimary,
-                    fontSize: 15,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-                const SizedBox(height: 3),
-                Text(
-                  widget.subtitle,
-                  style: TextStyle(color: c.textSecondary, fontSize: 12),
-                ),
-              ],
+          const Spacer(),
+          if (widget.locked)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: Icon(Icons.lock_outline, color: c.textSecondary, size: 15),
+            ),
+          Text(
+            widget.title,
+            style: TextStyle(
+              color: c.textPrimary,
+              fontSize: 15,
+              fontWeight: FontWeight.bold,
             ),
           ),
-        ),
+          const SizedBox(height: 3),
+          Text(
+            widget.subtitle,
+            style: TextStyle(color: c.textSecondary, fontSize: 12),
+          ),
+        ],
       ),
-    );
+    )
+        .animate(delay: Duration(milliseconds: 100 * widget.index))
+        .fadeIn(duration: 400.ms)
+        .slideY(begin: 0.2, end: 0, duration: 400.ms, curve: Curves.easeOutCubic);
   }
 }
