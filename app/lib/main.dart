@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 
 import 'theme/app_theme.dart';
 import 'services/theme_service.dart';
+import 'services/ad_service.dart';
 import 'screens/splash_screen.dart';
 
 void main() async {
@@ -14,6 +15,9 @@ void main() async {
   // Load saved theme BEFORE running the app so there's no flash of wrong theme
   final themeService = ThemeService();
   await themeService.init();
+
+  // Initialise AdMob + restore "Remove Ads" purchase state
+  await AdService.instance.init();
 
   SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
 
@@ -50,7 +54,6 @@ class _XissinAppState extends State<XissinApp> {
     super.dispose();
   }
 
-  /// Update the system UI bars to match the current theme.
   void _applySystemUI(bool isDark) {
     SystemChrome.setSystemUIOverlayStyle(
       SystemUiOverlayStyle(
@@ -67,25 +70,22 @@ class _XissinAppState extends State<XissinApp> {
 
   @override
   Widget build(BuildContext context) {
-    // ChangeNotifierProvider makes ThemeService available to the whole tree
-    return ChangeNotifierProvider<ThemeService>.value(
-      value: widget.themeService,
-      // Consumer rebuilds MaterialApp whenever isDark changes
+    return MultiProvider(
+      providers: [
+        ChangeNotifierProvider<ThemeService>.value(value: widget.themeService),
+        // AdService is a singleton — expose it so any widget can listen
+        ChangeNotifierProvider<AdService>.value(value: AdService.instance),
+      ],
       child: Consumer<ThemeService>(
         builder: (_, themeService, __) {
-          // Keep system bars in sync with the active theme
           _applySystemUI(themeService.isDark);
 
           return MaterialApp(
             title: 'Xissin',
             debugShowCheckedModeBanner: false,
-
-            // ── THE FIX: wire both themes + themeMode ───────────────────────
-            theme: AppTheme.lightTheme,
+            theme:     AppTheme.lightTheme,
             darkTheme: AppTheme.darkTheme,
             themeMode: themeService.isDark ? ThemeMode.dark : ThemeMode.light,
-            // ────────────────────────────────────────────────────────────────
-
             home: const SplashScreen(),
             builder: (context, child) {
               return Column(

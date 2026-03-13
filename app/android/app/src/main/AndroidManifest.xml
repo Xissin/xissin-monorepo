@@ -1,7 +1,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.xissin.app">
 
-    <!-- INTERNET permission — required for Railway API calls -->
+    <!-- INTERNET permission — required for Railway API calls + AdMob -->
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
 
@@ -10,6 +10,12 @@
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
         android:enableOnBackInvokedCallback="true">
+
+        <!-- ── AdMob App ID ─────────────────────────────────────────── -->
+        <meta-data
+            android:name="com.google.android.gms.ads.APPLICATION_ID"
+            android:value="ca-app-pub-7516216593424837~8331813632"/>
+
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -37,5 +43,7 @@
             <action android:name="android.intent.action.PROCESS_TEXT"/>
             <data android:mimeType="text/plain"/>
         </intent>
+        <!-- Required for Google Play Billing (Remove Ads IAP) -->
+        <package android:name="com.android.vending"/>
     </queries>
 </manifest>

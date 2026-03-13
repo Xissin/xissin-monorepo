@@ -254,7 +254,7 @@ tr:hover td{background:rgba(255,255,255,.015)}
       <div class="nav-lbl">Management</div>
       <div class="nav-item" onclick="showPage('users')" data-page="users"><span class="ni">&#128100;</span> Users <span class="nav-badge" id="badge-users" style="display:none"></span></div>
       <div class="nav-item" onclick="showPage('keys')" data-page="keys"><span class="ni">&#128273;</span> Keys</div>
-      <div class="nav-item" onclick="showPage('pricing')" data-page="pricing"><span class="ni">&#128181;</span> Pricing</div>
+      <div class="nav-item" onclick="showPage('pricing')" data-page="pricing"><span class="ni">&#10024;</span> Remove Ads</div>
       <div class="nav-item" onclick="showPage('announcements')" data-page="announcements"><span class="ni">&#128226;</span> Announcements <span class="nav-badge" id="badge-ann" style="display:none"></span></div>
     </div>
     <div class="nav-sec">
@@ -346,40 +346,52 @@ tr:hover td{background:rgba(255,255,255,.015)}
     </div>
 
 
-    <!-- PRICING -->
+    <!-- PRICING / REMOVE ADS -->
     <div class="page" id="page-pricing">
       <div class="ph">
-        <div><h2>Pricing Plans</h2><p>Edit subscription plans shown in the app</p></div>
+        <div><h2>Remove Ads</h2><p>Set the one-time "Remove Ads" purchase price shown in the app</p></div>
         <div class="ph-actions">
-          <button class="btn btn-ghost" onclick="loadPricing()">&#128260; Refresh</button>
-          <button class="btn btn-primary" onclick="savePricing()">&#128190; Save Pricing</button>
+          <button class="btn btn-ghost" onclick="loadRemoveAdsPrice()">&#128260; Refresh</button>
+          <button class="btn btn-primary" onclick="saveRemoveAdsPrice()">&#128190; Save Price</button>
         </div>
       </div>
-
-      <!-- Live Preview -->
-      <div class="sec-title">Preview</div>
-      <div class="pricing-grid" id="pricing-preview">
-        <div class="page-loading"><span class="spin"></span> Loading...</div>
-      </div>
-
-      <!-- Editors -->
-      <div class="sec-title" style="margin-top:8px">Edit Plans</div>
-      <div id="pricing-editors">
-        <div class="page-loading"><span class="spin"></span> Loading...</div>
-      </div>
-
-      <!-- Add plan -->
-      <div class="form-card" style="margin-top:4px">
-        <div class="sec-title" style="margin-bottom:12px">Add New Plan</div>
-        <div class="grid2" style="gap:12px;margin-bottom:12px">
-          <div class="form-group"><label>Plan Name</label><input id="np-name" placeholder="e.g. Weekly"/></div>
-          <div class="form-group"><label>Price (e.g. &#8369;99)</label><input id="np-price" placeholder="&#8369;99"/></div>
-          <div class="form-group"><label>Duration (days, 0 = Lifetime)</label><input type="number" id="np-days" min="0" value="30"/></div>
-          <div class="form-group"><label>Badge (optional)</label><input id="np-badge" placeholder="Popular / Best Value / New"/></div>
+      <div class="grid2">
+        <div>
+          <div class="sec-title">Remove Ads Price</div>
+          <div class="form-card">
+            <div class="form-group" style="margin-bottom:14px">
+              <label>Price (e.g. &#8369;49, &#8369;99)</label>
+              <input id="remove-ads-price" placeholder="&#8369;49" style="font-size:22px;font-weight:800;letter-spacing:1px"/>
+            </div>
+            <div class="form-group">
+              <label>Description shown to users</label>
+              <input id="remove-ads-desc" placeholder="One-time purchase — no subscription ever."/>
+            </div>
+            <div style="margin-top:18px;padding:14px;background:rgba(126,231,193,.07);border:1px solid rgba(126,231,193,.2);border-radius:12px">
+              <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px">What users get</div>
+              <div style="font-size:13px;color:var(--accent)">&#10003; No banner ads</div>
+              <div style="font-size:13px;color:var(--accent)">&#10003; No full-screen ads</div>
+              <div style="font-size:13px;color:var(--accent)">&#10003; Permanent — pay once</div>
+            </div>
+          </div>
         </div>
-        <button class="btn btn-success" onclick="addPricingPlan()">&#10133; Add Plan</button>
+        <div>
+          <div class="sec-title">Live Preview</div>
+          <div class="form-card" style="border:1px solid rgba(126,231,193,.3);background:linear-gradient(160deg,rgba(126,231,193,.07),rgba(56,189,248,.04))">
+            <div style="font-size:22px;margin-bottom:6px">&#10024;</div>
+            <div style="font-size:18px;font-weight:800;margin-bottom:4px" id="preview-price">&#8369;49</div>
+            <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px">One-time purchase</div>
+            <div id="preview-desc" style="font-size:13px;color:var(--muted);margin-bottom:14px">One-time purchase — no subscription ever.</div>
+            <div style="font-size:13px;color:var(--accent);margin-bottom:6px">&#10003; No banner ads</div>
+            <div style="font-size:13px;color:var(--accent);margin-bottom:6px">&#10003; No full-screen ads</div>
+            <div style="font-size:13px;color:var(--accent)">&#10003; Permanent — pay once</div>
+          </div>
+          <div class="sec-title" style="margin-top:18px">Current Saved Value</div>
+          <div class="readout" id="remove-ads-readout"><div style="color:var(--muted);font-size:12px">Click Refresh to load...</div></div>
+        </div>
       </div>
     </div>
+
 
     <!-- ANNOUNCEMENTS -->
     <div class="page" id="page-announcements">
@@ -615,7 +627,7 @@ function showPage(name){
   if(name==='announcements')loadAnnouncements();
   if(name==='settings')loadSettings();
   if(name==='logs')loadLogs();
-  if(name==='pricing')loadPricing();
+  if(name==='pricing')loadRemoveAdsPrice();
 }
 
 function initApp(){checkBackendStatus();loadDashboard();}
@@ -916,113 +928,43 @@ function toggleLifetime(){
   document.getElementById('gen-days-wrap').style.display=on?'none':'flex';
 }
 
-/* ── PRICING ─────────────────────────────────────────── */
-let _pricingPlans=[];
-
-const _defaultPlans=[
-  {id:'daily',   name:'Daily',    price:'\u20B129',  duration_days:1,     badge:'',          features:['SMS Bomber','14 Services','3 Rounds Max']},
-  {id:'weekly',  name:'Weekly',   price:'\u20B199',  duration_days:7,     badge:'Popular',   features:['SMS Bomber','14 Services','3 Rounds Max','Priority Support']},
-  {id:'monthly', name:'Monthly',  price:'\u20B1299', duration_days:30,    badge:'',          features:['SMS Bomber','14 Services','3 Rounds Max','Priority Support','Early Access']},
-  {id:'lifetime',name:'Lifetime', price:'\u20B1999', duration_days:36500, badge:'Best Value',features:['Everything Included','Lifetime Access','All Future Features','VIP Support']},
-];
-
-async function loadPricing(){
+/* ── REMOVE ADS PRICE ────────────────────────────────── */
+async function loadRemoveAdsPrice(){
   try{
     const s=await api('GET','/api/settings/');
-    _pricingPlans=(s.pricing_plans&&s.pricing_plans.length)?s.pricing_plans:JSON.parse(JSON.stringify(_defaultPlans));
-  }catch(e){
-    _pricingPlans=JSON.parse(JSON.stringify(_defaultPlans));
-  }
-  renderPricingPreview();
-  renderPricingEditors();
-}
-
-async function savePricing(){
-  try{
-    const cur=await api('GET','/api/settings/');
-    await api('POST','/api/settings/',{...cur,pricing_plans:_pricingPlans});
-    toast('Pricing saved!','success');
-    renderPricingPreview();
+    const price=s.remove_ads_price||'\u20B149';
+    const desc=s.remove_ads_desc||'One-time purchase \u2014 no subscription ever.';
+    document.getElementById('remove-ads-price').value=price;
+    document.getElementById('remove-ads-desc').value=desc;
+    document.getElementById('preview-price').textContent=price;
+    document.getElementById('preview-desc').textContent=desc;
+    document.getElementById('remove-ads-readout').innerHTML=
+      '<div class="readout-row"><span class="readout-key">remove_ads_price</span><span>'+esc(price)+'</span></div>'+
+      '<div class="readout-row"><span class="readout-key">remove_ads_desc</span><span>'+esc(desc)+'</span></div>';
   }catch(e){toast(e.message,'error');}
 }
 
-function renderPricingPreview(){
-  const el=document.getElementById('pricing-preview');
-  if(!_pricingPlans.length){el.innerHTML='<div class="empty"><div class="ei">\uD83D\uDCB0</div><p>No plans yet</p></div>';return;}
-  el.innerHTML=_pricingPlans.map(p=>{
-    const isLifetime=p.duration_days>=36500||p.id==='lifetime';
-    const durLabel=isLifetime?'Lifetime Access':p.duration_days===1?'1 Day Access':p.duration_days===7?'7 Days Access':p.duration_days+' Days Access';
-    const badgeCls=p.badge.toLowerCase().includes('popular')?'pc-badge-popular':p.badge.toLowerCase().includes('best')||p.badge.toLowerCase().includes('value')?'pc-badge-best':'pc-badge-new';
-    return '<div class="pricing-card'+(isLifetime?' lifetime-card':p.badge?' featured':'')+'">'
-      +(p.badge?'<div class="pc-badge '+badgeCls+'">'+esc(p.badge)+'</div>':'')
-      +'<div class="pc-name">'+esc(p.name)+'</div>'
-      +'<div class="pc-price">'+esc(p.price)+'<span> / '+durLabel+'</span></div>'
-      +'<div class="pc-dur">'+(isLifetime?'\u267E Never Expires':p.duration_days+'d')+'</div>'
-      +'<ul class="pc-features">'+(p.features||[]).map(f=>'<li>'+esc(f)+'</li>').join('')+'</ul>'
-      +'</div>';
-  }).join('');
-}
-
-function renderPricingEditors(){
-  const el=document.getElementById('pricing-editors');
-  if(!_pricingPlans.length){el.innerHTML='';return;}
-  el.innerHTML=_pricingPlans.map((p,i)=>{
-    const isLifetime=p.duration_days>=36500;
-    return '<div class="plan-editor" id="ped-'+i+'">'
-      +'<div class="plan-editor-header"><h4>&#9998; '+esc(p.name||'Plan '+(i+1))+'</h4>'
-      +'<button class="btn btn-danger btn-sm" onclick="removePlan('+i+')">&#128465; Remove</button></div>'
-      +'<div class="grid2" style="gap:10px;margin-bottom:10px">'
-      +'<div class="form-group"><label>Name</label><input value="'+esc(p.name)+'" oninput="_pricingPlans['+i+'].name=this.value;syncPreview()"/></div>'
-      +'<div class="form-group"><label>Price</label><input value="'+esc(p.price)+'" oninput="_pricingPlans['+i+'].price=this.value;syncPreview()"/></div>'
-      +'<div class="form-group"><label>Duration days (36500=Lifetime)</label><input type="number" min="0" value="'+p.duration_days+'" oninput="_pricingPlans['+i+'].duration_days=parseInt(this.value)||0;syncPreview()"/></div>'
-      +'<div class="form-group"><label>Badge (Popular / Best Value / New)</label><input value="'+esc(p.badge||'')+'" oninput="_pricingPlans['+i+'].badge=this.value;syncPreview()"/></div>'
-      +'</div>'
-      +'<div class="form-group"><label>Features</label>'
-      +'<div class="feat-tags-wrap" id="feats-'+i+'">'+(p.features||[]).map((f,fi)=>'<span class="feat-tag">'+esc(f)+'<span class="rm-feat" onclick="removeFeature('+i+','+fi+')">&times;</span></span>').join('')+'</div>'
-      +'<div style="display:flex;gap:8px;margin-top:6px"><input placeholder="Add feature..." id="feat-inp-'+i+'" style="flex:1;padding:8px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:9px;color:var(--text);font-family:inherit;font-size:12px;outline:none" onkeydown="if(event.keyCode===13)addFeature('+i+')"/>'
-      +'<button class="btn btn-ghost btn-sm" onclick="addFeature('+i+')">Add</button></div>'
-      +'</div>'
-      +'</div>';
-  }).join('');
-}
-
-function syncPreview(){renderPricingPreview();}
-
-function removeFeature(pi,fi){
-  _pricingPlans[pi].features.splice(fi,1);
-  renderPricingEditors();renderPricingPreview();
-}
-
-function addFeature(pi){
-  const inp=document.getElementById('feat-inp-'+pi);
-  const val=(inp.value||'').trim();
-  if(!val)return;
-  _pricingPlans[pi].features.push(val);
-  inp.value='';
-  renderPricingEditors();renderPricingPreview();
-}
-
-function removePlan(i){
-  if(!confirm('Remove "'+(_pricingPlans[i].name||'this plan')+'"?'))return;
-  _pricingPlans.splice(i,1);
-  renderPricingEditors();renderPricingPreview();
-}
-
-function addPricingPlan(){
-  const name=(document.getElementById('np-name').value||'').trim();
-  const price=(document.getElementById('np-price').value||'').trim();
-  const days=parseInt(document.getElementById('np-days').value)||30;
-  const badge=(document.getElementById('np-badge').value||'').trim();
-  if(!name){toast('Plan name is required','error');return;}
+async function saveRemoveAdsPrice(){
+  const price=(document.getElementById('remove-ads-price').value||'').trim();
+  const desc=(document.getElementById('remove-ads-desc').value||'').trim();
   if(!price){toast('Price is required','error');return;}
-  _pricingPlans.push({id:'plan_'+Date.now(),name,price,duration_days:days,badge,features:[]});
-  document.getElementById('np-name').value='';
-  document.getElementById('np-price').value='';
-  document.getElementById('np-days').value='30';
-  document.getElementById('np-badge').value='';
-  renderPricingEditors();renderPricingPreview();
-  toast('Plan added — don\'t forget to Save Pricing!','info');
+  try{
+    const cur=await api('GET','/api/settings/');
+    await api('POST','/api/settings/',{...cur,remove_ads_price:price,remove_ads_desc:desc});
+    document.getElementById('preview-price').textContent=price;
+    document.getElementById('preview-desc').textContent=desc;
+    document.getElementById('remove-ads-readout').innerHTML=
+      '<div class="readout-row"><span class="readout-key">remove_ads_price</span><span>'+esc(price)+'</span></div>'+
+      '<div class="readout-row"><span class="readout-key">remove_ads_desc</span><span>'+esc(desc)+'</span></div>';
+    toast('Remove Ads price saved!','success');
+  }catch(e){toast(e.message,'error');}
 }
+
+// Live preview update
+document.addEventListener('input',function(e){
+  if(e.target.id==='remove-ads-price')document.getElementById('preview-price').textContent=e.target.value||'\u20B149';
+  if(e.target.id==='remove-ads-desc')document.getElementById('preview-desc').textContent=e.target.value||'One-time purchase \u2014 no subscription ever.';
+});
 
 document.addEventListener('DOMContentLoaded',()=>{
   try{const s=localStorage.getItem('xissin_admin_key');if(s){document.getElementById('login-key').value=s;document.getElementById('remember-me').checked=true;loginMsg('Saved key loaded - press Enter or Login.','ok');}}catch(e){}
