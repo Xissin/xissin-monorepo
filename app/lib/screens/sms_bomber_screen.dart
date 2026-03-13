@@ -1,14 +1,15 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:confetti/confetti.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../theme/app_theme.dart';
 import '../services/api_service.dart';
 import '../widgets/glass_neumorphic_card.dart';
-import '../widgets/animated_counter.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Data model for a single attack history entry
+// Data model
 // ─────────────────────────────────────────────────────────────────────────────
 class _AttackRecord {
   final String phone;
@@ -31,7 +32,35 @@ class _AttackRecord {
     required this.time,
     required this.results,
   });
+
+  Map<String, dynamic> toJson() => {
+        'phone':   phone,
+        'rounds':  rounds,
+        'sent':    sent,
+        'failed':  failed,
+        'total':   total,
+        'time':    time.toIso8601String(),
+        'results': results,
+      };
+
+  factory _AttackRecord.fromJson(Map<String, dynamic> j) => _AttackRecord(
+        phone:   j['phone']  as String,
+        rounds:  j['rounds'] as int,
+        sent:    j['sent']   as int,
+        failed:  j['failed'] as int,
+        total:   j['total']  as int,
+        time:    DateTime.parse(j['time'] as String),
+        results: (j['results'] as List?) ?? [],
+      );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Constants
+// ─────────────────────────────────────────────────────────────────────────────
+const _kHistoryKey  = 'sms_bomb_history';
+const _kLastFireKey = 'sms_bomb_last_fire';
+const _kCooldown    = Duration(minutes: 1);
+const _kMaxHistory  = 50;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Screen
@@ -45,16 +74,25 @@ class SmsBomberScreen extends StatefulWidget {
 }
 
 class _SmsBomberScreenState extends State<SmsBomberScreen> {
-  final _phoneCtrl        = TextEditingController();
-  final _confettiCtrl     = ConfettiController(duration: const Duration(seconds: 3));
-  final _scrollCtrl       = ScrollController();
+  final _phoneCtrl    = TextEditingController();
+  final _confettiCtrl = ConfettiController(duration: const Duration(seconds: 3));
+  final _scrollCtrl   = ScrollController();
 
-  int  _rounds      = 1;
-  bool _loading     = false;
+  int  _rounds       = 1;
+  bool _loading      = false;
   bool _showConfetti = false;
 
-  // history – newest first
-  final List<_AttackRecord> _history = [];
+  List<_AttackRecord> _history = [];
+
+  DateTime? _lastFire;
+  Duration  _remaining = Duration.zero;
+  bool get  _onCooldown => _remaining > Duration.zero;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadPersistedData();
+  }
 
   @override
   void dispose() {
@@ -64,15 +102,78 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
     super.dispose();
   }
 
-  // ── validation + fire ───────────────────────────────────────────────────
+  // ── Persistence ─────────────────────────────────────────────────────────
+  Future<void> _loadPersistedData() async {
+    final prefs = await SharedPreferences.getInstance();
+
+    // history
+    final raw = prefs.getString(_kHistoryKey);
+    if (raw != null) {
+      try {
+        final list = (jsonDecode(raw) as List)
+            .map((e) => _AttackRecord.fromJson(e as Map<String, dynamic>))
+            .toList();
+        if (mounted) setState(() => _history = list);
+      } catch (_) {}
+    }
+
+    // cooldown
+    final lastMs = prefs.getInt(_kLastFireKey);
+    if (lastMs != null) {
+      _lastFire = DateTime.fromMillisecondsSinceEpoch(lastMs);
+      _tickCooldown();
+    }
+  }
+
+  Future<void> _saveHistory() async {
+    final prefs   = await SharedPreferences.getInstance();
+    final trimmed = _history.take(_kMaxHistory).toList();
+    await prefs.setString(
+        _kHistoryKey,
+        jsonEncode(trimmed.map((r) => r.toJson()).toList()));
+  }
+
+  Future<void> _saveLastFire() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt(
+        _kLastFireKey, _lastFire!.millisecondsSinceEpoch);
+  }
+
+  // ── Cooldown ticker ──────────────────────────────────────────────────────
+  void _tickCooldown() {
+    if (_lastFire == null || !mounted) return;
+    final elapsed = DateTime.now().difference(_lastFire!);
+    final rem     = _kCooldown - elapsed;
+
+    if (rem <= Duration.zero) {
+      if (mounted) setState(() => _remaining = Duration.zero);
+      return;
+    }
+    if (mounted) setState(() => _remaining = rem);
+    Future.delayed(const Duration(seconds: 1), _tickCooldown);
+  }
+
+  String _fmtCooldown(Duration d) {
+    final s = d.inSeconds.remainder(60);
+    return '${d.inMinutes}:${s.toString().padLeft(2, '0')}';
+  }
+
+  // ── Fire ─────────────────────────────────────────────────────────────────
   Future<void> _fire() async {
+    if (_onCooldown) {
+      _snack('Cooldown active — wait ${_fmtCooldown(_remaining)}',
+          error: true);
+      return;
+    }
+
     final phone = _phoneCtrl.text.trim();
 
     if (phone.isEmpty) {
       _snack('Enter a phone number', error: true);
       return;
     }
-    if (phone.length != 10 || !phone.startsWith('9') ||
+    if (phone.length != 10 ||
+        !phone.startsWith('9') ||
         !RegExp(r'^9\d{9}$').hasMatch(phone)) {
       _snack('Use format 9XXXXXXXXX (10 digits, PH number)', error: true);
       return;
@@ -86,7 +187,7 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
 
     try {
       final data = await ApiService.smsBomb(
-        phone: phone,
+        phone:  phone,
         userId: widget.userId,
         rounds: _rounds,
       );
@@ -106,6 +207,11 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
         results: results,
       );
 
+      // start cooldown
+      _lastFire = DateTime.now();
+      await _saveLastFire();
+      _tickCooldown();
+
       setState(() {
         _history.insert(0, record);
         if (sent > 0) {
@@ -114,7 +220,9 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
         }
       });
 
-      // scroll to results after a short delay
+      await _saveHistory();
+
+      // scroll to history
       await Future.delayed(const Duration(milliseconds: 300));
       if (_scrollCtrl.hasClients) {
         _scrollCtrl.animateTo(
@@ -143,7 +251,7 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
     ));
   }
 
-  // ── attack-again helper ──────────────────────────────────────────────────
+  // ── Attack-again helper ──────────────────────────────────────────────────
   void _repeatAttack(_AttackRecord r) {
     _phoneCtrl.text = r.phone;
     setState(() => _rounds = r.rounds.clamp(1, 5));
@@ -155,7 +263,7 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
     _snack('Phone pre-filled — tap FIRE when ready 🎯');
   }
 
-  // ── build ────────────────────────────────────────────────────────────────
+  // ── Build ────────────────────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
     final c = context.c;
@@ -177,7 +285,7 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // ── Warning banner ─────────────────────────────────────
+                // ── Warning ──────────────────────────────────────────
                 GlassNeumorphicCard(
                   glowColor: c.error,
                   padding: const EdgeInsets.all(14),
@@ -202,7 +310,7 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
 
                 const SizedBox(height: 26),
 
-                // ── Target number ──────────────────────────────────────
+                // ── Target number ─────────────────────────────────────
                 const Text('Target Number',
                     style: TextStyle(
                         color: AppColors.textSecondary,
@@ -244,7 +352,7 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
 
                 const SizedBox(height: 26),
 
-                // ── Rounds selector ────────────────────────────────────
+                // ── Rounds ────────────────────────────────────────────
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
@@ -293,8 +401,7 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
                                     AppColors.secondary,
                                   ])
                                 : null,
-                            color:
-                                sel ? null : AppColors.surface,
+                            color: sel ? null : AppColors.surface,
                             borderRadius: BorderRadius.circular(12),
                             border: Border.all(
                                 color: sel
@@ -330,19 +437,25 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
 
                 const SizedBox(height: 32),
 
-                // ── FIRE button ────────────────────────────────────────
+                // ── FIRE button ───────────────────────────────────────
                 SizedBox(
                   width: double.infinity,
                   height: 54,
                   child: ElevatedButton(
-                    onPressed: _loading ? null : _fire,
+                    onPressed: (_loading || _onCooldown) ? null : _fire,
                     style: ElevatedButton.styleFrom(
-                      backgroundColor: AppColors.primary,
-                      disabledBackgroundColor:
-                          AppColors.primary.withOpacity(0.4),
+                      backgroundColor:
+                          _onCooldown ? AppColors.surface : AppColors.primary,
+                      disabledBackgroundColor: _onCooldown
+                          ? AppColors.surface
+                          : AppColors.primary.withOpacity(0.4),
                       shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(14)),
-                      elevation: 6,
+                      elevation: _onCooldown ? 0 : 6,
+                      side: _onCooldown
+                          ? BorderSide(
+                              color: AppColors.primary.withOpacity(0.4))
+                          : BorderSide.none,
                     ),
                     child: _loading
                         ? const SizedBox(
@@ -351,29 +464,64 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
                             child: CircularProgressIndicator(
                                 color: Colors.white, strokeWidth: 2.5),
                           )
-                        : const Row(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              Icon(Icons.send_rounded,
-                                  size: 18, color: Colors.white),
-                              SizedBox(width: 8),
-                              Text('FIRE',
-                                  style: TextStyle(
-                                      fontSize: 16,
-                                      fontWeight: FontWeight.w900,
-                                      letterSpacing: 3,
-                                      color: Colors.white)),
-                            ],
-                          ),
+                        : _onCooldown
+                            ? Row(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  const Icon(Icons.timer_outlined,
+                                      size: 18,
+                                      color: AppColors.textSecondary),
+                                  const SizedBox(width: 8),
+                                  Text(
+                                    'Cooldown  ${_fmtCooldown(_remaining)}',
+                                    style: const TextStyle(
+                                        fontSize: 15,
+                                        fontWeight: FontWeight.bold,
+                                        color: AppColors.textSecondary,
+                                        letterSpacing: 1),
+                                  ),
+                                ],
+                              )
+                            : const Row(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Icon(Icons.send_rounded,
+                                      size: 18, color: Colors.white),
+                                  SizedBox(width: 8),
+                                  Text('FIRE',
+                                      style: TextStyle(
+                                          fontSize: 16,
+                                          fontWeight: FontWeight.w900,
+                                          letterSpacing: 3,
+                                          color: Colors.white)),
+                                ],
+                              ),
                   ),
                 )
                     .animate(delay: 300.ms)
                     .fadeIn(duration: 400.ms)
                     .slideY(begin: 0.2, end: 0, duration: 400.ms),
 
+                // ── Cooldown progress bar ─────────────────────────────
+                if (_onCooldown) ...[
+                  const SizedBox(height: 8),
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(4),
+                    child: LinearProgressIndicator(
+                      value: 1.0 -
+                          (_remaining.inMilliseconds /
+                              _kCooldown.inMilliseconds),
+                      minHeight: 5,
+                      backgroundColor: AppColors.primary.withOpacity(0.15),
+                      valueColor: const AlwaysStoppedAnimation<Color>(
+                          AppColors.primary),
+                    ),
+                  ),
+                ],
+
                 const SizedBox(height: 32),
 
-                // ── Attack History ─────────────────────────────────────
+                // ── Attack History ────────────────────────────────────
                 if (_history.isNotEmpty) ...[
                   Row(
                     children: [
@@ -387,6 +535,20 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
                             fontSize: 13,
                             fontWeight: FontWeight.w600),
                       ),
+                      const Spacer(),
+                      GestureDetector(
+                        onTap: _confirmClearHistory,
+                        child: const Row(
+                          children: [
+                            Icon(Icons.delete_outline_rounded,
+                                color: AppColors.error, size: 14),
+                            SizedBox(width: 4),
+                            Text('Clear',
+                                style: TextStyle(
+                                    color: AppColors.error, fontSize: 12)),
+                          ],
+                        ),
+                      ),
                     ],
                   ).animate().fadeIn(duration: 400.ms),
 
@@ -394,12 +556,16 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
 
                   ...List.generate(_history.length, (i) {
                     return _HistoryCard(
-                      record: _history[i],
-                      index: i,
+                      record:        _history[i],
+                      index:         i,
                       onAttackAgain: () => _repeatAttack(_history[i]),
-                    ).animate(delay: Duration(milliseconds: 60 * i))
+                    )
+                        .animate(
+                            delay: Duration(
+                                milliseconds: 60 * i.clamp(0, 8)))
                         .fadeIn(duration: 350.ms)
-                        .slideY(begin: 0.08, end: 0, duration: 350.ms);
+                        .slideY(
+                            begin: 0.08, end: 0, duration: 350.ms);
                   }),
 
                   const SizedBox(height: 20),
@@ -408,7 +574,7 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
             ),
           ),
 
-          // ── Confetti ───────────────────────────────────────────────────
+          // ── Confetti ──────────────────────────────────────────────────
           if (_showConfetti)
             Align(
               alignment: Alignment.topCenter,
@@ -429,6 +595,37 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
       ),
     );
   }
+
+  // ── Clear history dialog ──────────────────────────────────────────────────
+  Future<void> _confirmClearHistory() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E2E),
+        shape:
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text('Clear History',
+            style: TextStyle(color: Colors.white)),
+        content: const Text('Delete all attack history?',
+            style: TextStyle(color: AppColors.textSecondary)),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel',
+                  style: TextStyle(color: AppColors.textSecondary))),
+          TextButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Delete',
+                  style: TextStyle(color: AppColors.error))),
+        ],
+      ),
+    );
+    if (ok == true) {
+      setState(() => _history.clear());
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(_kHistoryKey);
+    }
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -436,8 +633,8 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
 // ─────────────────────────────────────────────────────────────────────────────
 class _HistoryCard extends StatefulWidget {
   final _AttackRecord record;
-  final int index;
-  final VoidCallback onAttackAgain;
+  final int           index;
+  final VoidCallback  onAttackAgain;
 
   const _HistoryCard({
     required this.record,
@@ -461,9 +658,9 @@ class _HistoryCardState extends State<_HistoryCard> {
 
   @override
   Widget build(BuildContext context) {
-    final r      = widget.record;
-    final sucPct = (r.successPct * 100).toStringAsFixed(1);
-    final failPct = (r.failedPct * 100).toStringAsFixed(1);
+    final r       = widget.record;
+    final sucPct  = (r.successPct * 100).toStringAsFixed(1);
+    final failPct = (r.failedPct  * 100).toStringAsFixed(1);
 
     return GlassNeumorphicCard(
       padding: const EdgeInsets.all(14),
@@ -473,12 +670,12 @@ class _HistoryCardState extends State<_HistoryCard> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // ── Header row ─────────────────────────────────────────────
+          // header
           Row(
             children: [
               Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 8, vertical: 3),
                 decoration: BoxDecoration(
                   color: AppColors.primary.withOpacity(0.15),
                   borderRadius: BorderRadius.circular(6),
@@ -512,11 +709,12 @@ class _HistoryCardState extends State<_HistoryCard> {
 
           const SizedBox(height: 10),
 
-          // ── Stats row ──────────────────────────────────────────────
+          // mini stats
           Row(
             children: [
               _MiniStat(
-                  label: 'Rounds', value: '${r.rounds}',
+                  label: 'Rounds',
+                  value: '${r.rounds}',
                   color: AppColors.primary),
               const SizedBox(width: 8),
               _MiniStat(
@@ -525,7 +723,9 @@ class _HistoryCardState extends State<_HistoryCard> {
                   color: AppColors.textSecondary),
               const SizedBox(width: 8),
               _MiniStat(
-                  label: 'Sent', value: '${r.sent}', color: AppColors.accent),
+                  label: 'Sent',
+                  value: '${r.sent}',
+                  color: AppColors.accent),
               const SizedBox(width: 8),
               _MiniStat(
                   label: 'Failed',
@@ -534,32 +734,32 @@ class _HistoryCardState extends State<_HistoryCard> {
             ],
           ),
 
-          // ── Progress bars (only when rounds >= 2) ─────────────────
+          // progress bars (rounds >= 2)
           if (r.rounds >= 2 && r.total > 0) ...[
             const SizedBox(height: 12),
             _ProgressBar(
-              label: 'Success',
-              pct: r.successPct,
+              label:    'Success',
+              pct:      r.successPct,
               pctLabel: '$sucPct%',
-              color: AppColors.accent,
+              color:    AppColors.accent,
             ),
             const SizedBox(height: 6),
             _ProgressBar(
-              label: 'Failed',
-              pct: r.failedPct,
+              label:    'Failed',
+              pct:      r.failedPct,
               pctLabel: '$failPct%',
-              color: AppColors.error,
+              color:    AppColors.error,
             ),
           ],
 
           const SizedBox(height: 12),
 
-          // ── Action buttons ─────────────────────────────────────────
+          // actions
           Row(
             children: [
-              // Details toggle
               GestureDetector(
-                onTap: () => setState(() => _expanded = !_expanded),
+                onTap: () =>
+                    setState(() => _expanded = !_expanded),
                 child: Row(
                   children: [
                     Icon(
@@ -573,15 +773,13 @@ class _HistoryCardState extends State<_HistoryCard> {
                     Text(
                       _expanded ? 'Hide details' : 'Show details',
                       style: const TextStyle(
-                          color: AppColors.textSecondary, fontSize: 12),
+                          color: AppColors.textSecondary,
+                          fontSize: 12),
                     ),
                   ],
                 ),
               ),
-
               const Spacer(),
-
-              // Attack again
               SizedBox(
                 height: 32,
                 child: ElevatedButton.icon(
@@ -603,14 +801,14 @@ class _HistoryCardState extends State<_HistoryCard> {
             ],
           ),
 
-          // ── Per-service detail rows ────────────────────────────────
+          // expandable per-service detail
           if (_expanded && r.results.isNotEmpty) ...[
             const SizedBox(height: 10),
             Container(height: 1, color: AppColors.border),
             const SizedBox(height: 10),
             ...r.results.asMap().entries.map(
-              (e) => _ServiceRow(data: e.value, index: e.key),
-            ),
+                  (e) => _ServiceRow(data: e.value, index: e.key),
+                ),
           ],
         ],
       ),
@@ -619,11 +817,12 @@ class _HistoryCardState extends State<_HistoryCard> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Mini stat chip
+// Sub-widgets
 // ─────────────────────────────────────────────────────────────────────────────
+
 class _MiniStat extends StatelessWidget {
   final String label, value;
-  final Color color;
+  final Color  color;
   const _MiniStat(
       {required this.label, required this.value, required this.color});
 
@@ -654,13 +853,10 @@ class _MiniStat extends StatelessWidget {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Progress bar
-// ─────────────────────────────────────────────────────────────────────────────
 class _ProgressBar extends StatelessWidget {
   final String label, pctLabel;
   final double pct;
-  final Color color;
+  final Color  color;
   const _ProgressBar({
     required this.label,
     required this.pct,
@@ -706,9 +902,6 @@ class _ProgressBar extends StatelessWidget {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Per-service result row
-// ─────────────────────────────────────────────────────────────────────────────
 class _ServiceRow extends StatelessWidget {
   final Map data;
   final int index;
