@@ -7,6 +7,7 @@ import os
 import json
 import logging
 import asyncio
+import threading
 import httpx
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -30,30 +31,33 @@ def _token() -> str:
     return v
 
 # ── Redis keys ────────────────────────────────────────────────────────────────
-RK_KEYS           = "xissin:app:keys"
-RK_USERS          = "xissin:app:users"
-RK_BANNED         = "xissin:app:banned"
-RK_LOGS           = "xissin:app:logs"
-RK_SMS_STATS      = "xissin:app:sms_stats"
-RK_SETTINGS       = "xissin:app:settings"
-RK_ANNOUNCEMENTS  = "xissin:app:announcements"   # ← NEW
-RK_SMS_HISTORY    = "xissin:app:sms_history"     # ← NEW
+RK_KEYS          = "xissin:app:keys"
+RK_USERS         = "xissin:app:users"
+RK_BANNED        = "xissin:app:banned"
+RK_LOGS          = "xissin:app:logs"
+RK_SMS_STATS     = "xissin:app:sms_stats"
+RK_SETTINGS      = "xissin:app:settings"
+RK_ANNOUNCEMENTS = "xissin:app:announcements"
+RK_SMS_HISTORY   = "xissin:app:sms_history"
 
 # ── Default server settings ───────────────────────────────────────────────────
 DEFAULT_SETTINGS = {
-    "maintenance":          False,
-    "maintenance_message":  "Xissin is under maintenance. We'll be back shortly!",
-    "min_app_version":      "1.0.0",
-    "latest_app_version":   "1.0.0",
-    "feature_sms":          True,
-    "feature_keys":         True,
+    "maintenance":         False,
+    "maintenance_message": "Xissin is under maintenance. We'll be back shortly!",
+    "min_app_version":     "1.0.0",
+    "latest_app_version":  "1.0.0",
+    "feature_sms":         True,
+    "feature_keys":        True,
 }
 
-MAX_ANNOUNCEMENTS = 10   # Keep only the 10 most recent
-MAX_HISTORY_PER_USER = 20  # Keep 20 most recent SMS sessions per user
+MAX_ANNOUNCEMENTS    = 10
+MAX_HISTORY_PER_USER = 20
 
-# ── In-memory cache ───────────────────────────────────────────────────────────
-_cache: dict = {}
+# ── In-memory cache + lock ────────────────────────────────────────────────────
+# FIX: All mutations to _cache go through _cache_lock to prevent race conditions
+# when multiple threads (ThreadPoolExecutor in sms.py) write simultaneously.
+_cache: dict      = {}
+_cache_lock       = threading.Lock()
 
 def ph_now() -> datetime:
     return datetime.now(PH_TZ).replace(tzinfo=None)
@@ -69,7 +73,7 @@ async def _redis_get_async(key: str):
             )
         if resp.status_code != 200:
             return None
-        body = resp.json()
+        body   = resp.json()
         result = body.get("result")
         if result is None:
             return None
@@ -88,7 +92,7 @@ async def _redis_set_async(key: str, data) -> bool:
                     f"{_url()}/set/{key}",
                     headers={
                         "Authorization": f"Bearer {_token()}",
-                        "Content-Type": "text/plain",
+                        "Content-Type":  "text/plain",
                     },
                     content=encoded,
                 )
@@ -102,19 +106,54 @@ async def _redis_set_async(key: str, data) -> bool:
 
 
 # ── Sync wrappers ─────────────────────────────────────────────────────────────
+# FIX: Instead of asyncio.run() (which is slow — creates a new event loop each
+# time), we use a shared persistent event loop running in a background thread.
+# All Redis writes are submitted to that loop via run_coroutine_threadsafe(),
+# which is safe to call from any thread including ThreadPoolExecutor workers.
+
+_bg_loop: asyncio.AbstractEventLoop | None = None
+_bg_loop_lock = threading.Lock()
+
+
+def _get_bg_loop() -> asyncio.AbstractEventLoop:
+    """Return (and lazily start) the shared background event loop."""
+    global _bg_loop
+    if _bg_loop is not None and _bg_loop.is_running():
+        return _bg_loop
+    with _bg_loop_lock:
+        if _bg_loop is None or not _bg_loop.is_running():
+            loop = asyncio.new_event_loop()
+            t = threading.Thread(target=loop.run_forever, daemon=True, name="redis-bg-loop")
+            t.start()
+            _bg_loop = loop
+    return _bg_loop
+
 
 def _redis_get(key: str):
-    return asyncio.run(_redis_get_async(key))
+    """Sync Redis GET — safe to call from any thread."""
+    loop   = _get_bg_loop()
+    future = asyncio.run_coroutine_threadsafe(_redis_get_async(key), loop)
+    try:
+        return future.result(timeout=15)
+    except Exception as e:
+        logger.error(f"_redis_get({key}) timeout/error: {e}")
+        return None
+
 
 def _redis_set(key: str, data) -> bool:
-    return asyncio.run(_redis_set_async(key, data))
+    """Sync Redis SET — fire-and-forget from worker threads.
+    We schedule the coroutine but don't block waiting for it, so the
+    HTTP response is never held up by a Redis write."""
+    loop = _get_bg_loop()
+    asyncio.run_coroutine_threadsafe(_redis_set_async(key, data), loop)
+    return True
 
 
 # ── Expired key pruning ───────────────────────────────────────────────────────
 
 def _prune_expired_keys(keys_dict: dict) -> dict:
-    now = ph_now().isoformat()
-    pruned = {}
+    now     = ph_now().isoformat()
+    pruned  = {}
     removed = 0
     for k, meta in keys_dict.items():
         expires_at = meta.get("expires_at", "")
@@ -135,6 +174,9 @@ def _prune_expired_keys(keys_dict: dict) -> dict:
 async def init_db():
     global _cache
 
+    # Start the background loop early so it's ready for sync callers
+    _get_bg_loop()
+
     raw_keys   = await _redis_get_async(RK_KEYS)   or {}
     clean_keys = _prune_expired_keys(raw_keys)
     if len(clean_keys) != len(raw_keys):
@@ -148,17 +190,18 @@ async def init_db():
     else:
         banned_set = set()
 
-    raw_settings = await _redis_get_async(RK_SETTINGS) or {}
+    raw_settings    = await _redis_get_async(RK_SETTINGS) or {}
     merged_settings = {**DEFAULT_SETTINGS, **raw_settings}
 
-    _cache["keys"]          = clean_keys
-    _cache["users"]         = await _redis_get_async(RK_USERS)          or {}
-    _cache["banned"]        = banned_set
-    _cache["logs"]          = await _redis_get_async(RK_LOGS)           or []
-    _cache["sms_stats"]     = await _redis_get_async(RK_SMS_STATS)      or {}
-    _cache["settings"]      = merged_settings
-    _cache["announcements"] = await _redis_get_async(RK_ANNOUNCEMENTS)  or []  # ← NEW
-    _cache["sms_history"]   = await _redis_get_async(RK_SMS_HISTORY)    or {}  # ← NEW
+    with _cache_lock:
+        _cache["keys"]          = clean_keys
+        _cache["users"]         = await _redis_get_async(RK_USERS)         or {}
+        _cache["banned"]        = banned_set
+        _cache["logs"]          = await _redis_get_async(RK_LOGS)          or []
+        _cache["sms_stats"]     = await _redis_get_async(RK_SMS_STATS)     or {}
+        _cache["settings"]      = merged_settings
+        _cache["announcements"] = await _redis_get_async(RK_ANNOUNCEMENTS) or []
+        _cache["sms_history"]   = await _redis_get_async(RK_SMS_HISTORY)   or {}
 
     logger.info(
         f"✅ DB loaded — keys:{len(_cache['keys'])} "
@@ -171,127 +214,149 @@ async def init_db():
 # ── Keys ──────────────────────────────────────────────────────────────────────
 
 def get_all_keys() -> dict:
-    return _cache.get("keys", {})
+    with _cache_lock:
+        return dict(_cache.get("keys", {}))
 
 def get_key(key_str: str) -> dict | None:
-    return _cache.get("keys", {}).get(key_str)
+    with _cache_lock:
+        return _cache.get("keys", {}).get(key_str)
 
 def save_key(key_str: str, metadata: dict):
-    _cache.setdefault("keys", {})[key_str] = metadata
-    _cache["keys"] = _prune_expired_keys(_cache["keys"])
-    _redis_set(RK_KEYS, _cache["keys"])
+    with _cache_lock:
+        _cache.setdefault("keys", {})[key_str] = metadata
+        _cache["keys"] = _prune_expired_keys(_cache["keys"])
+        snapshot = dict(_cache["keys"])
+    _redis_set(RK_KEYS, snapshot)
 
 def delete_key(key_str: str):
-    _cache.setdefault("keys", {}).pop(key_str, None)
-    _redis_set(RK_KEYS, _cache["keys"])
+    with _cache_lock:
+        _cache.setdefault("keys", {}).pop(key_str, None)
+        snapshot = dict(_cache["keys"])
+    _redis_set(RK_KEYS, snapshot)
 
 # ── Users ─────────────────────────────────────────────────────────────────────
 
 def get_all_users() -> dict:
-    return _cache.get("users", {})
+    with _cache_lock:
+        return dict(_cache.get("users", {}))
 
 def get_user(user_id: str) -> dict | None:
-    return _cache.get("users", {}).get(str(user_id))
+    with _cache_lock:
+        return _cache.get("users", {}).get(str(user_id))
 
 def save_user(user_id: str, data: dict):
-    _cache.setdefault("users", {})[str(user_id)] = data
-    _redis_set(RK_USERS, _cache["users"])
+    with _cache_lock:
+        _cache.setdefault("users", {})[str(user_id)] = data
+        snapshot = dict(_cache["users"])
+    _redis_set(RK_USERS, snapshot)
 
 def is_banned(user_id: str) -> bool:
-    return str(user_id) in _cache.get("banned", set())
+    with _cache_lock:
+        return str(user_id) in _cache.get("banned", set())
 
 def ban_user(user_id: str):
-    _cache.setdefault("banned", set()).add(str(user_id))
-    _redis_set(RK_BANNED, list(_cache["banned"]))
+    with _cache_lock:
+        _cache.setdefault("banned", set()).add(str(user_id))
+        snapshot = list(_cache["banned"])
+    _redis_set(RK_BANNED, snapshot)
 
 def unban_user(user_id: str):
-    _cache.setdefault("banned", set()).discard(str(user_id))
-    _redis_set(RK_BANNED, list(_cache["banned"]))
+    with _cache_lock:
+        _cache.setdefault("banned", set()).discard(str(user_id))
+        snapshot = list(_cache["banned"])
+    _redis_set(RK_BANNED, snapshot)
 
 # ── Action Logs ───────────────────────────────────────────────────────────────
 
 MAX_LOGS = 500
 
 def append_log(entry: dict):
-    logs = _cache.setdefault("logs", [])
-    logs.append({**entry, "ts": ph_now().isoformat()})
-    if len(logs) > MAX_LOGS:
-        _cache["logs"] = logs[-MAX_LOGS:]
-    _redis_set(RK_LOGS, _cache["logs"])
+    with _cache_lock:
+        logs = _cache.setdefault("logs", [])
+        logs.append({**entry, "ts": ph_now().isoformat()})
+        if len(logs) > MAX_LOGS:
+            _cache["logs"] = logs[-MAX_LOGS:]
+        snapshot = list(_cache["logs"])
+    _redis_set(RK_LOGS, snapshot)
 
 def get_logs(limit: int = 50) -> list:
-    return list(reversed(_cache.get("logs", [])))[:limit]
+    with _cache_lock:
+        return list(reversed(_cache.get("logs", [])))[:limit]
 
 # ── SMS Stats ─────────────────────────────────────────────────────────────────
 
 def increment_sms_stat(user_id: str, count: int = 1):
-    stats = _cache.setdefault("sms_stats", {})
-    stats[str(user_id)] = stats.get(str(user_id), 0) + count
-    _redis_set(RK_SMS_STATS, stats)
+    with _cache_lock:
+        stats             = _cache.setdefault("sms_stats", {})
+        stats[str(user_id)] = stats.get(str(user_id), 0) + count
+        snapshot          = dict(stats)
+    _redis_set(RK_SMS_STATS, snapshot)
 
 def get_sms_stat(user_id: str) -> int:
-    return _cache.get("sms_stats", {}).get(str(user_id), 0)
+    with _cache_lock:
+        return _cache.get("sms_stats", {}).get(str(user_id), 0)
 
-# ── SMS History (per user session log) — NEW ──────────────────────────────────
+# ── SMS History ───────────────────────────────────────────────────────────────
 
 def append_sms_history(user_id: str, entry: dict):
-    """
-    Append one SMS session to the user's history.
-    entry = { ts, phone_masked, success, total }
-    Keeps only MAX_HISTORY_PER_USER most recent entries.
-    """
     uid = str(user_id)
-    history = _cache.setdefault("sms_history", {})
-    user_hist = history.get(uid, [])
-    user_hist.append({**entry, "ts": ph_now().isoformat()})
-    if len(user_hist) > MAX_HISTORY_PER_USER:
-        user_hist = user_hist[-MAX_HISTORY_PER_USER:]
-    history[uid] = user_hist
-    _redis_set(RK_SMS_HISTORY, history)
+    with _cache_lock:
+        history           = _cache.setdefault("sms_history", {})
+        user_hist         = list(history.get(uid, []))
+        user_hist.append({**entry, "ts": ph_now().isoformat()})
+        if len(user_hist) > MAX_HISTORY_PER_USER:
+            user_hist = user_hist[-MAX_HISTORY_PER_USER:]
+        history[uid] = user_hist
+        snapshot     = {k: list(v) for k, v in history.items()}
+    _redis_set(RK_SMS_HISTORY, snapshot)
 
 def get_sms_history(user_id: str) -> list:
-    """Return history for one user, newest-first."""
     uid = str(user_id)
-    history = _cache.get("sms_history", {}).get(uid, [])
-    return list(reversed(history))
+    with _cache_lock:
+        history = _cache.get("sms_history", {}).get(uid, [])
+        return list(reversed(history))
 
-# ── Announcements — NEW ───────────────────────────────────────────────────────
+# ── Announcements ─────────────────────────────────────────────────────────────
 
 def get_announcements() -> list:
-    """Return all announcements, newest-first."""
-    return list(reversed(_cache.get("announcements", [])))
+    with _cache_lock:
+        return list(reversed(_cache.get("announcements", [])))
 
 def add_announcement(ann: dict):
-    """Add a new announcement; prune if over MAX_ANNOUNCEMENTS."""
-    anns = _cache.setdefault("announcements", [])
-    anns.append(ann)
-    if len(anns) > MAX_ANNOUNCEMENTS:
-        _cache["announcements"] = anns[-MAX_ANNOUNCEMENTS:]
-    _redis_set(RK_ANNOUNCEMENTS, _cache["announcements"])
+    with _cache_lock:
+        anns = _cache.setdefault("announcements", [])
+        anns.append(ann)
+        if len(anns) > MAX_ANNOUNCEMENTS:
+            _cache["announcements"] = anns[-MAX_ANNOUNCEMENTS:]
+        snapshot = list(_cache["announcements"])
+    _redis_set(RK_ANNOUNCEMENTS, snapshot)
 
 def delete_announcement(ann_id: str) -> bool:
-    """Delete by short ID. Returns True if found and deleted."""
-    anns = _cache.get("announcements", [])
-    new_anns = [a for a in anns if a.get("id") != ann_id]
-    if len(new_anns) == len(anns):
-        return False  # Not found
-    _cache["announcements"] = new_anns
-    _redis_set(RK_ANNOUNCEMENTS, new_anns)
+    with _cache_lock:
+        anns     = _cache.get("announcements", [])
+        new_anns = [a for a in anns if a.get("id") != ann_id]
+        if len(new_anns) == len(anns):
+            return False
+        _cache["announcements"] = new_anns
+        snapshot = list(new_anns)
+    _redis_set(RK_ANNOUNCEMENTS, snapshot)
     return True
 
 def clear_announcements():
-    """Delete all announcements."""
-    _cache["announcements"] = []
+    with _cache_lock:
+        _cache["announcements"] = []
     _redis_set(RK_ANNOUNCEMENTS, [])
 
 # ── Server Settings ───────────────────────────────────────────────────────────
 
 def get_server_settings() -> dict:
-    stored = _cache.get("settings", {})
+    with _cache_lock:
+        stored = dict(_cache.get("settings", {}))
     return {**DEFAULT_SETTINGS, **stored}
 
 def save_server_settings(data: dict):
     merged = {**DEFAULT_SETTINGS, **data}
-    _cache["settings"] = merged
+    with _cache_lock:
+        _cache["settings"] = merged
     _redis_set(RK_SETTINGS, merged)
     logger.info(f"⚙️ Server settings updated: maintenance={merged.get('maintenance')}")

