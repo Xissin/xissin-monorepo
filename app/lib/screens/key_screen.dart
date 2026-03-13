@@ -6,8 +6,6 @@ import '../theme/app_theme.dart';
 import '../services/api_service.dart';
 import '../widgets/glass_neumorphic_card.dart';
 import '../widgets/shimmer_skeleton.dart';
-import '../widgets/animated_counter.dart';
-import '../widgets/haptic_button.dart';
 
 class KeyScreen extends StatefulWidget {
   final String userId;
@@ -19,9 +17,10 @@ class KeyScreen extends StatefulWidget {
 
 class _KeyScreenState extends State<KeyScreen> {
   final _keyCtrl = TextEditingController();
-  final _confettiController = ConfettiController(duration: const Duration(seconds: 3));
+  final _confettiController =
+      ConfettiController(duration: const Duration(seconds: 3));
   bool _redeeming = false;
-  bool _checking  = true;
+  bool _checking = true;
   bool _showSuccess = false;
   Map<String, dynamic>? _status;
 
@@ -42,7 +41,10 @@ class _KeyScreenState extends State<KeyScreen> {
     setState(() => _checking = true);
     try {
       final data = await ApiService.keyStatus(widget.userId);
-      setState(() { _status = data; _checking = false; });
+      setState(() {
+        _status = data;
+        _checking = false;
+      });
     } catch (_) {
       setState(() => _checking = false);
     }
@@ -56,10 +58,11 @@ class _KeyScreenState extends State<KeyScreen> {
     }
 
     HapticFeedback.heavyImpact();
-    
     setState(() => _redeeming = true);
+
     try {
-      final data = await ApiService.redeemKey(key: key, userId: widget.userId);
+      final data =
+          await ApiService.redeemKey(key: key, userId: widget.userId);
       if (data['success'] == true) {
         setState(() => _showSuccess = true);
         _confettiController.play();
@@ -68,7 +71,8 @@ class _KeyScreenState extends State<KeyScreen> {
         await Future.delayed(const Duration(milliseconds: 500));
         _loadStatus();
       } else {
-        final msg = data['detail'] ?? data['message'] ?? 'Failed to redeem key.';
+        final msg =
+            data['detail'] ?? data['message'] ?? 'Failed to redeem key.';
         _snack(msg, error: true);
       }
     } catch (e) {
@@ -84,7 +88,8 @@ class _KeyScreenState extends State<KeyScreen> {
       content: Text(msg),
       backgroundColor: error ? AppColors.error : AppColors.accent,
       behavior: SnackBarBehavior.floating,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      shape:
+          RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       margin: const EdgeInsets.all(12),
     ));
   }
@@ -128,7 +133,8 @@ class _KeyScreenState extends State<KeyScreen> {
         ),
         actions: [
           IconButton(
-            icon: const Icon(Icons.refresh_rounded, color: AppColors.textSecondary),
+            icon: const Icon(Icons.refresh_rounded,
+                color: AppColors.textSecondary),
             onPressed: () {
               HapticFeedback.selectionClick();
               _loadStatus();
@@ -143,33 +149,39 @@ class _KeyScreenState extends State<KeyScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // Status card
+                // ── Status card ──────────────────────────────
                 _checking
                     ? const ShimmerStatusCard()
                     : _StatusCard(
                         isActive: isActive,
                         status: _status,
                         fmtDate: _fmtDate,
-                        timeRemaining: _timeRemaining(_status?['expires_at']),
+                        timeRemaining:
+                            _timeRemaining(_status?['expires_at']),
                       ),
 
                 const SizedBox(height: 32),
 
-                // Redeem section
+                // ── Redeem section ───────────────────────────
                 Text(
                   'Redeem a Key',
-                  style: TextStyle(color: c.textPrimary, fontSize: 16, fontWeight: FontWeight.bold),
-                )
-                    .animate()
-                    .fadeIn(duration: 400.ms),
+                  style: TextStyle(
+                      color: c.textPrimary,
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold),
+                ).animate().fadeIn(duration: 400.ms),
+
                 const SizedBox(height: 6),
+
                 Text(
                   'Enter your activation key below.',
-                  style: TextStyle(color: c.textSecondary, fontSize: 13),
-                )
-                    .animate(delay: 50.ms)
-                    .fadeIn(duration: 400.ms),
+                  style:
+                      TextStyle(color: c.textSecondary, fontSize: 13),
+                ).animate(delay: 50.ms).fadeIn(duration: 400.ms),
+
                 const SizedBox(height: 14),
+
+                // ── Key text field ───────────────────────────
                 TextField(
                   controller: _keyCtrl,
                   textCapitalization: TextCapitalization.characters,
@@ -179,29 +191,50 @@ class _KeyScreenState extends State<KeyScreen> {
                     letterSpacing: 1.5,
                     fontSize: 14,
                   ),
+                  onSubmitted: (_) => _redeeming ? null : _redeem(),
                   decoration: InputDecoration(
                     hintText: 'XISSIN-XXXX-XXXX-XXXX-XXXX',
-                    prefixIcon: Icon(Icons.vpn_key_rounded, color: c.secondary),
+                    prefixIcon:
+                        Icon(Icons.vpn_key_rounded, color: c.secondary),
                   ),
                 )
                     .animate(delay: 100.ms)
                     .fadeIn(duration: 400.ms)
                     .slideX(begin: -0.1, end: 0, duration: 400.ms),
+
                 const SizedBox(height: 16),
+
+                // ── Redeem button ────────────────────────────
                 SizedBox(
                   width: double.infinity,
-                  child: HapticButton(
-                    hapticType: HapticType.heavy,
+                  height: 52,
+                  child: ElevatedButton(
                     onPressed: _redeeming ? null : _redeem,
-                    isLoading: _redeeming,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppColors.accent,
+                      disabledBackgroundColor:
+                          AppColors.accent.withOpacity(0.5),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                      elevation: 4,
+                    ),
                     child: _redeeming
                         ? const SizedBox(
-                            width: 22, height: 22,
-                            child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2.5),
+                            width: 22,
+                            height: 22,
+                            child: CircularProgressIndicator(
+                              color: Colors.white,
+                              strokeWidth: 2.5,
+                            ),
                           )
-                        : Text(
+                        : const Text(
                             'Redeem Key',
-                            style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white),
+                            style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.white,
+                            ),
                           ),
                   ),
                 )
@@ -214,36 +247,89 @@ class _KeyScreenState extends State<KeyScreen> {
               ],
             ),
           ),
-          // Success animation overlay
+
+          // ── Confetti overlay ─────────────────────────────
           if (_showSuccess)
-            Positioned.fill(
-              child: GestureDetector(
-                onTap: () => setState(() => _showSuccess = false),
-                child: Container(
-                  color: Colors.black54.withOpacity(0.5),
-                  child: Center(
-                    child: CelebrationConfetti(
-                      controller: _confettiController,
-                    ),
-                  ),
-                ),
+            Align(
+              alignment: Alignment.topCenter,
+              child: ConfettiWidget(
+                confettiController: _confettiController,
+                blastDirectionality: BlastDirectionality.explosive,
+                shouldLoop: false,
+                colors: const [
+                  AppColors.accent,
+                  Colors.white,
+                  Colors.orange,
+                  Colors.pink,
+                ],
               ),
             ),
+
+          // ── Success message overlay ──────────────────────
           if (_showSuccess)
-            Center(
-              child: SuccessAnimation(
-                onComplete: () => Future.delayed(const Duration(seconds: 1), () {
-                  if (mounted) setState(() => _showSuccess = false);
-                }),
-              )
-                  .animate()
-                  .scale(begin: const Offset(0.5, 0.5), duration: 400.ms, curve: Curves.elasticOut),
+            GestureDetector(
+              onTap: () => setState(() => _showSuccess = false),
+              child: Container(
+                color: Colors.black54,
+                child: Center(
+                  child: Container(
+                    margin: const EdgeInsets.all(40),
+                    padding: const EdgeInsets.all(28),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF1E1E2E),
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(
+                          color: AppColors.accent.withOpacity(0.4)),
+                    ),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.check_circle_rounded,
+                            color: AppColors.accent, size: 64),
+                        const SizedBox(height: 16),
+                        const Text(
+                          '🎉 Key Activated!',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 22,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        const Text(
+                          'Welcome to Xissin. All features are now unlocked.',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            color: AppColors.textSecondary,
+                            fontSize: 13,
+                          ),
+                        ),
+                        const SizedBox(height: 20),
+                        TextButton(
+                          onPressed: () =>
+                              setState(() => _showSuccess = false),
+                          child: const Text('Continue',
+                              style:
+                                  TextStyle(color: AppColors.accent)),
+                        ),
+                      ],
+                    ),
+                  )
+                      .animate()
+                      .scale(
+                          begin: const Offset(0.5, 0.5),
+                          duration: 400.ms,
+                          curve: Curves.elasticOut),
+                ),
+              ),
             ),
         ],
       ),
     );
   }
 }
+
+// ── Status Card ────────────────────────────────────────────────────────────
 
 class _StatusCard extends StatelessWidget {
   final bool isActive;
@@ -261,7 +347,7 @@ class _StatusCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final glowColor = isActive ? AppColors.accent : AppColors.error;
-    
+
     return GlassNeumorphicCard(
       glowColor: glowColor,
       enablePulse: isActive,
@@ -278,7 +364,9 @@ class _StatusCard extends StatelessWidget {
                   shape: BoxShape.circle,
                 ),
                 child: Icon(
-                  isActive ? Icons.verified_rounded : Icons.lock_outline,
+                  isActive
+                      ? Icons.verified_rounded
+                      : Icons.lock_outline,
                   color: glowColor,
                   size: 22,
                 ),
@@ -297,8 +385,11 @@ class _StatusCard extends StatelessWidget {
                       ),
                     ),
                     Text(
-                      isActive ? 'All features unlocked' : 'Redeem a key to unlock features',
-                      style: const TextStyle(color: AppColors.textSecondary, fontSize: 12),
+                      isActive
+                          ? 'All features unlocked'
+                          : 'Redeem a key to unlock features',
+                      style: const TextStyle(
+                          color: AppColors.textSecondary, fontSize: 12),
                     ),
                   ],
                 ),
@@ -309,9 +400,12 @@ class _StatusCard extends StatelessWidget {
             const SizedBox(height: 16),
             Container(height: 1, color: AppColors.border),
             const SizedBox(height: 14),
-            _InfoRow(label: 'Key', value: status!['key'] ?? '—', mono: true),
+            _InfoRow(
+                label: 'Key', value: status!['key'] ?? '—', mono: true),
             const SizedBox(height: 8),
-            _InfoRow(label: 'Expires', value: fmtDate(status!['expires_at'])),
+            _InfoRow(
+                label: 'Expires',
+                value: fmtDate(status!['expires_at'])),
             if (timeRemaining != null) ...[
               const SizedBox(height: 8),
               _CountdownTimer(duration: timeRemaining!),
@@ -320,7 +414,10 @@ class _StatusCard extends StatelessWidget {
             const SizedBox(height: 10),
             const Text(
               'Contact the admin or check Xissin channel for keys.',
-              style: TextStyle(color: AppColors.textSecondary, fontSize: 12, height: 1.5),
+              style: TextStyle(
+                  color: AppColors.textSecondary,
+                  fontSize: 12,
+                  height: 1.5),
             ),
           ],
         ],
@@ -332,9 +429,10 @@ class _StatusCard extends StatelessWidget {
   }
 }
 
+// ── Countdown Timer ────────────────────────────────────────────────────────
+
 class _CountdownTimer extends StatefulWidget {
   final Duration duration;
-  
   const _CountdownTimer({required this.duration});
 
   @override
@@ -354,7 +452,8 @@ class _CountdownTimerState extends State<_CountdownTimer> {
   void _startTimer() {
     Future.delayed(const Duration(seconds: 1), () {
       if (mounted && _remaining.inSeconds > 0) {
-        setState(() => _remaining = _remaining - const Duration(seconds: 1));
+        setState(
+            () => _remaining = _remaining - const Duration(seconds: 1));
         _startTimer();
       }
     });
@@ -373,17 +472,21 @@ class _CountdownTimerState extends State<_CountdownTimer> {
   @override
   Widget build(BuildContext context) {
     final isExpiringSoon = _remaining.inDays < 3;
-    
+
     return Row(
       children: [
-        SizedBox(
+        const SizedBox(
           width: 60,
-          child: Text('Time Left', style: const TextStyle(color: AppColors.textSecondary, fontSize: 12)),
+          child: Text('Time Left',
+              style: TextStyle(
+                  color: AppColors.textSecondary, fontSize: 12)),
         ),
         Container(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+          padding:
+              const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
           decoration: BoxDecoration(
-            color: (isExpiringSoon ? AppColors.error : AppColors.accent).withOpacity(0.15),
+            color: (isExpiringSoon ? AppColors.error : AppColors.accent)
+                .withOpacity(0.15),
             borderRadius: BorderRadius.circular(8),
           ),
           child: Text(
@@ -400,10 +503,13 @@ class _CountdownTimerState extends State<_CountdownTimer> {
   }
 }
 
+// ── Info Row ───────────────────────────────────────────────────────────────
+
 class _InfoRow extends StatelessWidget {
   final String label, value;
   final bool mono;
-  const _InfoRow({required this.label, required this.value, this.mono = false});
+  const _InfoRow(
+      {required this.label, required this.value, this.mono = false});
 
   @override
   Widget build(BuildContext context) {
@@ -411,7 +517,9 @@ class _InfoRow extends StatelessWidget {
       children: [
         SizedBox(
           width: 60,
-          child: Text(label, style: const TextStyle(color: AppColors.textSecondary, fontSize: 12)),
+          child: Text(label,
+              style: const TextStyle(
+                  color: AppColors.textSecondary, fontSize: 12)),
         ),
         Expanded(
           child: Text(
@@ -430,24 +538,30 @@ class _InfoRow extends StatelessWidget {
   }
 }
 
+// ── Info Box ───────────────────────────────────────────────────────────────
+
 class _InfoBox extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = context.c;
-    
+
     return GlassNeumorphicCard(
       padding: const EdgeInsets.all(16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text('How to get a key?',
-              style: TextStyle(color: c.textPrimary, fontWeight: FontWeight.bold, fontSize: 14)),
+              style: TextStyle(
+                  color: c.textPrimary,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 14)),
           const SizedBox(height: 8),
           Text(
             '1. Join the Xissin Telegram channel\n'
             '2. Contact the admin\n'
             '3. Keys are in XISSIN-XXXX-XXXX-XXXX-XXXX format',
-            style: TextStyle(color: c.textSecondary, fontSize: 13, height: 1.7),
+            style: TextStyle(
+                color: c.textSecondary, fontSize: 13, height: 1.7),
           ),
         ],
       ),
