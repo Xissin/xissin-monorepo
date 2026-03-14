@@ -189,12 +189,12 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ),
 
-              // Section heading
+              // Tools section heading
               SliverToBoxAdapter(
                 child: Padding(
                   padding: const EdgeInsets.fromLTRB(22, 28, 22, 14),
                   child: Text(
-                    'Features',
+                    'Tools',
                     style: TextStyle(
                       color: c.textPrimary,
                       fontSize: 18,
@@ -204,7 +204,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               ),
 
-              // Feature grid
+              // Tools grid
               SliverPadding(
                 padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
                 sliver: SliverGrid(
@@ -287,7 +287,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               ),
               Text(
-                'Multi-Tool',
+                'by Xissin',
                 style: TextStyle(color: c.textSecondary, fontSize: 13),
               ),
             ],

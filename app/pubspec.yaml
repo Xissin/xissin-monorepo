@@ -1,7 +1,9 @@
 name: xissin_app
 description: Xissin Multi-Tool App
-publish_to: 'none'
 version: 1.0.0+1
+publish_to: 'none'
+author: Xissin
+homepage: https://github.com/Xissin
 
 environment:
   sdk: '>=3.0.0 <4.0.0'

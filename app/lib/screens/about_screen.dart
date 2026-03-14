@@ -194,7 +194,7 @@ class _AboutScreenState extends State<AboutScreen> {
 
             const SizedBox(height: 32),
             Text(
-              '© 2025 Xissin • All rights reserved\nUnauthorized distribution is prohibited.',
+              '© 2026 Xissin • All rights reserved.\nUnauthorized distribution is prohibited.',
               textAlign: TextAlign.center,
               style: TextStyle(
                 color: c.textSecondary.withOpacity(0.5),
