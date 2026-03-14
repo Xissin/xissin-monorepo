@@ -36,6 +36,7 @@ RK_USERS         = "xissin:app:users"
 RK_BANNED        = "xissin:app:banned"
 RK_LOGS          = "xissin:app:logs"
 RK_SMS_STATS     = "xissin:app:sms_stats"
+RK_NGL_STATS     = "xissin:app:ngl_stats"       # ← NEW
 RK_SETTINGS      = "xissin:app:settings"
 RK_ANNOUNCEMENTS = "xissin:app:announcements"
 RK_SMS_HISTORY   = "xissin:app:sms_history"
@@ -48,14 +49,13 @@ DEFAULT_SETTINGS = {
     "latest_app_version":  "1.0.0",
     "feature_sms":         True,
     "feature_keys":        True,
+    "feature_ngl":         True,   # ← NEW
 }
 
 MAX_ANNOUNCEMENTS    = 10
 MAX_HISTORY_PER_USER = 20
 
 # ── In-memory cache + lock ────────────────────────────────────────────────────
-# FIX: All mutations to _cache go through _cache_lock to prevent race conditions
-# when multiple threads (ThreadPoolExecutor in sms.py) write simultaneously.
 _cache: dict      = {}
 _cache_lock       = threading.Lock()
 
@@ -106,17 +106,11 @@ async def _redis_set_async(key: str, data) -> bool:
 
 
 # ── Sync wrappers ─────────────────────────────────────────────────────────────
-# FIX: Instead of asyncio.run() (which is slow — creates a new event loop each
-# time), we use a shared persistent event loop running in a background thread.
-# All Redis writes are submitted to that loop via run_coroutine_threadsafe(),
-# which is safe to call from any thread including ThreadPoolExecutor workers.
-
 _bg_loop: asyncio.AbstractEventLoop | None = None
 _bg_loop_lock = threading.Lock()
 
 
 def _get_bg_loop() -> asyncio.AbstractEventLoop:
-    """Return (and lazily start) the shared background event loop."""
     global _bg_loop
     if _bg_loop is not None and _bg_loop.is_running():
         return _bg_loop
@@ -130,7 +124,6 @@ def _get_bg_loop() -> asyncio.AbstractEventLoop:
 
 
 def _redis_get(key: str):
-    """Sync Redis GET — safe to call from any thread."""
     loop   = _get_bg_loop()
     future = asyncio.run_coroutine_threadsafe(_redis_get_async(key), loop)
     try:
@@ -141,9 +134,6 @@ def _redis_get(key: str):
 
 
 def _redis_set(key: str, data) -> bool:
-    """Sync Redis SET — fire-and-forget from worker threads.
-    We schedule the coroutine but don't block waiting for it, so the
-    HTTP response is never held up by a Redis write."""
     loop = _get_bg_loop()
     asyncio.run_coroutine_threadsafe(_redis_set_async(key, data), loop)
     return True
@@ -174,7 +164,6 @@ def _prune_expired_keys(keys_dict: dict) -> dict:
 async def init_db():
     global _cache
 
-    # Start the background loop early so it's ready for sync callers
     _get_bg_loop()
 
     raw_keys   = await _redis_get_async(RK_KEYS)   or {}
@@ -199,6 +188,7 @@ async def init_db():
         _cache["banned"]        = banned_set
         _cache["logs"]          = await _redis_get_async(RK_LOGS)          or []
         _cache["sms_stats"]     = await _redis_get_async(RK_SMS_STATS)     or {}
+        _cache["ngl_stats"]     = await _redis_get_async(RK_NGL_STATS)     or {}   # ← NEW
         _cache["settings"]      = merged_settings
         _cache["announcements"] = await _redis_get_async(RK_ANNOUNCEMENTS) or []
         _cache["sms_history"]   = await _redis_get_async(RK_SMS_HISTORY)   or {}
@@ -295,6 +285,27 @@ def increment_sms_stat(user_id: str, count: int = 1):
 def get_sms_stat(user_id: str) -> int:
     with _cache_lock:
         return _cache.get("sms_stats", {}).get(str(user_id), 0)
+
+def get_all_sms_stats() -> dict:
+    with _cache_lock:
+        return dict(_cache.get("sms_stats", {}))
+
+# ── NGL Stats ─────────────────────────────────────────────────────────────────
+
+def increment_ngl_stat(user_id: str, count: int = 1):
+    with _cache_lock:
+        stats               = _cache.setdefault("ngl_stats", {})
+        stats[str(user_id)] = stats.get(str(user_id), 0) + count
+        snapshot            = dict(stats)
+    _redis_set(RK_NGL_STATS, snapshot)
+
+def get_ngl_stat(user_id: str) -> int:
+    with _cache_lock:
+        return _cache.get("ngl_stats", {}).get(str(user_id), 0)
+
+def get_all_ngl_stats() -> dict:
+    with _cache_lock:
+        return dict(_cache.get("ngl_stats", {}))
 
 # ── SMS History ───────────────────────────────────────────────────────────────
 

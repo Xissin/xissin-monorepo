@@ -1,6 +1,5 @@
 """
 routers/settings.py — Server control settings (maintenance, version, features)
-Settings are stored in Upstash Redis so they can be changed without Railway redeploy.
 """
 
 from fastapi import APIRouter, Depends
@@ -18,16 +17,14 @@ class ServerSettings(BaseModel):
     latest_app_version: Optional[str] = "1.0.0"
     feature_sms: bool = True
     feature_keys: bool = True
+    feature_ngl: bool = True
 
 @router.get("/", dependencies=[Depends(require_admin)])
 def get_settings():
-    """Admin: get current server settings."""
-    s = db.get_server_settings()
-    return s
+    return db.get_server_settings()
 
 @router.post("/", dependencies=[Depends(require_admin)])
 def save_settings(req: ServerSettings):
-    """Admin: update server settings."""
     data = req.model_dump()
     db.save_server_settings(data)
     db.append_log({"action": "settings_updated", "maintenance": req.maintenance})
