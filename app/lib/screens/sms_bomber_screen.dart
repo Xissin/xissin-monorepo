@@ -6,6 +6,7 @@ import 'package:confetti/confetti.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../theme/app_theme.dart';
 import '../services/api_service.dart';
+import '../services/ad_service.dart';
 import '../widgets/glass_neumorphic_card.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -228,6 +229,11 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
       });
 
       await _saveHistory();
+
+      // ── Show interstitial ad after every attack ──────────────────
+      // Small delay so confetti plays first before ad covers screen
+      await Future.delayed(const Duration(milliseconds: 800));
+      AdService.instance.showInterstitial();
 
       // ── NOTE: Auto-scroll removed intentionally ─────────────────
       // (do NOT scroll to bottom after attack completes)
