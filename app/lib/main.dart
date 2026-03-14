@@ -6,8 +6,11 @@ import 'package:provider/provider.dart';
 
 import 'theme/app_theme.dart';
 import 'services/theme_service.dart';
-import 'services/ad_service.dart';
 import 'screens/splash_screen.dart';
+
+// AdService import removed — ads are temporarily disabled pending AdMob
+// verification. Re-add when verified:
+// import 'services/ad_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -16,8 +19,8 @@ void main() async {
   final themeService = ThemeService();
   await themeService.init();
 
-  // Initialise AdMob + restore "Remove Ads" purchase state
-  await AdService.instance.init();
+  // AdMob init temporarily disabled — re-enable after AdMob verification:
+  // await AdService.instance.init();
 
   SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
 
@@ -70,12 +73,10 @@ class _XissinAppState extends State<XissinApp> {
 
   @override
   Widget build(BuildContext context) {
-    return MultiProvider(
-      providers: [
-        ChangeNotifierProvider<ThemeService>.value(value: widget.themeService),
-        // AdService is a singleton — expose it so any widget can listen
-        ChangeNotifierProvider<AdService>.value(value: AdService.instance),
-      ],
+    return ChangeNotifierProvider<ThemeService>.value(
+      value: widget.themeService,
+      // AdService provider removed — re-add after AdMob verification:
+      // ChangeNotifierProvider<AdService>.value(value: AdService.instance),
       child: Consumer<ThemeService>(
         builder: (_, themeService, __) {
           _applySystemUI(themeService.isDark);

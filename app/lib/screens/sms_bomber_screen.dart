@@ -6,7 +6,7 @@ import 'package:confetti/confetti.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../theme/app_theme.dart';
 import '../services/api_service.dart';
-import '../services/ad_service.dart';
+// ad_service import removed — ads temporarily disabled pending AdMob verification
 import '../widgets/glass_neumorphic_card.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -61,7 +61,6 @@ class _AttackRecord {
 const _kHistoryKey  = 'sms_bomb_history';
 const _kLastFireKey = 'sms_bomb_last_fire';
 const _kCooldown    = Duration(minutes: 1);
-// ↓ Auto-clear history when it hits this limit
 const _kMaxHistory  = 10;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -108,7 +107,6 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
   Future<void> _loadPersistedData() async {
     final prefs = await SharedPreferences.getInstance();
 
-    // history
     final raw = prefs.getString(_kHistoryKey);
     if (raw != null) {
       try {
@@ -119,7 +117,6 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
       } catch (_) {}
     }
 
-    // cooldown
     final lastMs = prefs.getInt(_kLastFireKey);
     if (lastMs != null) {
       _lastFire = DateTime.fromMillisecondsSinceEpoch(lastMs);
@@ -209,19 +206,15 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
         results: results,
       );
 
-      // start cooldown
       _lastFire = DateTime.now();
       await _saveLastFire();
       _tickCooldown();
 
       setState(() {
         _history.insert(0, record);
-
-        // ── Auto-clear: keep only the last 10 entries ──────────────
         if (_history.length > _kMaxHistory) {
           _history = _history.take(_kMaxHistory).toList();
         }
-
         if (sent > 0) {
           _showConfetti = true;
           _confettiCtrl.play();
@@ -230,13 +223,9 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
 
       await _saveHistory();
 
-      // ── Show interstitial ad after every attack ──────────────────
-      // Small delay so confetti plays first before ad covers screen
-      await Future.delayed(const Duration(milliseconds: 800));
-      AdService.instance.showInterstitial();
-
-      // ── NOTE: Auto-scroll removed intentionally ─────────────────
-      // (do NOT scroll to bottom after attack completes)
+      // Interstitial ad removed — re-enable after AdMob verification:
+      // await Future.delayed(const Duration(milliseconds: 800));
+      // AdService.instance.showInterstitial();
 
     } on ApiException catch (e) {
       _snack(e.userMessage, error: true);
@@ -258,10 +247,8 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
     ));
   }
 
-  // ── Attack-again helper ──────────────────────────────────────────────────
   void _repeatAttack(_AttackRecord r) {
     _phoneCtrl.text = r.phone;
-    // ↓ Clamp to 3 (max rounds allowed)
     setState(() => _rounds = r.rounds.clamp(1, 3));
     _scrollCtrl.animateTo(
       0,
@@ -360,7 +347,7 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
 
                 const SizedBox(height: 26),
 
-                // ── Rounds (max 3) ────────────────────────────────────
+                // ── Rounds ────────────────────────────────────────────
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
@@ -389,7 +376,6 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
 
                 const SizedBox(height: 10),
 
-                // ↓ Only 3 round buttons (was 5)
                 Row(
                   children: List.generate(3, (i) {
                     final n   = i + 1;
@@ -605,7 +591,6 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
     );
   }
 
-  // ── Clear history dialog ──────────────────────────────────────────────────
   Future<void> _confirmClearHistory() async {
     final ok = await showDialog<bool>(
       context: context,
@@ -679,7 +664,6 @@ class _HistoryCardState extends State<_HistoryCard> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // header
           Row(
             children: [
               Container(
@@ -718,7 +702,6 @@ class _HistoryCardState extends State<_HistoryCard> {
 
           const SizedBox(height: 10),
 
-          // mini stats
           Row(
             children: [
               _MiniStat(
@@ -743,7 +726,6 @@ class _HistoryCardState extends State<_HistoryCard> {
             ],
           ),
 
-          // progress bars (rounds >= 2)
           if (r.rounds >= 2 && r.total > 0) ...[
             const SizedBox(height: 12),
             _ProgressBar(
@@ -763,7 +745,6 @@ class _HistoryCardState extends State<_HistoryCard> {
 
           const SizedBox(height: 12),
 
-          // actions
           Row(
             children: [
               GestureDetector(
@@ -810,7 +791,6 @@ class _HistoryCardState extends State<_HistoryCard> {
             ],
           ),
 
-          // expandable per-service detail
           if (_expanded && r.results.isNotEmpty) ...[
             const SizedBox(height: 10),
             Container(height: 1, color: AppColors.border),
