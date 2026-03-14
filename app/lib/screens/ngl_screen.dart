@@ -7,6 +7,12 @@ import '../services/api_service.dart';
 import '../widgets/glass_neumorphic_card.dart';
 import '../widgets/haptic_button.dart';
 
+// Pink/orange brand colours for NGL
+const _kPink   = Color(0xFFFF6EC7);
+const _kOrange = Color(0xFFFF9A44);
+const _kGreen  = Color(0xFF7EE7C1);
+const _kRed    = Color(0xFFFF6B6B);
+
 class NglScreen extends StatefulWidget {
   final String userId;
   const NglScreen({super.key, required this.userId});
@@ -23,16 +29,26 @@ class _NglScreenState extends State<NglScreen> {
   int    _quantity   = 5;
   bool   _loading    = false;
   bool   _done       = false;
+  int    _charCount  = 0;
 
-  // Result state
+  // Result
   int    _sent       = 0;
   int    _failed     = 0;
   String _resultMsg  = '';
   bool   _resultOk   = false;
 
-  // Progress animation
+  // Animated progress
   double _progress   = 0.0;
   Timer? _progressTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    _messageCtrl.addListener(() {
+      final len = _messageCtrl.text.length;
+      if (len != _charCount) setState(() => _charCount = len);
+    });
+  }
 
   @override
   void dispose() {
@@ -42,26 +58,47 @@ class _NglScreenState extends State<NglScreen> {
     super.dispose();
   }
 
+  // ── Progress helpers ────────────────────────────────────────────────────────
+
   void _startFakeProgress() {
     _progress = 0.0;
     _progressTimer?.cancel();
-    _progressTimer = Timer.periodic(const Duration(milliseconds: 80), (t) {
+    _progressTimer = Timer.periodic(const Duration(milliseconds: 60), (t) {
       if (!mounted) { t.cancel(); return; }
       setState(() {
-        // Crawl to ~90 %, the real finish will snap it to 1.0
-        if (_progress < 0.90) {
-          _progress += 0.012 * (1.0 - _progress);
-        }
+        if (_progress < 0.88) _progress += 0.015 * (1.0 - _progress);
       });
     });
   }
 
   void _stopProgress(bool success) {
     _progressTimer?.cancel();
+    if (!mounted) return;
     setState(() => _progress = success ? 1.0 : _progress);
   }
 
-  Future<void> _sendMessages() async {
+  // ── Clipboard paste ─────────────────────────────────────────────────────────
+
+  Future<void> _pasteUsername() async {
+    final data = await Clipboard.getData('text/plain');
+    if (data?.text != null && data!.text!.isNotEmpty) {
+      HapticFeedback.selectionClick();
+      final raw = data.text!.trim();
+      // Strip ngl.link/ URL if the user copied a full link
+      final clean = raw
+          .replaceAll(RegExp(r'https?://(www\.)?ngl\.link/'), '')
+          .replaceAll('@', '')
+          .trim();
+      _usernameCtrl.text = clean;
+      _usernameCtrl.selection = TextSelection.fromPosition(
+        TextPosition(offset: clean.length),
+      );
+    }
+  }
+
+  // ── Send ────────────────────────────────────────────────────────────────────
+
+  Future<void> _send() async {
     if (!_formKey.currentState!.validate()) return;
     HapticFeedback.mediumImpact();
     FocusScope.of(context).unfocus();
@@ -85,8 +122,8 @@ class _NglScreenState extends State<NglScreen> {
       );
 
       _stopProgress(result['success'] == true);
-
       if (!mounted) return;
+
       setState(() {
         _loading   = false;
         _done      = true;
@@ -95,16 +132,16 @@ class _NglScreenState extends State<NglScreen> {
         _failed    = (result['failed'] as num?)?.toInt() ?? 0;
         _resultMsg = result['message'] as String? ?? '';
       });
-
       HapticFeedback.heavyImpact();
     } catch (e) {
       _stopProgress(false);
       if (!mounted) return;
+      final err = e is ApiException ? e.userMessage : e.toString().replaceFirst('Exception: ', '');
       setState(() {
         _loading   = false;
         _done      = true;
         _resultOk  = false;
-        _resultMsg = e.toString().replaceFirst('Exception: ', '');
+        _resultMsg = err;
       });
       HapticFeedback.vibrate();
     }
@@ -113,51 +150,55 @@ class _NglScreenState extends State<NglScreen> {
   void _reset() {
     HapticFeedback.selectionClick();
     setState(() {
-      _done      = false;
-      _loading   = false;
-      _progress  = 0.0;
-      _sent      = 0;
-      _failed    = 0;
+      _done = _loading = false;
+      _progress = 0;
+      _sent = _failed = 0;
       _resultMsg = '';
+      _charCount = 0;
     });
     _usernameCtrl.clear();
     _messageCtrl.clear();
   }
 
+  // ── Build ───────────────────────────────────────────────────────────────────
+
   @override
   Widget build(BuildContext context) {
     final c = context.c;
-
     return Scaffold(
       backgroundColor: c.background,
-      appBar: AppBar(
-        backgroundColor: c.background,
-        elevation: 0,
-        leading: HapticIconButton(
-          icon: Icons.arrow_back_ios_new_rounded,
-          onPressed: () => Navigator.pop(context),
-          color: c.textPrimary,
-          backgroundColor: c.surface,
-        ),
-        title: ShaderMask(
-          shaderCallback: (b) => LinearGradient(
-            colors: [const Color(0xFFFF6EC7), const Color(0xFFFF9A44)],
-          ).createShader(b),
-          child: const Text(
-            'NGL Bomber',
-            style: TextStyle(
-              color: Colors.white,
-              fontWeight: FontWeight.w800,
-              fontSize: 20,
-              letterSpacing: 1,
-            ),
-          ),
-        ),
-      ),
+      appBar: _buildAppBar(c),
       body: SafeArea(
         child: SingleChildScrollView(
-          padding: const EdgeInsets.fromLTRB(20, 12, 20, 32),
+          padding: const EdgeInsets.fromLTRB(20, 12, 20, 40),
           child: _done ? _buildResult(c) : _buildForm(c),
+        ),
+      ),
+    );
+  }
+
+  PreferredSizeWidget _buildAppBar(XissinColors c) {
+    return AppBar(
+      backgroundColor: c.background,
+      elevation: 0,
+      leading: HapticIconButton(
+        icon: Icons.arrow_back_ios_new_rounded,
+        onPressed: () => Navigator.pop(context),
+        color: c.textPrimary,
+        backgroundColor: c.surface,
+      ),
+      title: ShaderMask(
+        shaderCallback: (b) => const LinearGradient(
+          colors: [_kPink, _kOrange],
+        ).createShader(b),
+        child: const Text(
+          'NGL Bomber',
+          style: TextStyle(
+            color: Colors.white,
+            fontWeight: FontWeight.w800,
+            fontSize: 20,
+            letterSpacing: 0.5,
+          ),
         ),
       ),
     );
@@ -171,62 +212,137 @@ class _NglScreenState extends State<NglScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Info banner
           _InfoBanner(c: c),
-          const SizedBox(height: 20),
+          const SizedBox(height: 22),
 
-          // Username field
-          _Label(text: 'NGL Username', c: c),
+          // ── Username ──
+          _Label('NGL Username', c),
           const SizedBox(height: 8),
-          _buildTextField(
-            controller: _usernameCtrl,
-            c: c,
-            hint: 'e.g. john_doe',
-            icon: Icons.alternate_email_rounded,
-            validator: (v) {
-              if (v == null || v.trim().isEmpty) return 'Enter a username';
-              final clean = v.trim().replaceAll(RegExp(r'https?://(www\.)?ngl\.link/'), '');
-              if (!RegExp(r'^[A-Za-z0-9._]{1,60}$').hasMatch(clean)) {
-                return 'Invalid username (letters, numbers, . _ only)';
-              }
-              return null;
-            },
-          ).animate().fadeIn(duration: 400.ms).slideY(begin: 0.1, end: 0),
-
+          _buildUsernameField(c)
+              .animate().fadeIn(duration: 350.ms).slideY(begin: 0.08, end: 0),
           const SizedBox(height: 18),
 
-          // Message field
-          _Label(text: 'Anonymous Message', c: c),
+          // ── Message ──
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              _Label('Anonymous Message', c),
+              Text(
+                '$_charCount / 300',
+                style: TextStyle(
+                  color: _charCount > 270
+                      ? _kRed
+                      : _charCount > 240
+                          ? _kOrange
+                          : c.textSecondary,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ],
+          ),
           const SizedBox(height: 8),
-          _buildTextField(
-            controller: _messageCtrl,
-            c: c,
-            hint: 'Type your message...',
-            icon: Icons.message_rounded,
-            maxLines: 4,
-            validator: (v) {
-              if (v == null || v.trim().isEmpty) return 'Enter a message';
-              if (v.trim().length > 300) return 'Max 300 characters';
-              return null;
-            },
-          ).animate().fadeIn(duration: 400.ms, delay: 80.ms).slideY(begin: 0.1, end: 0),
-
+          _buildMessageField(c)
+              .animate().fadeIn(duration: 350.ms, delay: 60.ms).slideY(begin: 0.08, end: 0),
           const SizedBox(height: 20),
 
-          // Quantity slider
-          _Label(text: 'Quantity: $_quantity messages', c: c),
+          // ── Quantity slider ──
+          _Label('Quantity: $_quantity message${_quantity == 1 ? '' : 's'}', c),
           const SizedBox(height: 6),
-          GlassNeumorphicCard(
-            glowColor: const Color(0xFFFF6EC7),
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          _buildQuantitySlider(c)
+              .animate().fadeIn(duration: 350.ms, delay: 120.ms),
+          const SizedBox(height: 28),
+
+          // ── Progress bar (while loading) ──
+          if (_loading) ...[
+            _ProgressBar(progress: _progress, c: c)
+                .animate().fadeIn(duration: 300.ms),
+            const SizedBox(height: 20),
+          ],
+
+          // ── Send button ──
+          _SendButton(loading: _loading, onPressed: _send)
+              .animate().fadeIn(duration: 350.ms, delay: 160.ms),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildUsernameField(XissinColors c) {
+    return TextFormField(
+      controller: _usernameCtrl,
+      enabled: !_loading,
+      style: TextStyle(color: c.textPrimary),
+      decoration: _inputDeco(
+        c: c,
+        hint: 'e.g. john_doe  or  ngl.link/john_doe',
+        icon: Icons.alternate_email_rounded,
+        suffix: IconButton(
+          icon: Icon(Icons.content_paste_rounded,
+              size: 18, color: c.textSecondary),
+          tooltip: 'Paste',
+          onPressed: _pasteUsername,
+        ),
+      ),
+      validator: (v) {
+        if (v == null || v.trim().isEmpty) return 'Enter a username';
+        final clean = v.trim()
+            .replaceAll(RegExp(r'https?://(www\.)?ngl\.link/'), '')
+            .replaceAll('@', '');
+        if (!RegExp(r'^[A-Za-z0-9._]{1,60}$').hasMatch(clean)) {
+          return 'Only letters, numbers, dots and underscores allowed';
+        }
+        return null;
+      },
+    );
+  }
+
+  Widget _buildMessageField(XissinColors c) {
+    return TextFormField(
+      controller: _messageCtrl,
+      enabled: !_loading,
+      maxLines: 4,
+      maxLength: 300,
+      buildCounter: (_, {required currentLength, required isFocused, maxLength}) =>
+          const SizedBox.shrink(), // hide default counter — we have our own
+      style: TextStyle(color: c.textPrimary),
+      decoration: _inputDeco(
+        c: c,
+        hint: 'Type your anonymous message...',
+        icon: Icons.message_rounded,
+      ),
+      validator: (v) {
+        if (v == null || v.trim().isEmpty) return 'Enter a message';
+        if (v.trim().length > 300) return 'Max 300 characters';
+        return null;
+      },
+    );
+  }
+
+  Widget _buildQuantitySlider(XissinColors c) {
+    return GlassNeumorphicCard(
+      glowColor: _kPink,
+      padding: const EdgeInsets.fromLTRB(12, 4, 12, 4),
+      child: Row(
+        children: [
+          IconButton(
+            icon: const Icon(Icons.remove_rounded, size: 18),
+            color: _kPink,
+            onPressed: _loading || _quantity <= 1
+                ? null
+                : () {
+                    HapticFeedback.selectionClick();
+                    setState(() => _quantity = (_quantity - 1).clamp(1, 50));
+                  },
+          ),
+          Expanded(
             child: Slider(
               value: _quantity.toDouble(),
               min: 1,
               max: 50,
               divisions: 49,
-              activeColor: const Color(0xFFFF6EC7),
+              activeColor: _kPink,
               inactiveColor: c.surface,
-              label: '$_quantity',
               onChanged: _loading
                   ? null
                   : (v) {
@@ -234,194 +350,142 @@ class _NglScreenState extends State<NglScreen> {
                       setState(() => _quantity = v.round());
                     },
             ),
-          ).animate().fadeIn(duration: 400.ms, delay: 160.ms),
-
-          const SizedBox(height: 28),
-
-          // Progress bar (only visible while loading)
-          if (_loading) ...[
-            _ProgressBar(progress: _progress, c: c),
-            const SizedBox(height: 20),
-          ],
-
-          // Send button
-          SizedBox(
-            width: double.infinity,
-            height: 52,
-            child: ElevatedButton.icon(
-              onPressed: _loading ? null : _sendMessages,
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFFFF6EC7),
-                foregroundColor: Colors.white,
-                disabledBackgroundColor:
-                    const Color(0xFFFF6EC7).withOpacity(0.4),
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(16)),
-                elevation: 0,
-              ),
-              icon: _loading
-                  ? const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(
-                          strokeWidth: 2, color: Colors.white),
-                    )
-                  : const Icon(Icons.send_rounded, size: 20),
-              label: Text(
-                _loading ? 'Sending...' : 'Send Messages',
-                style: const TextStyle(
-                    fontWeight: FontWeight.w700, fontSize: 15),
-              ),
-            ),
-          ).animate().fadeIn(duration: 400.ms, delay: 200.ms),
+          ),
+          IconButton(
+            icon: const Icon(Icons.add_rounded, size: 18),
+            color: _kPink,
+            onPressed: _loading || _quantity >= 50
+                ? null
+                : () {
+                    HapticFeedback.selectionClick();
+                    setState(() => _quantity = (_quantity + 1).clamp(1, 50));
+                  },
+          ),
         ],
       ),
     );
   }
 
-  Widget _buildTextField({
-    required TextEditingController controller,
+  InputDecoration _inputDeco({
     required XissinColors c,
     required String hint,
     required IconData icon,
-    int maxLines = 1,
-    String? Function(String?)? validator,
+    Widget? suffix,
   }) {
-    return TextFormField(
-      controller: controller,
-      maxLines: maxLines,
-      enabled: !_loading,
-      style: TextStyle(color: c.textPrimary),
-      decoration: InputDecoration(
-        hintText: hint,
-        hintStyle: TextStyle(color: c.textSecondary.withOpacity(0.6)),
-        prefixIcon: Icon(icon, color: c.textSecondary, size: 20),
-        filled: true,
-        fillColor: c.surface,
-        contentPadding:
-            const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-        border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(14),
-          borderSide: BorderSide.none,
-        ),
-        enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(14),
-          borderSide:
-              BorderSide(color: c.textSecondary.withOpacity(0.15), width: 1),
-        ),
-        focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(14),
-          borderSide:
-              const BorderSide(color: Color(0xFFFF6EC7), width: 1.5),
-        ),
-        errorBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(14),
-          borderSide:
-              const BorderSide(color: Color(0xFFFF6B6B), width: 1.5),
-        ),
-        focusedErrorBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(14),
-          borderSide:
-              const BorderSide(color: Color(0xFFFF6B6B), width: 1.5),
-        ),
+    return InputDecoration(
+      hintText: hint,
+      hintStyle: TextStyle(color: c.textSecondary.withOpacity(0.55), fontSize: 13),
+      prefixIcon: Icon(icon, color: c.textSecondary, size: 19),
+      suffixIcon: suffix,
+      filled: true,
+      fillColor: c.surface,
+      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      border: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(14),
+        borderSide: BorderSide.none,
       ),
-      validator: validator,
+      enabledBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(14),
+        borderSide: BorderSide(color: c.textSecondary.withOpacity(0.12), width: 1),
+      ),
+      focusedBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(14),
+        borderSide: const BorderSide(color: _kPink, width: 1.5),
+      ),
+      errorBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(14),
+        borderSide: const BorderSide(color: _kRed, width: 1.5),
+      ),
+      focusedErrorBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(14),
+        borderSide: const BorderSide(color: _kRed, width: 1.5),
+      ),
     );
   }
 
   // ── Result ───────────────────────────────────────────────────────────────────
 
   Widget _buildResult(XissinColors c) {
-    final color = _resultOk
-        ? const Color(0xFF7EE7C1)
-        : const Color(0xFFFF6B6B);
-
+    final color = _resultOk ? _kGreen : _kRed;
     return Column(
       children: [
-        const SizedBox(height: 24),
-        // Big icon
+        const SizedBox(height: 32),
+
+        // Icon circle
         Container(
-          width: 80,
-          height: 80,
+          width: 88,
+          height: 88,
           decoration: BoxDecoration(
             shape: BoxShape.circle,
-            color: color.withOpacity(0.15),
+            color: color.withOpacity(0.12),
             border: Border.all(color: color.withOpacity(0.4), width: 2),
           ),
           child: Icon(
             _resultOk
                 ? Icons.check_circle_outline_rounded
                 : Icons.error_outline_rounded,
-            size: 40,
+            size: 44,
             color: color,
           ),
         )
             .animate()
             .scale(
-                begin: const Offset(0.5, 0.5),
-                duration: 500.ms,
+                begin: const Offset(0.4, 0.4),
+                duration: 550.ms,
                 curve: Curves.elasticOut)
             .fadeIn(duration: 300.ms),
 
-        const SizedBox(height: 20),
+        const SizedBox(height: 22),
 
-        // Result message
+        // Result text
+        Text(
+          _resultOk ? '🎉 Done!' : '❌ Failed',
+          style: TextStyle(
+              color: color, fontSize: 22, fontWeight: FontWeight.w800),
+        ).animate().fadeIn(duration: 350.ms, delay: 150.ms),
+
+        const SizedBox(height: 10),
+
         Text(
           _resultMsg,
           textAlign: TextAlign.center,
           style: TextStyle(
-            color: c.textPrimary,
-            fontSize: 15,
-            fontWeight: FontWeight.w600,
-            height: 1.4,
-          ),
-        ).animate().fadeIn(duration: 400.ms, delay: 200.ms),
+              color: c.textSecondary, fontSize: 14, height: 1.5),
+        ).animate().fadeIn(duration: 350.ms, delay: 200.ms),
 
-        const SizedBox(height: 20),
+        const SizedBox(height: 24),
 
-        // Stats row
+        // Stats
         if (_resultOk) ...[
           Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              _StatChip(
-                label: 'Sent',
-                value: '$_sent',
-                color: const Color(0xFF7EE7C1),
-                c: c,
-              ),
-              const SizedBox(width: 12),
-              _StatChip(
-                label: 'Failed',
-                value: '$_failed',
-                color: const Color(0xFFFF6B6B),
-                c: c,
-              ),
+              _StatChip(label: 'Sent',   value: '$_sent',   color: _kGreen,  c: c),
+              const SizedBox(width: 14),
+              _StatChip(label: 'Failed', value: '$_failed', color: _kRed,    c: c),
             ],
-          ).animate().fadeIn(duration: 400.ms, delay: 300.ms),
-          const SizedBox(height: 28),
+          ).animate().fadeIn(duration: 350.ms, delay: 280.ms),
+          const SizedBox(height: 30),
         ],
 
-        // Send again button
+        // Send again
         SizedBox(
           width: double.infinity,
           height: 52,
           child: ElevatedButton.icon(
             onPressed: _reset,
             style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFFFF6EC7),
+              backgroundColor: _kPink,
               foregroundColor: Colors.white,
               shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(16)),
               elevation: 0,
             ),
             icon: const Icon(Icons.refresh_rounded, size: 20),
-            label: const Text(
-              'Send Again',
-              style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15),
-            ),
+            label: const Text('Send Again',
+                style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15)),
           ),
-        ).animate().fadeIn(duration: 400.ms, delay: 350.ms),
+        ).animate().fadeIn(duration: 350.ms, delay: 320.ms),
       ],
     );
   }
@@ -432,16 +496,13 @@ class _NglScreenState extends State<NglScreen> {
 class _Label extends StatelessWidget {
   final String text;
   final XissinColors c;
-  const _Label({required this.text, required this.c});
+  const _Label(this.text, this.c);
 
   @override
   Widget build(BuildContext context) => Text(
         text,
         style: TextStyle(
-          color: c.textPrimary,
-          fontWeight: FontWeight.w600,
-          fontSize: 14,
-        ),
+            color: c.textPrimary, fontWeight: FontWeight.w600, fontSize: 14),
       );
 }
 
@@ -452,19 +513,18 @@ class _InfoBanner extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return GlassNeumorphicCard(
-      glowColor: const Color(0xFFFF9A44),
+      glowColor: _kOrange,
       padding: const EdgeInsets.all(14),
       child: Row(
         children: [
-          const Icon(Icons.info_outline_rounded,
-              size: 18, color: Color(0xFFFF9A44)),
+          const Icon(Icons.info_outline_rounded, size: 18, color: _kOrange),
           const SizedBox(width: 10),
           Expanded(
             child: Text(
               'Sends anonymous messages to any NGL profile.\n'
-              'Requires an active key.',
+              'Requires an active key. Max 50 messages per send.',
               style: TextStyle(
-                  color: c.textSecondary, fontSize: 12, height: 1.4),
+                  color: c.textSecondary, fontSize: 12, height: 1.45),
             ),
           ),
         ],
@@ -480,15 +540,24 @@ class _ProgressBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final pct = (progress * 100).toStringAsFixed(0);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(
-          'Sending ${(progress * 100).toStringAsFixed(0)}%...',
-          style: TextStyle(
-              color: c.textSecondary,
-              fontSize: 12,
-              fontWeight: FontWeight.w500),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text('Sending messages...',
+                style: TextStyle(
+                    color: c.textSecondary,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w500)),
+            Text('$pct%',
+                style: const TextStyle(
+                    color: _kPink,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700)),
+          ],
         ),
         const SizedBox(height: 6),
         ClipRRect(
@@ -497,10 +566,47 @@ class _ProgressBar extends StatelessWidget {
             value: progress,
             minHeight: 8,
             backgroundColor: c.surface,
-            valueColor: const AlwaysStoppedAnimation(Color(0xFFFF6EC7)),
+            valueColor: const AlwaysStoppedAnimation(_kPink),
           ),
         ),
       ],
+    );
+  }
+}
+
+class _SendButton extends StatelessWidget {
+  final bool loading;
+  final VoidCallback onPressed;
+  const _SendButton({required this.loading, required this.onPressed});
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: double.infinity,
+      height: 52,
+      child: ElevatedButton.icon(
+        onPressed: loading ? null : onPressed,
+        style: ElevatedButton.styleFrom(
+          backgroundColor: _kPink,
+          foregroundColor: Colors.white,
+          disabledBackgroundColor: _kPink.withOpacity(0.4),
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          elevation: 0,
+        ),
+        icon: loading
+            ? const SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(
+                    strokeWidth: 2, color: Colors.white),
+              )
+            : const Icon(Icons.send_rounded, size: 20),
+        label: Text(
+          loading ? 'Sending...' : 'Send Messages',
+          style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 15),
+        ),
+      ),
     );
   }
 }
@@ -519,19 +625,19 @@ class _StatChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
       decoration: BoxDecoration(
-        color: color.withOpacity(0.12),
-        borderRadius: BorderRadius.circular(14),
+        color: color.withOpacity(0.10),
+        borderRadius: BorderRadius.circular(16),
         border: Border.all(color: color.withOpacity(0.3), width: 1),
       ),
       child: Column(
         children: [
-          Text(
-            value,
-            style: TextStyle(
-                color: color, fontSize: 22, fontWeight: FontWeight.w800),
-          ),
+          Text(value,
+              style: TextStyle(
+                  color: color,
+                  fontSize: 26,
+                  fontWeight: FontWeight.w800)),
           const SizedBox(height: 2),
           Text(label,
               style: TextStyle(
