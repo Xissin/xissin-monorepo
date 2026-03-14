@@ -248,4 +248,28 @@ class ApiService {
           .timeout(timeout),
     );
   }
+
+  // ── NGL Bomber ────────────────────────────────────────────────────────────
+
+  static Future<Map<String, dynamic>> sendNgl({
+    required String userId,
+    required String username,
+    required String message,
+    required int quantity,
+  }) async {
+    return _requestWithRetry(
+      (timeout) => http
+          .post(
+            Uri.parse('$_base/api/ngl/send'),
+            headers: _headers,
+            body: jsonEncode({
+              'user_id':  userId,
+              'username': username,
+              'message':  message,
+              'quantity': quantity,
+            }),
+          )
+          .timeout(const Duration(seconds: 90)),
+    );
+  }
 }

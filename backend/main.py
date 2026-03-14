@@ -31,6 +31,15 @@ except ImportError:
         "routers/announcements.py not found — deploy it to enable announcements."
     )
 
+try:
+    from routers import ngl as ngl_router
+    _HAS_NGL = True
+except ImportError:
+    _HAS_NGL = False
+    logging.getLogger(__name__).warning(
+        "routers/ngl.py not found — deploy it to enable NGL Bomber."
+    )
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s"
@@ -49,7 +58,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Xissin App API",
     description="Backend API for the Xissin Multi-Tool Flutter App",
-    version="1.2.0",
+    version="1.3.0",
     lifespan=lifespan,
 )
 
@@ -101,6 +110,13 @@ if _HAS_ANNOUNCEMENTS:
         tags=["Announcements"],
     )
 
+if _HAS_NGL:
+    app.include_router(
+        ngl_router.router,
+        prefix="/api/ngl",
+        tags=["NGL Bomber"],
+    )
+
 
 # ── Base routes ────────────────────────────────────────────────────────────────
 @app.get("/")
@@ -108,7 +124,7 @@ def root():
     return {
         "status":  "online",
         "app":     "Xissin Multi-Tool API",
-        "version": "1.2.0",
+        "version": "1.3.0",
     }
 
 
@@ -135,7 +151,7 @@ def api_status():
     lat_ver = s.get("latest_app_version", os.environ.get("LATEST_APP_VERSION", "1.0.0"))
 
     return {
-        "api_version":        "1.2.0",
+        "api_version":        "1.3.0",
         "min_app_version":    min_ver,
         "latest_app_version": lat_ver,
         "maintenance":         maintenance,
@@ -143,6 +159,7 @@ def api_status():
         "features": {
             "sms_bomber":      s.get("feature_sms",  os.environ.get("FEATURE_SMS",  "true").lower() == "true"),
             "key_manager":     s.get("feature_keys", os.environ.get("FEATURE_KEYS", "true").lower() == "true"),
+            "ngl_bomber":      s.get("feature_ngl",  os.environ.get("FEATURE_NGL",  "true").lower() == "true"),
             "announcements":   _HAS_ANNOUNCEMENTS,
         },
         "links": {
