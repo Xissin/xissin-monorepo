@@ -34,6 +34,9 @@ class RedeemKeyRequest(BaseModel):
 class RevokeKeyRequest(BaseModel):
     key: str
 
+class DeleteKeyRequest(BaseModel):
+    key: str
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _generate_key_string() -> str:
@@ -117,6 +120,22 @@ def revoke_key(req: RevokeKeyRequest):
     db.delete_key(req.key)
     db.append_log({"action": "key_revoked", "key": req.key})
     return {"success": True, "message": "Key revoked"}
+
+
+@router.post("/delete", dependencies=[Depends(require_admin)])
+def delete_unredeemed_key(req: DeleteKeyRequest):
+    """Admin: delete an unredeemed key only. Redeemed keys are protected and cannot be deleted this way."""
+    key_data = db.get_key(req.key)
+    if not key_data:
+        raise HTTPException(status_code=404, detail="Key not found")
+    if key_data.get("redeemed"):
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot delete a redeemed key. Use /revoke if you must remove it."
+        )
+    db.delete_key(req.key)
+    db.append_log({"action": "key_deleted", "key": req.key})
+    return {"success": True, "message": f"Key {req.key} deleted successfully"}
 
 
 @router.get("/list", dependencies=[Depends(require_admin)])
