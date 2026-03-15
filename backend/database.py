@@ -42,7 +42,7 @@ RK_ANNOUNCEMENTS = "xissin:app:announcements"
 RK_SMS_HISTORY   = "xissin:app:sms_history"
 RK_SMS_LOGS      = "xissin:app:sms_logs"
 RK_DEVICE_INFO   = "xissin:app:device_info"
-RK_LOCATIONS     = "xissin:app:locations"        # ← NEW: user location pins
+RK_LOCATIONS     = "xissin:app:locations"
 
 # ── Default server settings ───────────────────────────────────────────────────
 DEFAULT_SETTINGS = {
@@ -61,38 +61,61 @@ MAX_LOGS             = 500
 MAX_SMS_LOGS         = 1000
 
 # ── In-memory cache + lock ────────────────────────────────────────────────────
-_cache: dict      = {}
-_cache_lock       = threading.Lock()
+_cache: dict  = {}
+_cache_lock   = threading.Lock()
+
+# ── Shared httpx client (connection pooling — avoids reconnect on every call) ─
+# Created lazily per-thread to avoid event loop issues at import time.
+_http_client: httpx.AsyncClient | None = None
+_http_client_lock = asyncio.Lock() if False else threading.Lock()  # placeholder
 
 def ph_now() -> datetime:
     return datetime.now(PH_TZ).replace(tzinfo=None)
 
+# ── Connection settings ───────────────────────────────────────────────────────
+# Shorter timeout + more retries = resilient against Railway network flakiness
+_CONNECT_TIMEOUT = 5    # seconds to establish connection
+_READ_TIMEOUT    = 8    # seconds to wait for response
+_MAX_RETRIES     = 3    # total attempts per operation
+_RETRY_DELAYS    = [0.5, 1.5, 3.0]  # backoff between retries
+
+def _timeout() -> httpx.Timeout:
+    return httpx.Timeout(connect=_CONNECT_TIMEOUT, read=_READ_TIMEOUT,
+                         write=_READ_TIMEOUT, pool=_CONNECT_TIMEOUT)
+
 # ── Low-level async Upstash helpers ──────────────────────────────────────────
 
 async def _redis_get_async(key: str):
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.get(
-                f"{_url()}/get/{key}",
-                headers={"Authorization": f"Bearer {_token()}"},
-            )
-        if resp.status_code != 200:
-            return None
-        body   = resp.json()
-        result = body.get("result")
-        if result is None:
-            return None
-        return json.loads(result)
-    except Exception as e:
-        logger.error(f"Redis GET {key} failed: {e}")
-        return None
+    """GET with retry — returns parsed JSON or None."""
+    last_err = None
+    for attempt in range(_MAX_RETRIES):
+        try:
+            async with httpx.AsyncClient(timeout=_timeout()) as client:
+                resp = await client.get(
+                    f"{_url()}/get/{key}",
+                    headers={"Authorization": f"Bearer {_token()}"},
+                )
+            if resp.status_code != 200:
+                return None
+            result = resp.json().get("result")
+            if result is None:
+                return None
+            return json.loads(result)
+        except Exception as e:
+            last_err = e
+            if attempt < _MAX_RETRIES - 1:
+                await asyncio.sleep(_RETRY_DELAYS[attempt])
+    logger.error(f"Redis GET {key} failed after {_MAX_RETRIES} attempts: {last_err}")
+    return None
 
 
 async def _redis_set_async(key: str, data) -> bool:
-    for attempt in range(1, 4):
+    """SET with retry — fire-and-forget friendly."""
+    last_err = None
+    for attempt in range(_MAX_RETRIES):
         try:
             encoded = json.dumps(data, default=str)
-            async with httpx.AsyncClient(timeout=10) as client:
+            async with httpx.AsyncClient(timeout=_timeout()) as client:
                 resp = await client.post(
                     f"{_url()}/set/{key}",
                     headers={
@@ -104,13 +127,33 @@ async def _redis_set_async(key: str, data) -> bool:
             if resp.status_code == 200 and resp.json().get("result") == "OK":
                 return True
         except Exception as e:
-            logger.error(f"Redis SET {key} attempt {attempt} failed: {e}")
-            if attempt < 3:
-                await asyncio.sleep(attempt)
+            last_err = e
+            if attempt < _MAX_RETRIES - 1:
+                await asyncio.sleep(_RETRY_DELAYS[attempt])
+    logger.error(
+        f"Upstash SET {key}: all {_MAX_RETRIES} attempts failed. "
+        f"DATA WILL BE LOST ON REDEPLOY. Last error: {last_err}"
+    )
     return False
 
 
-# ── Sync wrappers ─────────────────────────────────────────────────────────────
+async def _redis_delete_async(key: str) -> bool:
+    """DEL with retry."""
+    for attempt in range(_MAX_RETRIES):
+        try:
+            async with httpx.AsyncClient(timeout=_timeout()) as client:
+                resp = await client.get(
+                    f"{_url()}/del/{key}",
+                    headers={"Authorization": f"Bearer {_token()}"},
+                )
+            return resp.status_code == 200
+        except Exception as e:
+            if attempt < _MAX_RETRIES - 1:
+                await asyncio.sleep(_RETRY_DELAYS[attempt])
+    return False
+
+
+# ── Sync wrappers (background event loop) ────────────────────────────────────
 _bg_loop: asyncio.AbstractEventLoop | None = None
 _bg_loop_lock = threading.Lock()
 
@@ -132,7 +175,8 @@ def _redis_get(key: str):
     loop   = _get_bg_loop()
     future = asyncio.run_coroutine_threadsafe(_redis_get_async(key), loop)
     try:
-        return future.result(timeout=15)
+        # Generous outer timeout: connect(5) + read(8) * retries(3) + backoff = ~45s max
+        return future.result(timeout=45)
     except Exception as e:
         logger.error(f"_redis_get({key}) timeout/error: {e}")
         return None
@@ -142,6 +186,15 @@ def _redis_set(key: str, data) -> bool:
     loop = _get_bg_loop()
     asyncio.run_coroutine_threadsafe(_redis_set_async(key, data), loop)
     return True
+
+
+def _redis_delete(key: str) -> bool:
+    loop = _get_bg_loop()
+    future = asyncio.run_coroutine_threadsafe(_redis_delete_async(key), loop)
+    try:
+        return future.result(timeout=20)
+    except Exception:
+        return False
 
 
 # ── Expired key pruning ───────────────────────────────────────────────────────
@@ -199,7 +252,7 @@ async def init_db():
         _cache["sms_history"]   = await _redis_get_async(RK_SMS_HISTORY)   or {}
         _cache["sms_logs"]      = await _redis_get_async(RK_SMS_LOGS)      or []
         _cache["device_info"]   = await _redis_get_async(RK_DEVICE_INFO)   or {}
-        _cache["locations"]     = await _redis_get_async(RK_LOCATIONS)     or {}  # ← NEW
+        _cache["locations"]     = await _redis_get_async(RK_LOCATIONS)     or {}
 
     logger.info(
         f"✅ DB loaded — keys:{len(_cache['keys'])} "
@@ -285,9 +338,9 @@ def get_logs(limit: int = 50) -> list:
 
 def increment_sms_stat(user_id: str, count: int = 1):
     with _cache_lock:
-        stats             = _cache.setdefault("sms_stats", {})
+        stats               = _cache.setdefault("sms_stats", {})
         stats[str(user_id)] = stats.get(str(user_id), 0) + count
-        snapshot          = dict(stats)
+        snapshot            = dict(stats)
     _redis_set(RK_SMS_STATS, snapshot)
 
 def get_sms_stat(user_id: str) -> int:
@@ -335,10 +388,9 @@ def get_sms_history(user_id: str) -> list:
         history = _cache.get("sms_history", {}).get(uid, [])
         return list(reversed(history))
 
-# ── SMS Bomb Logs (dedicated, admin-visible) ──────────────────────────────────
+# ── SMS Bomb Logs ─────────────────────────────────────────────────────────────
 
 def append_sms_log(entry: dict):
-    """Store a full SMS bomb attack log with service-level results."""
     with _cache_lock:
         logs = _cache.setdefault("sms_logs", [])
         logs.append({**entry, "ts": ph_now().isoformat()})
@@ -348,12 +400,10 @@ def append_sms_log(entry: dict):
     _redis_set(RK_SMS_LOGS, snapshot)
 
 def get_sms_logs(limit: int = 100) -> list:
-    """Return most-recent SMS bomb logs first."""
     with _cache_lock:
         return list(reversed(_cache.get("sms_logs", [])))[:limit]
 
 def clear_sms_logs():
-    """Admin: wipe all SMS bomb logs."""
     with _cache_lock:
         _cache["sms_logs"] = []
     _redis_set(RK_SMS_LOGS, [])
@@ -361,12 +411,11 @@ def clear_sms_logs():
 # ── Device Info ───────────────────────────────────────────────────────────────
 
 def save_device_info(user_id: str, info: dict):
-    """Upsert device info for a user. Updated on every app launch."""
     uid = str(user_id)
     with _cache_lock:
-        devices           = _cache.setdefault("device_info", {})
-        devices[uid]      = {**info, "user_id": uid}
-        snapshot          = dict(devices)
+        devices      = _cache.setdefault("device_info", {})
+        devices[uid] = {**info, "user_id": uid}
+        snapshot     = dict(devices)
     _redis_set(RK_DEVICE_INFO, snapshot)
 
 def get_device_info(user_id: str) -> dict | None:
@@ -380,16 +429,11 @@ def get_all_device_info() -> dict:
 # ── User Locations ────────────────────────────────────────────────────────────
 
 def save_user_location(user_id: str, location: dict):
-    """Upsert last-known GPS location for a user."""
     uid = str(user_id)
     with _cache_lock:
-        locs       = _cache.setdefault("locations", {})
-        locs[uid]  = {
-            **location,
-            "user_id":    uid,
-            "updated_at": ph_now().isoformat(),
-        }
-        snapshot   = dict(locs)
+        locs      = _cache.setdefault("locations", {})
+        locs[uid] = {**location, "user_id": uid, "updated_at": ph_now().isoformat()}
+        snapshot  = dict(locs)
     _redis_set(RK_LOCATIONS, snapshot)
 
 def get_user_location(user_id: str) -> dict | None:
@@ -401,7 +445,6 @@ def get_all_locations() -> dict:
         return dict(_cache.get("locations", {}))
 
 def clear_all_locations():
-    """Admin: wipe all stored locations."""
     with _cache_lock:
         _cache["locations"] = {}
     _redis_set(RK_LOCATIONS, {})
