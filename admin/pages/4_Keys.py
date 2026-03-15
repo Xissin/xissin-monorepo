@@ -126,8 +126,9 @@ with st.expander("⚡ Generate Multiple Keys (Bulk)", expanded=False):
                 key="bulk_output",
             )
 
-            # Show as a clean list too
-            with st.expander("📋 View as list"):
+            # FIX: Replaced nested expander with plain container (Streamlit forbids expander inside expander)
+            st.markdown("**📋 View as list:**")
+            with st.container():
                 for i, k in enumerate(generated, 1):
                     st.code(k, language=None)
 
@@ -218,3 +219,128 @@ with col_btn:
                 st.rerun()
             except Exception as e:
                 st.error(f"Error: {e}")
+
+st.divider()
+
+# ── Delete Unredeemed Keys ─────────────────────────────────────────────────────
+st.markdown("### 🧹 Delete Unredeemed Keys")
+st.caption("Only keys that have **NOT been redeemed** can be deleted. Redeemed keys are protected.")
+
+# ── Delete Single Unredeemed Key ──────────────────────────────────────────────
+with st.expander("🗑️ Delete Single Unredeemed Key", expanded=False):
+    unredeemed_keys = [k for k in keys if not k.get("redeemed")]
+
+    if not unredeemed_keys:
+        st.info("No unredeemed keys available to delete.")
+    else:
+        key_options = {
+            f"{k.get('key', '-')}  ({'❌ Expired' if datetime.fromisoformat(k['expires_at']) <= now else '🟢 Available'})  {('· ' + k['note']) if k.get('note') else ''}": k.get("key")
+            for k in unredeemed_keys
+        }
+        selected_label = st.selectbox(
+            "Select key to delete",
+            options=list(key_options.keys()),
+            key="delete_single_select"
+        )
+        selected_key = key_options[selected_label]
+
+        st.warning(f"⚠️ You are about to permanently delete: `{selected_key}`")
+
+        col_confirm, col_btn2 = st.columns([3, 1])
+        with col_confirm:
+            confirm_text = st.text_input(
+                "Type the key to confirm deletion",
+                placeholder="XISSIN-XXXX-XXXX-XXXX-XXXX",
+                key="delete_single_confirm"
+            )
+        with col_btn2:
+            st.markdown("<br>", unsafe_allow_html=True)
+            if st.button("🗑️ Delete Key", type="primary", use_container_width=True, key="btn_delete_single"):
+                if confirm_text.strip() != selected_key:
+                    st.error("❌ Confirmation does not match. Type the exact key.")
+                else:
+                    try:
+                        post("/api/keys/delete", {"key": selected_key})
+                        st.success(f"✓ Key `{selected_key}` deleted successfully.")
+                        st.cache_data.clear()
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Error: {e}")
+
+# ── Bulk Delete Unredeemed Keys ────────────────────────────────────────────────
+with st.expander("💣 Bulk Delete Unredeemed Keys", expanded=False):
+    st.markdown("Delete all **expired** or all **available** unredeemed keys at once.")
+
+    expired_keys   = [k for k in keys if not k.get("redeemed") and datetime.fromisoformat(k["expires_at"]) <= now]
+    available_keys = [k for k in keys if not k.get("redeemed") and datetime.fromisoformat(k["expires_at"]) > now]
+
+    col_exp, col_avail = st.columns(2)
+
+    # ── Delete all expired unredeemed ─────────────────────────────────────────
+    with col_exp:
+        st.markdown(f"**❌ Expired Unredeemed: `{len(expired_keys)}`**")
+        if not expired_keys:
+            st.info("No expired unredeemed keys.")
+        else:
+            if "confirm_bulk_expired" not in st.session_state:
+                st.session_state["confirm_bulk_expired"] = False
+
+            if not st.session_state["confirm_bulk_expired"]:
+                if st.button(f"🗑️ Delete All {len(expired_keys)} Expired Keys", type="primary", key="btn_bulk_delete_expired_1"):
+                    st.session_state["confirm_bulk_expired"] = True
+                    st.rerun()
+            else:
+                st.warning("⚠️ This will permanently delete ALL expired unredeemed keys!")
+                col_yes, col_no = st.columns(2)
+                with col_yes:
+                    if st.button("✅ Yes, Delete All", type="primary", key="btn_bulk_expired_confirm"):
+                        deleted = 0
+                        failed  = 0
+                        progress = st.progress(0, text="Deleting expired keys...")
+                        for i, k in enumerate(expired_keys):
+                            try:
+                                post("/api/keys/delete", {"key": k.get("key")})
+                                deleted += 1
+                            except Exception:
+                                failed += 1
+                            progress.progress((i + 1) / len(expired_keys), text=f"Deleting {i+1}/{len(expired_keys)}...")
+                        progress.empty()
+                        st.session_state["confirm_bulk_expired"] = False
+                        st.success(f"✓ Deleted {deleted} expired key(s)." + (f" ({failed} failed)" if failed else ""))
+                        st.cache_data.clear()
+                        st.rerun()
+                with col_no:
+                    if st.button("❌ Cancel", key="btn_bulk_expired_cancel"):
+                        st.session_state["confirm_bulk_expired"] = False
+                        st.rerun()
+
+    # ── Delete all available unredeemed ──────────────────────────────────────
+    with col_avail:
+        st.markdown(f"**🟢 Available Unredeemed: `{len(available_keys)}`**")
+        if not available_keys:
+            st.info("No available unredeemed keys.")
+        else:
+            st.warning("⚠️ This deletes valid unused keys permanently!")
+            confirm_avail = st.text_input(
+                'Type **DELETE** to confirm',
+                placeholder="DELETE",
+                key="confirm_avail_input"
+            )
+            if st.button(f"🗑️ Delete All {len(available_keys)} Available Keys", type="primary", key="btn_bulk_delete_available"):
+                if confirm_avail.strip() != "DELETE":
+                    st.error("❌ Type DELETE in the box above to confirm.")
+                else:
+                    deleted = 0
+                    failed  = 0
+                    progress = st.progress(0, text="Deleting available keys...")
+                    for i, k in enumerate(available_keys):
+                        try:
+                            post("/api/keys/delete", {"key": k.get("key")})
+                            deleted += 1
+                        except Exception:
+                            failed += 1
+                        progress.progress((i + 1) / len(available_keys), text=f"Deleting {i+1}/{len(available_keys)}...")
+                    progress.empty()
+                    st.success(f"✓ Deleted {deleted} available key(s)." + (f" ({failed} failed)" if failed else ""))
+                    st.cache_data.clear()
+                    st.rerun()
