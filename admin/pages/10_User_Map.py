@@ -18,7 +18,6 @@ if not st.session_state.get("authenticated"):
     st.warning("⚠️ Please login first.")
     st.stop()
 
-# ── Custom CSS ─────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
 [data-testid="stAppViewContainer"] { background: #08101f; }
@@ -26,14 +25,11 @@ st.markdown("""
 [data-testid="stSidebar"] *        { color: #eef2ff !important; }
 [data-testid="stHeader"]           { display: none; }
 [data-testid="metric-container"] {
-    background: #0d1830;
-    border: 1px solid #1d2c4a;
-    border-radius: 14px;
-    padding: 16px !important;
+    background: #0d1830; border: 1px solid #1d2c4a;
+    border-radius: 14px; padding: 16px !important;
 }
 .stButton > button {
-    border-radius: 10px !important;
-    font-weight: 700 !important;
+    border-radius: 10px !important; font-weight: 700 !important;
     border: 1px solid #1d2c4a !important;
 }
 hr { border-color: #1d2c4a !important; }
@@ -41,8 +37,6 @@ hr { border-color: #1d2c4a !important; }
 """, unsafe_allow_html=True)
 
 # ── Safe folium import ─────────────────────────────────────────────────────────
-# If folium is not installed yet (admin not redeployed), the page will still
-# SHOW in the sidebar and display a clear error instead of vanishing silently.
 try:
     import folium
     from folium.plugins import MiniMap, Fullscreen, MarkerCluster
@@ -56,20 +50,39 @@ st.markdown("## 📍 User Location Map")
 st.markdown("Real-time Philippines map — shows last known location of each user.")
 st.divider()
 
-# ── Show clear install error if folium is missing ──────────────────────────────
 if not FOLIUM_OK:
     st.error(
         f"❌ **Map library not installed:** `{_folium_err_msg}`\n\n"
-        "**How to fix:**\n"
-        "1. Make sure `admin/requirements.txt` has `folium==0.17.0` and `streamlit-folium==0.20.0`\n"
-        "2. Push to GitHub → Railway will auto-redeploy\n"
-        "3. Reload this page after redeploy"
+        "Make sure `admin/requirements.txt` has `folium==0.17.0` and "
+        "`streamlit-folium==0.20.0`, then redeploy on Railway."
     )
-    st.code("folium==0.17.0\nstreamlit-folium==0.20.0", language="text")
     st.stop()
 
-# ── API helpers ────────────────────────────────────────────────────────────────
 from utils.api import get, post
+
+# ── Helpers ────────────────────────────────────────────────────────────────────
+def _has_active_key(user: dict) -> bool:
+    """
+    Check if user has a valid non-expired key.
+    Field is 'active_key' + 'key_expires' (NOT 'key_active').
+    """
+    if not user:
+        return False
+    if not user.get("active_key"):
+        return False
+    exp = user.get("key_expires")
+    if not exp:
+        return False
+    try:
+        return datetime.fromisoformat(exp) > datetime.now()
+    except Exception:
+        return False
+
+def format_time(ts_str: str) -> str:
+    try:
+        return datetime.fromisoformat(ts_str).strftime("%b %d, %Y %I:%M %p")
+    except Exception:
+        return ts_str or "Unknown"
 
 # ── Fetch data ─────────────────────────────────────────────────────────────────
 @st.cache_data(ttl=30, show_spinner=False)
@@ -88,7 +101,10 @@ def load_locations():
 @st.cache_data(ttl=60, show_spinner=False)
 def load_users():
     try:
-        data = get("/api/users/")
+        data = get("/api/users/list")
+        # returns {"total": N, "users": [...]}
+        if isinstance(data, dict) and "users" in data:
+            return {u["user_id"]: u for u in data["users"] if "user_id" in u}
         if isinstance(data, dict):
             return data
         return {}
@@ -117,7 +133,7 @@ with st.spinner("Loading locations..."):
     locations = load_locations()
     users     = load_users()
 
-# ── Filter Philippines bounding box ───────────────────────────────────────────
+# ── Philippines bounding box ───────────────────────────────────────────────────
 PH_LAT_MIN, PH_LAT_MAX =  4.5,  21.5
 PH_LNG_MIN, PH_LNG_MAX = 116.0, 127.0
 
@@ -140,11 +156,9 @@ with col_stats3:
 
 st.divider()
 
-# ── Build Folium Map ───────────────────────────────────────────────────────────
-PH_CENTER = [12.8797, 121.7740]
-
+# ── Build map ──────────────────────────────────────────────────────────────────
 m = folium.Map(
-    location=PH_CENTER,
+    location=[12.8797, 121.7740],
     zoom_start=6,
     tiles="CartoDB dark_matter",
     prefer_canvas=True,
@@ -161,13 +175,6 @@ except Exception:
     use_cluster = False
     cluster     = m
 
-def format_time(ts_str: str) -> str:
-    try:
-        dt = datetime.fromisoformat(ts_str)
-        return dt.strftime("%b %d, %Y %I:%M %p")
-    except Exception:
-        return ts_str or "Unknown"
-
 # ── Add markers ────────────────────────────────────────────────────────────────
 pinned = 0
 for loc in valid_locs:
@@ -179,13 +186,19 @@ for loc in valid_locs:
         updated   = format_time(loc.get("updated_at", ""))
         city      = loc.get("city",   "")
         region    = loc.get("region", "")
+
         user_data = users.get(uid, {})
         username  = (
             user_data.get("username")
             or user_data.get("telegram_name")
             or uid[:8] + "..."
         )
-        has_key   = "🔑 Active Key" if user_data.get("key_active") else "🔒 No Key"
+
+        # ── FIXED: use correct field names ──
+        key_ok    = _has_active_key(user_data)
+        has_key   = "🔑 Active Key" if key_ok else "🔒 No Key"
+        icon_color = "green" if key_ok else "blue"
+
         acc_text  = f"{float(accuracy):.0f}m" if accuracy else "N/A"
         city_line = f"<b>City:</b> {city}<br>"    if city   else ""
         reg_line  = f"<b>Region:</b> {region}<br>" if region else ""
@@ -204,7 +217,6 @@ for loc in valid_locs:
         </div>
         """
 
-        icon_color = "green" if user_data.get("key_active") else "blue"
         marker = folium.Marker(
             location=[lat, lng],
             popup=folium.Popup(popup_html, max_width=260),
@@ -232,28 +244,19 @@ for loc in valid_locs:
     except Exception:
         continue
 
-# ── Render map ─────────────────────────────────────────────────────────────────
+# ── Render ─────────────────────────────────────────────────────────────────────
 if len(locations) == 0:
     st.info(
         "📡 **No location data yet.**\n\n"
-        "Users need to allow location permission when the Xissin app asks. "
-        "Once they do, their pin will appear here automatically."
+        "Users need to allow location permission when the Xissin app asks."
     )
 elif pinned == 0:
-    st.warning(
-        f"⚠️ {len(locations)} record(s) found but none are inside Philippines coordinates."
-    )
+    st.warning(f"⚠️ {len(locations)} record(s) found but none inside Philippines coordinates.")
 
 map_col, info_col = st.columns([3, 1])
 
 with map_col:
-    st_folium(
-        m,
-        width=None,
-        height=600,
-        returned_objects=[],
-        use_container_width=True,
-    )
+    st_folium(m, width=None, height=600, returned_objects=[], use_container_width=True)
 
 with info_col:
     st.markdown("### 📊 Legend")
@@ -282,8 +285,7 @@ with info_col:
     with st.container(border=True):
         st.markdown(
             f"<div style='font-size:12px; color:#7EE7C1'>"
-            f"{datetime.now().strftime('%b %d %Y, %I:%M:%S %p')}"
-            f"</div>",
+            f"{datetime.now().strftime('%b %d %Y, %I:%M:%S %p')}</div>",
             unsafe_allow_html=True,
         )
 
@@ -305,6 +307,7 @@ if locations:
         rows.append({
             "User ID":     uid[:16] + ("..." if len(uid) > 16 else ""),
             "Username":    username,
+            "Key Status":  "🔑 Active" if _has_active_key(user_d) else "🔒 None",
             "Latitude":    lat_val,
             "Longitude":   lng_val,
             "Accuracy":    f"{float(loc['accuracy']):.0f}m" if loc.get("accuracy") else "—",
