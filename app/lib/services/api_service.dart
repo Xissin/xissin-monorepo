@@ -109,7 +109,7 @@ class ApiService {
     }
   }
 
-  // ── Announcements ─────────────────────────────────────────────────────────
+  // ── Announcements ──────────────────────────────────────────────────────────
 
   static Future<List<Map<String, dynamic>>> getAnnouncements() async {
     int attempt = 0;
@@ -138,7 +138,7 @@ class ApiService {
     }
   }
 
-  // ── Status ────────────────────────────────────────────────────────────────
+  // ── Status ─────────────────────────────────────────────────────────────────
 
   static Future<Map<String, dynamic>> getStatus() async {
     return _requestWithRetry(
@@ -149,12 +149,32 @@ class ApiService {
     );
   }
 
-  // ── Users ─────────────────────────────────────────────────────────────────
+  // ── Version Check ──────────────────────────────────────────────────────────
 
+  static Future<Map<String, dynamic>> getVersion() async {
+    try {
+      final res = await http
+          .get(Uri.parse('$_base/api/settings/version'), headers: _headers)
+          .timeout(const Duration(seconds: 10));
+      if (res.statusCode == 200) {
+        return jsonDecode(res.body) as Map<String, dynamic>;
+      }
+    } catch (_) {}
+    return {
+      'min_app_version': '1.0.0',
+      'latest_app_version': '1.0.0',
+      'maintenance': false,
+    };
+  }
+
+  // ── Users ──────────────────────────────────────────────────────────────────
+
+  /// Register (or update) the user on every app launch.
+  /// [deviceDetails] carries full hardware info + emulator detection flags.
   static Future<Map<String, dynamic>> registerUser({
     required String userId,
     String? username,
-    String? deviceInfo,
+    Map<String, dynamic>? deviceDetails,
   }) async {
     return _requestWithRetry(
       (timeout) => http
@@ -162,9 +182,11 @@ class ApiService {
             Uri.parse('$_base/api/users/register'),
             headers: _headers,
             body: jsonEncode({
-              'user_id': userId,
-              'username': username,
-              'device_info': deviceInfo,
+              'user_id':        userId,
+              'username':       username,
+              'device_details': deviceDetails,
+              // legacy field kept for backward compat
+              'device_info':    deviceDetails?['platform'] ?? 'android',
             }),
           )
           .timeout(timeout),
@@ -181,7 +203,7 @@ class ApiService {
     );
   }
 
-  // ── Keys ──────────────────────────────────────────────────────────────────
+  // ── Keys ───────────────────────────────────────────────────────────────────
 
   static Future<Map<String, dynamic>> redeemKey({
     required String key,
@@ -219,7 +241,7 @@ class ApiService {
     );
   }
 
-  // ── SMS Bomber ────────────────────────────────────────────────────────────
+  // ── SMS Bomber ─────────────────────────────────────────────────────────────
 
   static Future<Map<String, dynamic>> smsBomb({
     required String phone,
@@ -232,9 +254,9 @@ class ApiService {
             Uri.parse('$_base/api/sms/bomb'),
             headers: _headers,
             body: jsonEncode({
-              'phone': phone,
+              'phone':   phone,
               'user_id': userId,
-              'rounds': rounds,
+              'rounds':  rounds,
             }),
           )
           .timeout(const Duration(seconds: 90)),
@@ -249,7 +271,7 @@ class ApiService {
     );
   }
 
-  // ── NGL Bomber ────────────────────────────────────────────────────────────
+  // ── NGL Bomber ─────────────────────────────────────────────────────────────
 
   static Future<Map<String, dynamic>> sendNgl({
     required String userId,

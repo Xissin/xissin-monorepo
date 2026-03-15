@@ -72,7 +72,6 @@ class _SplashScreenState extends State<SplashScreen>
   }
 
   // ── Open URL ───────────────────────────────────────────────────────────────
-
   Future<void> _openUrl(String url) async {
     final uri = Uri.parse(url);
     if (await canLaunchUrl(uri)) {
@@ -81,7 +80,6 @@ class _SplashScreenState extends State<SplashScreen>
   }
 
   // ── User ID ────────────────────────────────────────────────────────────────
-
   Future<String> _getOrCreateUserId() async {
     final stored = await _storage.read(key: 'xissin_user_id');
     if (stored != null && stored.isNotEmpty) return stored;
@@ -105,12 +103,87 @@ class _SplashScreenState extends State<SplashScreen>
     return id;
   }
 
-  // ── Main Init ──────────────────────────────────────────────────────────────
+  // ── Rich Device Info Collection ────────────────────────────────────────────
+  /// Collects full hardware details + emulator/VM detection.
+  /// Sent to the backend on EVERY app launch so admin always has fresh data.
+  Future<Map<String, dynamic>> _collectDeviceInfo() async {
+    final info    = DeviceInfoPlugin();
+    final pkgInfo = await PackageInfo.fromPlatform();
 
+    try {
+      if (Platform.isAndroid) {
+        final a = await info.androidInfo;
+
+        // Emulator / VM detection heuristics
+        final brandLower = a.brand.toLowerCase();
+        final modelLower = a.model.toLowerCase();
+        final productLower = a.product.toLowerCase();
+        final hardwareLower = a.hardware.toLowerCase();
+
+        final isEmulator = !a.isPhysicalDevice ||
+            brandLower == 'google' && modelLower.contains('sdk') ||
+            productLower.contains('sdk') ||
+            productLower.contains('emulator') ||
+            productLower.contains('vbox') ||
+            hardwareLower == 'goldfish' ||
+            hardwareLower == 'ranchu' ||
+            modelLower.contains('emulator') ||
+            modelLower == 'android sdk built for x86' ||
+            brandLower.contains('genymotion') ||
+            productLower.contains('nox') ||
+            productLower.contains('bluestacks') ||
+            productLower.contains('ldmicro') ||
+            productLower.contains('memu');
+
+        return {
+          'platform':          'android',
+          'brand':             a.brand,
+          'model':             a.model,
+          'manufacturer':      a.manufacturer,
+          'product':           a.product,
+          'board':             a.board,
+          'hardware':          a.hardware,
+          'android_version':   a.version.release,
+          'sdk_int':           a.version.sdkInt,
+          'is_physical_device': a.isPhysicalDevice,
+          'is_emulator':       isEmulator,
+          'fingerprint':       a.fingerprint,
+          'app_version':       pkgInfo.version,
+          'build_number':      pkgInfo.buildNumber,
+        };
+      } else if (Platform.isIOS) {
+        final i          = await info.iosInfo;
+        final isEmulator = !i.isPhysicalDevice;
+        return {
+          'platform':           'ios',
+          'model':              i.model,
+          'name':               i.name,
+          'system_name':        i.systemName,
+          'system_version':     i.systemVersion,
+          'machine':            i.utsname.machine,
+          'is_physical_device': i.isPhysicalDevice,
+          'is_emulator':        isEmulator,
+          'app_version':        pkgInfo.version,
+          'build_number':       pkgInfo.buildNumber,
+        };
+      }
+    } catch (_) {}
+
+    // Fallback
+    return {
+      'platform':           Platform.operatingSystem,
+      'is_physical_device': true,
+      'is_emulator':        false,
+      'app_version':        pkgInfo.version,
+      'build_number':       pkgInfo.buildNumber,
+    };
+  }
+
+  // ── Main Init ──────────────────────────────────────────────────────────────
   Future<void> _initApp() async {
     setState(() {
       _showRetryButton = false;
-      _errorMessage = null;
+      _errorMessage    = null;
     });
 
     await Future.delayed(const Duration(milliseconds: 800));
@@ -128,36 +201,34 @@ class _SplashScreenState extends State<SplashScreen>
           return;
         }
 
-        // Get real version from package
-        final packageInfo = await PackageInfo.fromPlatform();
+        // Version check
+        final packageInfo    = await PackageInfo.fromPlatform();
         final currentVersion = packageInfo.version;
+        final minVersion     = status['min_app_version']    as String? ?? '1.0.0';
+        final latestVersion  = status['latest_app_version'] as String? ?? '1.0.0';
 
-        final minVersion =
-            status['min_app_version'] as String? ?? '1.0.0';
-        final latestVersion =
-            status['latest_app_version'] as String? ?? '1.0.0';
-
-        // Hard block — MUST update, stop here
         if (_isVersionOutdated(currentVersion, minVersion)) {
           _showForceUpdateDialog(currentVersion, minVersion);
-          return; // ← stops app from going further
+          return;
         }
-
-        // Soft notify — update available, WAIT for user to respond
         if (_isVersionOutdated(currentVersion, latestVersion)) {
           final shouldContinue =
               await _showSoftUpdateDialog(currentVersion, latestVersion);
-          if (!shouldContinue) return; // user closed dialog, continue below
+          if (!shouldContinue) return;
         }
       } catch (_) {}
+
+      // ── Collect full device info ──────────────────────────────────────────
+      _setStatus('Collecting device info...');
+      final deviceDetails = await _collectDeviceInfo();
 
       _setStatus('Getting device info...');
       final userId = await _getOrCreateUserId();
 
       _setStatus('Connecting to server...');
       final registerResponse = await ApiService.registerUser(
-        userId: userId,
-        deviceInfo: Platform.isAndroid ? 'android' : 'ios',
+        userId:        userId,
+        deviceDetails: deviceDetails,
       );
 
       if (registerResponse['banned'] == true) {
@@ -186,7 +257,6 @@ class _SplashScreenState extends State<SplashScreen>
   }
 
   // ── Error Handler ──────────────────────────────────────────────────────────
-
   void _handleError(String message) {
     _retryCount++;
     if (_retryCount < _maxAutoRetries) {
@@ -196,9 +266,9 @@ class _SplashScreenState extends State<SplashScreen>
       });
     } else {
       setState(() {
-        _errorMessage = message;
+        _errorMessage    = message;
         _showRetryButton = true;
-        _status = message;
+        _status          = message;
       });
     }
   }
@@ -209,7 +279,6 @@ class _SplashScreenState extends State<SplashScreen>
   }
 
   // ── Dialogs ────────────────────────────────────────────────────────────────
-
   void _showBannedDialog() {
     setState(() => _status = 'Account restricted.');
     if (!mounted) return;
@@ -218,36 +287,25 @@ class _SplashScreenState extends State<SplashScreen>
       barrierDismissible: false,
       builder: (_) => AlertDialog(
         backgroundColor: AppColors.surface,
-        shape:
-            RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
-        title: const Row(
-          children: [
-            Icon(Icons.block_rounded, color: AppColors.error, size: 22),
-            SizedBox(width: 10),
-            Text('Account Banned',
-                style: TextStyle(
-                    color: AppColors.textPrimary,
-                    fontWeight: FontWeight.bold,
-                    fontSize: 17)),
-          ],
-        ),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Text('🚫 Account Banned',
+            style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
         content: const Text(
-          'Your account has been banned.\n\nIf you believe this is a mistake, contact the admin on Telegram: @Xissin_0',
-          style: TextStyle(
-              color: AppColors.textSecondary, fontSize: 13, height: 1.6),
+          'Your account has been restricted.\nContact admin on Telegram.',
+          style: TextStyle(color: AppColors.textSecondary, height: 1.5),
         ),
         actions: [
           TextButton(
-            onPressed: () => exit(0),
-            child: const Text('Close App',
-                style: TextStyle(color: AppColors.error)),
+            onPressed: () => _openUrl(_telegramUrl),
+            child: const Text('Open Telegram',
+                style: TextStyle(color: AppColors.primary)),
           ),
         ],
       ),
     );
   }
 
-  void _showMaintenanceDialog(String message) {
+  void _showMaintenanceDialog(String msg) {
     setState(() => _status = 'Under maintenance.');
     if (!mounted) return;
     showDialog(
@@ -255,205 +313,97 @@ class _SplashScreenState extends State<SplashScreen>
       barrierDismissible: false,
       builder: (_) => AlertDialog(
         backgroundColor: AppColors.surface,
-        shape:
-            RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
-        title: const Row(
-          children: [
-            Icon(Icons.build_circle_rounded,
-                color: AppColors.secondary, size: 22),
-            SizedBox(width: 10),
-            Text('Maintenance',
-                style: TextStyle(
-                    color: AppColors.textPrimary,
-                    fontWeight: FontWeight.bold,
-                    fontSize: 17)),
-          ],
-        ),
-        content: Text(
-          message,
-          style: const TextStyle(
-              color: AppColors.textSecondary, fontSize: 13, height: 1.6),
-        ),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Text('🔧 Maintenance',
+            style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+        content: Text(msg,
+            style: const TextStyle(
+                color: AppColors.textSecondary, height: 1.5)),
         actions: [
           TextButton(
-            onPressed: () => exit(0),
-            child: const Text('Close',
-                style: TextStyle(color: AppColors.textSecondary)),
-          ),
-          ElevatedButton.icon(
             onPressed: () => _openUrl(_telegramUrl),
-            icon: const Icon(Icons.telegram, size: 16),
-            label: const Text('Telegram'),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AppColors.primary,
-              foregroundColor: Colors.white,
-            ),
+            child: const Text('Check Updates',
+                style: TextStyle(color: AppColors.primary)),
           ),
         ],
       ),
     );
   }
 
-  // ── Force Update Dialog (HARD BLOCK) ──────────────────────────────────────
-  void _showForceUpdateDialog(String current, String required) {
+  void _showForceUpdateDialog(String current, String minimum) {
     setState(() => _status = 'Update required.');
     if (!mounted) return;
     showDialog(
       context: context,
-      barrierDismissible: false, // cannot dismiss
-      builder: (_) => WillPopScope(
-        onWillPop: () async => false, // back button disabled
-        child: AlertDialog(
-          backgroundColor: AppColors.surface,
-          shape:
-              RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
-          title: const Row(
-            children: [
-              Icon(Icons.system_update_rounded,
-                  color: AppColors.primary, size: 22),
-              SizedBox(width: 10),
-              Text('Update Required',
-                  style: TextStyle(
-                      color: AppColors.textPrimary,
-                      fontWeight: FontWeight.bold,
-                      fontSize: 17)),
-            ],
-          ),
-          content: Text(
-            'Your version (v$current) is no longer supported.\n'
-            'Required: v$required\n\n'
-            'Download the latest APK to continue.',
-            style: const TextStyle(
-                color: AppColors.textSecondary, fontSize: 13, height: 1.6),
-          ),
-          actions: [
-            // Option 1 — Telegram
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton.icon(
-                onPressed: () => _openUrl(_telegramUrl),
-                icon: const Icon(Icons.telegram, size: 16),
-                label: const Text('Download via Telegram'),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF229ED9),
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(vertical: 12),
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12)),
-                ),
-              ),
-            ),
-            const SizedBox(height: 8),
-            // Option 2 — Google Drive
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton.icon(
-                onPressed: () => _openUrl(_driveUrl),
-                icon: const Icon(Icons.drive_folder_upload_rounded, size: 16),
-                label: const Text('Download via Google Drive'),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF4285F4),
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(vertical: 12),
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12)),
-                ),
-              ),
-            ),
-            const SizedBox(height: 4),
-            // Close app
-            Center(
-              child: TextButton(
-                onPressed: () => exit(0),
-                child: const Text('Close App',
-                    style: TextStyle(color: AppColors.textSecondary)),
-              ),
-            ),
-          ],
+      barrierDismissible: false,
+      builder: (_) => AlertDialog(
+        backgroundColor: AppColors.surface,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Text('⚡ Update Required',
+            style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+        content: Text(
+          'v$current is no longer supported.\n'
+          'Minimum version: v$minimum\n\n'
+          'Please update to continue.',
+          style: const TextStyle(
+              color: AppColors.textSecondary, height: 1.5),
         ),
+        actions: [
+          TextButton(
+            onPressed: () => _openUrl(_driveUrl),
+            child: const Text('Download Update',
+                style: TextStyle(color: AppColors.primary)),
+          ),
+        ],
       ),
     );
   }
 
-  // ── Soft Update Dialog (dismissible) — returns true to continue ────────────
   Future<bool> _showSoftUpdateDialog(
       String current, String latest) async {
-    if (!mounted) return true;
-
-    // await so the app WAITS for user to respond
-    await showDialog(
+    final result = await showDialog<bool>(
       context: context,
-      barrierDismissible: false, // force them to tap a button
-      builder: (_) => WillPopScope(
-        onWillPop: () async => false,
-        child: AlertDialog(
-          backgroundColor: AppColors.surface,
-          shape:
-              RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
-          title: const Row(
+      barrierDismissible: false,
+      builder: (_) => AlertDialog(
+        backgroundColor: AppColors.surface,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Text('✨ Update Available',
+            style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+        content: Text(
+          'v$latest is available (you have v$current).\n'
+          'Update for the latest features and fixes.',
+          style: const TextStyle(
+              color: AppColors.textSecondary, height: 1.5),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Later',
+                style: TextStyle(color: AppColors.textSecondary)),
+          ),
+          Row(
+            mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(Icons.new_releases_rounded,
-                  color: Color(0xFF7EE7C1), size: 22),
-              SizedBox(width: 10),
-              Text('Update Available',
-                  style: TextStyle(
-                      color: AppColors.textPrimary,
-                      fontWeight: FontWeight.bold,
-                      fontSize: 17)),
+              TextButton(
+                onPressed: () => _openUrl(_telegramUrl),
+                child: const Text('Telegram',
+                    style: TextStyle(color: AppColors.secondary, fontSize: 12)),
+              ),
+              TextButton(
+                onPressed: () => _openUrl(_driveUrl),
+                child: const Text('Drive',
+                    style: TextStyle(
+                        color: Color(0xFF4285F4), fontSize: 12)),
+              ),
             ],
           ),
-          content: Text(
-            'A new version is available!\n\n'
-            'Current:  v$current\n'
-            'Latest:    v$latest\n\n'
-            'You can update now or continue with the current version.',
-            style: const TextStyle(
-                color: AppColors.textSecondary, fontSize: 13, height: 1.6),
-          ),
-          actions: [
-            // Skip — continue to app
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('Later',
-                  style: TextStyle(color: AppColors.textSecondary)),
-            ),
-            // Option 1 — Telegram
-            ElevatedButton.icon(
-              onPressed: () => _openUrl(_telegramUrl),
-              icon: const Icon(Icons.telegram, size: 14),
-              label: const Text('Telegram'),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF229ED9),
-                foregroundColor: Colors.white,
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(10)),
-              ),
-            ),
-            // Option 2 — Google Drive
-            ElevatedButton.icon(
-              onPressed: () => _openUrl(_driveUrl),
-              icon: const Icon(Icons.drive_folder_upload_rounded, size: 14),
-              label: const Text('Drive'),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF4285F4),
-                foregroundColor: Colors.white,
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(10)),
-              ),
-            ),
-          ],
-        ),
+        ],
       ),
     );
-    return true; // continue to app after dialog closes
+    return result ?? true;
   }
 
   // ── Version Compare ────────────────────────────────────────────────────────
-
   bool _isVersionOutdated(String current, String minimum) {
     try {
       final cur = current.split('.').map(int.parse).toList();
@@ -475,7 +425,6 @@ class _SplashScreenState extends State<SplashScreen>
   }
 
   // ── Build ──────────────────────────────────────────────────────────────────
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(

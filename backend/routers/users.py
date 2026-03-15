@@ -16,35 +16,68 @@ class BanRequest(BaseModel):
     reason: Optional[str] = None
 
 class RegisterRequest(BaseModel):
-    user_id: str
-    username: Optional[str] = None
-    device_info: Optional[str] = None
+    user_id:        str
+    username:       Optional[str]  = None
+    device_info:    Optional[str]  = None   # legacy plain-text field (kept for compat)
+    device_details: Optional[dict] = None   # ← NEW: rich structured device info from app
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @router.post("/register")
 def register_user(req: RegisterRequest):
-    """Called when a user first opens the app."""
+    """
+    Called every time the user opens the app.
+    - Creates the user record on first launch.
+    - Updates device info + last_seen on every subsequent launch.
+    """
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    now = datetime.now(ZoneInfo("Asia/Manila")).replace(tzinfo=None).isoformat()
+
     existing = db.get_user(req.user_id)
+
     if not existing:
-        from datetime import datetime
-        from zoneinfo import ZoneInfo
-        now = datetime.now(ZoneInfo("Asia/Manila")).replace(tzinfo=None).isoformat()
+        # ── First launch ──
         db.save_user(req.user_id, {
-            "user_id":     req.user_id,
-            "username":    req.username or "",
-            "device_info": req.device_info or "",
-            "joined_at":   now,
-            "active_key":  None,
-            "key_expires": None,
-            "banned":      False,
+            "user_id":        req.user_id,
+            "username":       req.username or "",
+            "device_info":    req.device_info or "android",
+            "device_details": req.device_details or {},
+            "joined_at":      now,
+            "last_seen":      now,
+            "active_key":     None,
+            "key_expires":    None,
+            "banned":         False,
         })
-        db.append_log({"action": "user_registered", "user_id": req.user_id, "username": req.username})
+        db.append_log({
+            "action":   "user_registered",
+            "user_id":  req.user_id,
+            "username": req.username,
+        })
+    else:
+        # ── Returning launch — refresh device info + last_seen ──
+        existing["last_seen"] = now
+        if req.device_details:
+            existing["device_details"] = req.device_details
+        if req.device_info:
+            existing["device_info"] = req.device_info
+        if req.username:
+            existing["username"] = req.username
+        db.save_user(req.user_id, existing)
+
+    # Always upsert device_info store for the admin Device Info page
+    if req.device_details:
+        db.save_device_info(req.user_id, {
+            **req.device_details,
+            "user_id":   req.user_id,
+            "last_seen": now,
+        })
+
     banned = db.is_banned(req.user_id)
     return {
         "registered": True,
-        "banned": banned,
-        "user": db.get_user(req.user_id),
+        "banned":     banned,
+        "user":       db.get_user(req.user_id),
     }
 
 
@@ -64,16 +97,31 @@ def get_logs(limit: int = 50):
     return {"logs": db.get_logs(limit=limit)}
 
 
-# ── 📊 Stats endpoint — NEW ───────────────────────────────────────────────────
+@router.get("/devices", dependencies=[Depends(require_admin)])
+def get_all_devices():
+    """Admin: get device info for all registered users."""
+    devices = db.get_all_device_info()
+    return {
+        "total":   len(devices),
+        "devices": list(devices.values()),
+    }
+
+
+@router.get("/devices/{user_id}", dependencies=[Depends(require_admin)])
+def get_user_device(user_id: str):
+    """Admin: get device info for a specific user."""
+    info = db.get_device_info(user_id)
+    if not info:
+        raise HTTPException(status_code=404, detail="No device info for this user.")
+    return info
+
+
+# ── Stats endpoint ────────────────────────────────────────────────────────────
 
 @router.get("/stats/{user_id}")
 def get_user_stats(user_id: str):
-    """
-    App: get SMS usage stats for a user.
-    Returns total SMS sent + recent session history.
-    History items: { ts, phone_masked, success, total }
-    """
-    total  = db.get_sms_stat(user_id)
+    """App: get SMS usage stats for a user."""
+    total   = db.get_sms_stat(user_id)
     history = db.get_sms_history(user_id)
     return {
         "user_id":   user_id,
@@ -99,7 +147,7 @@ def ban_user(req: BanRequest):
     db.ban_user(req.user_id)
     user = db.get_user(req.user_id)
     if user:
-        user["banned"] = True
+        user["banned"]     = True
         user["ban_reason"] = req.reason or ""
         db.save_user(req.user_id, user)
     db.append_log({"action": "user_banned", "user_id": req.user_id, "reason": req.reason})

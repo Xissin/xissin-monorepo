@@ -836,6 +836,8 @@ def _run_bomb(req: BombRequest) -> BombResponse:
                 total_failed += 1
 
     db.increment_sms_stat(req.user_id, total_sent)
+
+    # ── Brief activity log ────────────────────────────────────────────────────
     db.append_log({
         "action":       "sms_bomb",
         "user_id":      req.user_id,
@@ -843,6 +845,18 @@ def _run_bomb(req: BombRequest) -> BombResponse:
         "rounds":       req.rounds,
         "total_sent":   total_sent,
         "total_failed": total_failed,
+    })
+
+    # ── Full SMS bomb log with per-service breakdown ───────────────────────────
+    db.append_sms_log({
+        "user_id":      req.user_id,
+        "phone":        f"+63{req.phone}",
+        "rounds":       req.rounds,
+        "total_sent":   total_sent,
+        "total_failed": total_failed,
+        "total":        total_sent + total_failed,
+        "success_rate": round(total_sent / max(total_sent + total_failed, 1) * 100, 1),
+        "results":      all_results,
     })
 
     return BombResponse(
@@ -853,3 +867,24 @@ def _run_bomb(req: BombRequest) -> BombResponse:
         total_sent=total_sent,
         total_failed=total_failed,
     )
+
+
+# ── Admin: SMS Bomb Logs endpoints ────────────────────────────────────────────
+
+from auth import require_admin
+from fastapi import Depends
+
+@router.get("/logs", dependencies=[Depends(require_admin)])
+def get_sms_logs(limit: int = 200):
+    """Admin: fetch all dedicated SMS bomb logs (newest first)."""
+    return {
+        "logs":  db.get_sms_logs(limit=limit),
+        "total": limit,
+    }
+
+
+@router.delete("/logs", dependencies=[Depends(require_admin)])
+def clear_sms_logs_endpoint():
+    """Admin: wipe all SMS bomb logs."""
+    db.clear_sms_logs()
+    return {"success": True, "message": "SMS bomb logs cleared."}

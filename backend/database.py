@@ -36,10 +36,12 @@ RK_USERS         = "xissin:app:users"
 RK_BANNED        = "xissin:app:banned"
 RK_LOGS          = "xissin:app:logs"
 RK_SMS_STATS     = "xissin:app:sms_stats"
-RK_NGL_STATS     = "xissin:app:ngl_stats"       # ← NEW
+RK_NGL_STATS     = "xissin:app:ngl_stats"
 RK_SETTINGS      = "xissin:app:settings"
 RK_ANNOUNCEMENTS = "xissin:app:announcements"
 RK_SMS_HISTORY   = "xissin:app:sms_history"
+RK_SMS_LOGS      = "xissin:app:sms_logs"       # ← NEW: dedicated SMS bomb logs
+RK_DEVICE_INFO   = "xissin:app:device_info"    # ← NEW: per-user device info
 
 # ── Default server settings ───────────────────────────────────────────────────
 DEFAULT_SETTINGS = {
@@ -49,11 +51,13 @@ DEFAULT_SETTINGS = {
     "latest_app_version":  "1.0.0",
     "feature_sms":         True,
     "feature_keys":        True,
-    "feature_ngl":         True,   # ← NEW
+    "feature_ngl":         True,
 }
 
 MAX_ANNOUNCEMENTS    = 10
 MAX_HISTORY_PER_USER = 20
+MAX_LOGS             = 500
+MAX_SMS_LOGS         = 1000   # ← NEW
 
 # ── In-memory cache + lock ────────────────────────────────────────────────────
 _cache: dict      = {}
@@ -188,16 +192,19 @@ async def init_db():
         _cache["banned"]        = banned_set
         _cache["logs"]          = await _redis_get_async(RK_LOGS)          or []
         _cache["sms_stats"]     = await _redis_get_async(RK_SMS_STATS)     or {}
-        _cache["ngl_stats"]     = await _redis_get_async(RK_NGL_STATS)     or {}   # ← NEW
+        _cache["ngl_stats"]     = await _redis_get_async(RK_NGL_STATS)     or {}
         _cache["settings"]      = merged_settings
         _cache["announcements"] = await _redis_get_async(RK_ANNOUNCEMENTS) or []
         _cache["sms_history"]   = await _redis_get_async(RK_SMS_HISTORY)   or {}
+        _cache["sms_logs"]      = await _redis_get_async(RK_SMS_LOGS)      or []   # ← NEW
+        _cache["device_info"]   = await _redis_get_async(RK_DEVICE_INFO)   or {}   # ← NEW
 
     logger.info(
         f"✅ DB loaded — keys:{len(_cache['keys'])} "
         f"users:{len(_cache['users'])} "
         f"banned:{len(_cache['banned'])} "
         f"announcements:{len(_cache['announcements'])} "
+        f"sms_logs:{len(_cache['sms_logs'])} "
         f"maintenance:{merged_settings.get('maintenance', False)}"
     )
 
@@ -257,8 +264,6 @@ def unban_user(user_id: str):
     _redis_set(RK_BANNED, snapshot)
 
 # ── Action Logs ───────────────────────────────────────────────────────────────
-
-MAX_LOGS = 500
 
 def append_log(entry: dict):
     with _cache_lock:
@@ -326,6 +331,48 @@ def get_sms_history(user_id: str) -> list:
     with _cache_lock:
         history = _cache.get("sms_history", {}).get(uid, [])
         return list(reversed(history))
+
+# ── SMS Bomb Logs (dedicated, admin-visible) ──────────────────────────────────
+
+def append_sms_log(entry: dict):
+    """Store a full SMS bomb attack log with service-level results."""
+    with _cache_lock:
+        logs = _cache.setdefault("sms_logs", [])
+        logs.append({**entry, "ts": ph_now().isoformat()})
+        if len(logs) > MAX_SMS_LOGS:
+            _cache["sms_logs"] = logs[-MAX_SMS_LOGS:]
+        snapshot = list(_cache["sms_logs"])
+    _redis_set(RK_SMS_LOGS, snapshot)
+
+def get_sms_logs(limit: int = 100) -> list:
+    """Return most-recent SMS bomb logs first."""
+    with _cache_lock:
+        return list(reversed(_cache.get("sms_logs", [])))[:limit]
+
+def clear_sms_logs():
+    """Admin: wipe all SMS bomb logs."""
+    with _cache_lock:
+        _cache["sms_logs"] = []
+    _redis_set(RK_SMS_LOGS, [])
+
+# ── Device Info ───────────────────────────────────────────────────────────────
+
+def save_device_info(user_id: str, info: dict):
+    """Upsert device info for a user. Updated on every app launch."""
+    uid = str(user_id)
+    with _cache_lock:
+        devices           = _cache.setdefault("device_info", {})
+        devices[uid]      = {**info, "user_id": uid}
+        snapshot          = dict(devices)
+    _redis_set(RK_DEVICE_INFO, snapshot)
+
+def get_device_info(user_id: str) -> dict | None:
+    with _cache_lock:
+        return _cache.get("device_info", {}).get(str(user_id))
+
+def get_all_device_info() -> dict:
+    with _cache_lock:
+        return dict(_cache.get("device_info", {}))
 
 # ── Announcements ─────────────────────────────────────────────────────────────
 
