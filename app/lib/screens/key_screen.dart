@@ -7,6 +7,10 @@ import '../services/api_service.dart';
 import '../widgets/glass_neumorphic_card.dart';
 import '../widgets/shimmer_skeleton.dart';
 
+// Brand colours for Key Manager
+const _kGold   = Color(0xFFFFD166);
+const _kPurple = Color(0xFF7B2FBE);
+
 class KeyScreen extends StatefulWidget {
   final String userId;
   const KeyScreen({super.key, required this.userId});
@@ -126,10 +130,25 @@ class _KeyScreenState extends State<KeyScreen> {
     return Scaffold(
       backgroundColor: c.background,
       appBar: AppBar(
-        title: const Text('Key Manager'),
+        backgroundColor: c.background,
+        elevation: 0,
         leading: IconButton(
           icon: const Icon(Icons.arrow_back_ios_rounded),
           onPressed: () => Navigator.pop(context),
+        ),
+        title: ShaderMask(
+          shaderCallback: (b) => const LinearGradient(
+            colors: [_kGold, _kPurple],
+          ).createShader(b),
+          child: const Text(
+            'Key Manager',
+            style: TextStyle(
+              color: Colors.white,
+              fontWeight: FontWeight.w800,
+              fontSize: 20,
+              letterSpacing: 0.5,
+            ),
+          ),
         ),
         actions: [
           IconButton(
@@ -258,70 +277,60 @@ class _KeyScreenState extends State<KeyScreen> {
                 shouldLoop: false,
                 colors: const [
                   AppColors.accent,
+                  AppColors.primary,
                   Colors.white,
-                  Colors.orange,
-                  Colors.pink,
+                  _kGold,
                 ],
+                numberOfParticles: 30,
               ),
             ),
 
-          // ── Success message overlay ──────────────────────
+          // ── Success overlay card ──────────────────────────
           if (_showSuccess)
-            GestureDetector(
-              onTap: () => setState(() => _showSuccess = false),
-              child: Container(
-                color: Colors.black54,
-                child: Center(
-                  child: Container(
-                    margin: const EdgeInsets.all(40),
-                    padding: const EdgeInsets.all(28),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF1E1E2E),
-                      borderRadius: BorderRadius.circular(20),
-                      border: Border.all(
-                          color: AppColors.accent.withOpacity(0.4)),
+            Center(
+              child: GlassNeumorphicCard(
+                glowColor: AppColors.accent,
+                padding: const EdgeInsets.all(32),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.verified_rounded,
+                        color: AppColors.accent, size: 56),
+                    const SizedBox(height: 16),
+                    const Text(
+                      '🎉 Key Activated!',
+                      style: TextStyle(
+                          color: AppColors.textPrimary,
+                          fontSize: 20,
+                          fontWeight: FontWeight.bold),
                     ),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(Icons.check_circle_rounded,
-                            color: AppColors.accent, size: 64),
-                        const SizedBox(height: 16),
-                        const Text(
-                          '🎉 Key Activated!',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 22,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        const Text(
-                          'Welcome to Xissin. All features are now unlocked.',
-                          textAlign: TextAlign.center,
-                          style: TextStyle(
-                            color: AppColors.textSecondary,
-                            fontSize: 13,
-                          ),
-                        ),
-                        const SizedBox(height: 20),
-                        TextButton(
-                          onPressed: () =>
-                              setState(() => _showSuccess = false),
-                          child: const Text('Continue',
-                              style:
-                                  TextStyle(color: AppColors.accent)),
-                        ),
-                      ],
+                    const SizedBox(height: 8),
+                    const Text(
+                      'All features are now unlocked.',
+                      style: TextStyle(
+                          color: AppColors.textSecondary, fontSize: 14),
                     ),
-                  )
-                      .animate()
-                      .scale(
-                          begin: const Offset(0.5, 0.5),
-                          duration: 400.ms,
-                          curve: Curves.elasticOut),
+                    const SizedBox(height: 20),
+                    ElevatedButton(
+                      onPressed: () =>
+                          setState(() => _showSuccess = false),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppColors.accent,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
+                      child: const Text('Got it!',
+                          style: TextStyle(color: Colors.white)),
+                    ),
+                  ],
                 ),
-              ),
+              )
+                  .animate()
+                  .scale(
+                      begin: const Offset(0.5, 0.5),
+                      duration: 400.ms,
+                      curve: Curves.elasticOut),
             ),
         ],
       ),

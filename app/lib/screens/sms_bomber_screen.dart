@@ -9,6 +9,10 @@ import '../services/api_service.dart';
 // ad_service import removed — ads temporarily disabled pending AdMob verification
 import '../widgets/glass_neumorphic_card.dart';
 
+// Brand colours for SMS Bomber title
+const _kSmsRed    = Color(0xFFFF4E4E);
+const _kSmsOrange = Color(0xFFFF9A44);
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Data model
 // ─────────────────────────────────────────────────────────────────────────────
@@ -266,10 +270,25 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
     return Scaffold(
       backgroundColor: c.background,
       appBar: AppBar(
-        title: const Text('SMS Bomber'),
+        backgroundColor: c.background,
+        elevation: 0,
         leading: IconButton(
           icon: const Icon(Icons.arrow_back_ios_rounded),
           onPressed: () => Navigator.pop(context),
+        ),
+        title: ShaderMask(
+          shaderCallback: (b) => const LinearGradient(
+            colors: [_kSmsRed, _kSmsOrange],
+          ).createShader(b),
+          child: const Text(
+            'SMS Bomber',
+            style: TextStyle(
+              color: Colors.white,
+              fontWeight: FontWeight.w800,
+              fontSize: 20,
+              letterSpacing: 0.5,
+            ),
+          ),
         ),
       ),
       body: Stack(

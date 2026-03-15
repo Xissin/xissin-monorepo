@@ -1,6 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 
+// Brand colours for About screen
+const _kPurple = Color(0xFF7B2FBE);
+const _kBlue   = Color(0xFF4776E6);
+
 class AboutScreen extends StatefulWidget {
   const AboutScreen({super.key});
 
@@ -32,13 +36,24 @@ class _AboutScreenState extends State<AboutScreen> {
       backgroundColor: const Color(0xFF080818),
       appBar: AppBar(
         backgroundColor: const Color(0xFF080818),
-        title: const Text(
-          'About',
-          style: TextStyle(color: Colors.white),
+        title: ShaderMask(
+          shaderCallback: (b) => const LinearGradient(
+            colors: [_kPurple, _kBlue],
+          ).createShader(b),
+          child: const Text(
+            'About',
+            style: TextStyle(
+              color: Colors.white,
+              fontWeight: FontWeight.w800,
+              fontSize: 20,
+              letterSpacing: 0.5,
+            ),
+          ),
         ),
         iconTheme: const IconThemeData(color: Colors.white),
       ),
-      body: Padding(
+      // ── Fix: SingleChildScrollView prevents overflow ──
+      body: SingleChildScrollView(
         padding: const EdgeInsets.all(24.0),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -67,11 +82,11 @@ class _AboutScreenState extends State<AboutScreen> {
                   const SizedBox(height: 8),
                   // Version Badge
                   Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 16, vertical: 6),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
                     decoration: BoxDecoration(
                       gradient: const LinearGradient(
-                        colors: [Color(0xFF7B2FBE), Color(0xFF4776E6)],
+                        colors: [_kPurple, _kBlue],
                       ),
                       borderRadius: BorderRadius.circular(20),
                     ),
@@ -98,7 +113,8 @@ class _AboutScreenState extends State<AboutScreen> {
                 _version.isEmpty ? 'Loading...' : 'v$_version'),
             _infoCard(Icons.build_outlined, 'Build Number',
                 _buildNumber.isEmpty ? 'Loading...' : _buildNumber),
-            _infoCard(Icons.person_outline, 'Developer', 'Nathaniel (@QuitNat)'),
+            // ── Developer: name hidden, only shows Telegram handle ──
+            _infoCard(Icons.person_outline, 'Developer', '@QuitNat'),
             _infoCard(Icons.language, 'Channel', '@Xissin_0'),
             _infoCard(Icons.forum_outlined, 'Discussion', '@Xissin_1'),
 
@@ -114,6 +130,9 @@ class _AboutScreenState extends State<AboutScreen> {
               ),
               textAlign: TextAlign.center,
             ),
+
+            // Bottom padding so last item isn't flush against nav bar
+            const SizedBox(height: 24),
           ],
         ),
       ),
@@ -131,7 +150,7 @@ class _AboutScreenState extends State<AboutScreen> {
       ),
       child: Row(
         children: [
-          Icon(icon, color: const Color(0xFF7B2FBE), size: 20),
+          Icon(icon, color: _kPurple, size: 20),
           const SizedBox(width: 12),
           Text(
             label,
