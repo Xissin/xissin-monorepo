@@ -666,7 +666,21 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
 def main():
     _load_tracked_posts()
 
-    app = Application.builder().token(BOT_TOKEN).build()
+    # Use longer timeouts to handle Railway slow network on cold start
+    from telegram.request import HTTPXRequest
+    request = HTTPXRequest(
+        connect_timeout=30,
+        read_timeout=30,
+        write_timeout=30,
+        pool_timeout=30,
+    )
+
+    app = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .request(request)
+        .build()
+    )
 
     app.add_handler(CommandHandler("start",      cmd_start))
     app.add_handler(CommandHandler("help",       cmd_start))
@@ -684,7 +698,25 @@ def main():
     app.post_init = post_init
 
     logger.info(f"auto_edit_bot started | Channel: @{CHANNEL_USERNAME}")
-    app.run_polling(allowed_updates=["message", "channel_post", "callback_query"])
+
+    # Retry polling on Railway cold-start network failures
+    max_attempts = 5
+    for attempt in range(1, max_attempts + 1):
+        try:
+            app.run_polling(
+                allowed_updates=["message", "channel_post", "callback_query"],
+                drop_pending_updates=True,
+            )
+            break
+        except Exception as e:
+            logger.error(f"Polling attempt {attempt}/{max_attempts} failed: {e}")
+            if attempt < max_attempts:
+                wait = attempt * 5
+                logger.info(f"Retrying in {wait}s...")
+                time.sleep(wait)
+            else:
+                logger.error("All polling attempts failed. Exiting.")
+                raise
 
 
 if __name__ == "__main__":
