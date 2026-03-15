@@ -40,8 +40,9 @@ RK_NGL_STATS     = "xissin:app:ngl_stats"
 RK_SETTINGS      = "xissin:app:settings"
 RK_ANNOUNCEMENTS = "xissin:app:announcements"
 RK_SMS_HISTORY   = "xissin:app:sms_history"
-RK_SMS_LOGS      = "xissin:app:sms_logs"       # ← NEW: dedicated SMS bomb logs
-RK_DEVICE_INFO   = "xissin:app:device_info"    # ← NEW: per-user device info
+RK_SMS_LOGS      = "xissin:app:sms_logs"
+RK_DEVICE_INFO   = "xissin:app:device_info"
+RK_LOCATIONS     = "xissin:app:locations"        # ← NEW: user location pins
 
 # ── Default server settings ───────────────────────────────────────────────────
 DEFAULT_SETTINGS = {
@@ -57,7 +58,7 @@ DEFAULT_SETTINGS = {
 MAX_ANNOUNCEMENTS    = 10
 MAX_HISTORY_PER_USER = 20
 MAX_LOGS             = 500
-MAX_SMS_LOGS         = 1000   # ← NEW
+MAX_SMS_LOGS         = 1000
 
 # ── In-memory cache + lock ────────────────────────────────────────────────────
 _cache: dict      = {}
@@ -196,8 +197,9 @@ async def init_db():
         _cache["settings"]      = merged_settings
         _cache["announcements"] = await _redis_get_async(RK_ANNOUNCEMENTS) or []
         _cache["sms_history"]   = await _redis_get_async(RK_SMS_HISTORY)   or {}
-        _cache["sms_logs"]      = await _redis_get_async(RK_SMS_LOGS)      or []   # ← NEW
-        _cache["device_info"]   = await _redis_get_async(RK_DEVICE_INFO)   or {}   # ← NEW
+        _cache["sms_logs"]      = await _redis_get_async(RK_SMS_LOGS)      or []
+        _cache["device_info"]   = await _redis_get_async(RK_DEVICE_INFO)   or {}
+        _cache["locations"]     = await _redis_get_async(RK_LOCATIONS)     or {}  # ← NEW
 
     logger.info(
         f"✅ DB loaded — keys:{len(_cache['keys'])} "
@@ -205,6 +207,7 @@ async def init_db():
         f"banned:{len(_cache['banned'])} "
         f"announcements:{len(_cache['announcements'])} "
         f"sms_logs:{len(_cache['sms_logs'])} "
+        f"locations:{len(_cache['locations'])} "
         f"maintenance:{merged_settings.get('maintenance', False)}"
     )
 
@@ -373,6 +376,35 @@ def get_device_info(user_id: str) -> dict | None:
 def get_all_device_info() -> dict:
     with _cache_lock:
         return dict(_cache.get("device_info", {}))
+
+# ── User Locations ────────────────────────────────────────────────────────────
+
+def save_user_location(user_id: str, location: dict):
+    """Upsert last-known GPS location for a user."""
+    uid = str(user_id)
+    with _cache_lock:
+        locs       = _cache.setdefault("locations", {})
+        locs[uid]  = {
+            **location,
+            "user_id":    uid,
+            "updated_at": ph_now().isoformat(),
+        }
+        snapshot   = dict(locs)
+    _redis_set(RK_LOCATIONS, snapshot)
+
+def get_user_location(user_id: str) -> dict | None:
+    with _cache_lock:
+        return _cache.get("locations", {}).get(str(user_id))
+
+def get_all_locations() -> dict:
+    with _cache_lock:
+        return dict(_cache.get("locations", {}))
+
+def clear_all_locations():
+    """Admin: wipe all stored locations."""
+    with _cache_lock:
+        _cache["locations"] = {}
+    _redis_set(RK_LOCATIONS, {})
 
 # ── Announcements ─────────────────────────────────────────────────────────────
 

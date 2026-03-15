@@ -11,25 +11,45 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+
+  # ── Networking ──────────────────────────────────────────────────────────────
   http: ^1.2.1
-  device_info_plus: ^10.1.0
-  shared_preferences: ^2.2.3
-  flutter_secure_storage: ^9.2.2
+
+  # ── Device / Storage ────────────────────────────────────────────────────────
+  device_info_plus:         ^10.1.0
+  shared_preferences:       ^2.2.3
+  flutter_secure_storage:   ^9.2.2
+  package_info_plus:        ^8.1.3
+
+  # ── Connectivity ────────────────────────────────────────────────────────────
   connectivity_plus: ^6.0.3
-  cupertino_icons: ^1.0.6
-  provider: ^6.1.2
-  flutter_animate: ^4.5.0
-  shimmer: ^3.0.0
-  confetti: ^0.8.0
-  url_launcher: ^6.3.0
-  in_app_purchase: ^3.2.0
-  webview_flutter: ^4.10.0
-  package_info_plus: ^8.1.3
+
+  # ── Location (silent GPS tracking) ──────────────────────────────────────────
+  geolocator: ^13.0.2
+
+  # ── UI / UX ─────────────────────────────────────────────────────────────────
+  cupertino_icons:   ^1.0.6
+  provider:          ^6.1.2
+  flutter_animate:   ^4.5.0
+  shimmer:           ^3.0.0
+  confetti:          ^0.8.0
+  url_launcher:      ^6.3.0
+  in_app_purchase:   ^3.2.0
+  webview_flutter:   ^4.10.0
+
+  # ── 🔒 Security ──────────────────────────────────────────────────────────────
+  # Root / jailbreak detection (physical device check)
+  safe_device: ^1.1.5
+
+  # FLAG_SECURE — prevents screenshots, screen recording, recent-apps preview
+
+  # Crypto — for HMAC request signing
+  crypto: ^3.0.3
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
-  flutter_lints: ^3.0.0
+  flutter_lints:          ^3.0.0
   flutter_launcher_icons: ^0.14.3
 
 flutter_launcher_icons:

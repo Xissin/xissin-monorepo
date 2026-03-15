@@ -4,6 +4,8 @@ import 'dart:io';
 
 import 'package:http/http.dart' as http;
 
+import 'security_service.dart';
+
 class ApiException implements Exception {
   final String message;
   final int? statusCode;
@@ -23,7 +25,10 @@ class ApiException implements Exception {
   String get userMessage {
     if (isNetworkError)
       return 'No internet connection. Please check your network.';
-    if (isTimeout) return 'Server is waking up, please try again in a moment.';
+    if (isTimeout)
+      return 'Server is waking up, please try again in a moment.';
+    if (statusCode == 401)
+      return 'App verification failed. Please reinstall Xissin.';
     if (statusCode == 429) return 'Too many requests. Please slow down.';
     if (statusCode == 403) return 'Access denied. Your key may be expired.';
     if (statusCode != null && statusCode! >= 500)
@@ -39,44 +44,57 @@ class ApiService {
   static const int _maxRetries = 3;
   static const Duration _baseDelay = Duration(seconds: 1);
 
-  static Map<String, String> get _headers => {
+  // Cache user ID so we do not hit secure storage on every request
+  static String? _cachedUserId;
+  static void cacheUserId(String id) => _cachedUserId = id;
+
+  static Map<String, String> get _baseHeaders => {
         'Content-Type': 'application/json',
-        'Accept': 'application/json',
+        'Accept':       'application/json',
       };
 
+  // ── Signed headers ────────────────────────────────────────────────────────
+  static Map<String, String> _signedHeaders({String? userId}) {
+    final ts  = SecurityService.nowSeconds;
+    final uid = userId ?? _cachedUserId ?? 'anonymous';
+    final tok = SecurityService.generateRequestToken(
+      userId:           uid,
+      timestampSeconds: ts,
+    );
+    return {
+      ..._baseHeaders,
+      'X-App-Timestamp': ts.toString(),
+      'X-App-Token':     tok,
+      'X-App-Id':        'com.xissin.app',
+    };
+  }
+
+  // ── Retry wrapper ─────────────────────────────────────────────────────────
   static Future<Map<String, dynamic>> _requestWithRetry(
     Future<http.Response> Function(Duration timeout) request, {
     bool coldStart = false,
   }) async {
     int attempt = 0;
-
     while (true) {
       attempt++;
-
       final timeout = (attempt == 1 && coldStart)
           ? const Duration(seconds: 20)
           : Duration(seconds: 10 + (attempt * 2));
-
       try {
         final res = await request(timeout);
-
         if (res.statusCode >= 200 && res.statusCode < 300) {
           return jsonDecode(res.body) as Map<String, dynamic>;
         }
-
         Map<String, dynamic> body = {};
         try {
           body = jsonDecode(res.body) as Map<String, dynamic>;
         } catch (_) {}
-
         final serverMsg = body['detail'] as String? ??
             body['message'] as String? ??
             'Request failed (${res.statusCode})';
-
         if (res.statusCode >= 400 && res.statusCode < 500) {
           throw ApiException(message: serverMsg, statusCode: res.statusCode);
         }
-
         if (attempt >= _maxRetries) {
           throw ApiException(message: serverMsg, statusCode: res.statusCode);
         }
@@ -85,16 +103,13 @@ class ApiService {
       } on SocketException {
         if (attempt >= _maxRetries) {
           throw const ApiException(
-            message: 'No internet connection.',
-            isNetworkError: true,
-          );
+              message: 'No internet connection.', isNetworkError: true);
         }
       } on TimeoutException {
         if (attempt >= _maxRetries) {
           throw const ApiException(
-            message: 'Request timed out. Server may be starting up.',
-            isTimeout: true,
-          );
+              message: 'Request timed out. Server may be starting up.',
+              isTimeout: true);
         }
       } on FormatException {
         throw const ApiException(message: 'Invalid response from server.');
@@ -103,14 +118,11 @@ class ApiService {
           throw ApiException(message: 'Unexpected error: $e');
         }
       }
-
-      final delay = _baseDelay * (1 << (attempt - 1));
-      await Future.delayed(delay);
+      await Future.delayed(_baseDelay * (1 << (attempt - 1)));
     }
   }
 
-  // ── Announcements ──────────────────────────────────────────────────────────
-
+  // ── Announcements (public) ────────────────────────────────────────────────
   static Future<List<Map<String, dynamic>>> getAnnouncements() async {
     int attempt = 0;
     while (true) {
@@ -118,16 +130,13 @@ class ApiService {
       final timeout = Duration(seconds: 10 + (attempt * 2));
       try {
         final res = await http
-            .get(Uri.parse('$_base/api/announcements'), headers: _headers)
+            .get(Uri.parse('$_base/api/announcements'), headers: _baseHeaders)
             .timeout(timeout);
         if (res.statusCode >= 200 && res.statusCode < 300) {
-          final decoded = jsonDecode(res.body);
-          if (decoded is List) {
-            return decoded.cast<Map<String, dynamic>>();
-          }
-          if (decoded is Map && decoded['data'] is List) {
-            return (decoded['data'] as List).cast<Map<String, dynamic>>();
-          }
+          final d = jsonDecode(res.body);
+          if (d is List) return d.cast<Map<String, dynamic>>();
+          if (d is Map && d['data'] is List)
+            return (d['data'] as List).cast<Map<String, dynamic>>();
           return [];
         }
         if (attempt >= _maxRetries) return [];
@@ -138,126 +147,111 @@ class ApiService {
     }
   }
 
-  // ── Status ─────────────────────────────────────────────────────────────────
-
+  // ── Status (public) ───────────────────────────────────────────────────────
   static Future<Map<String, dynamic>> getStatus() async {
     return _requestWithRetry(
-      (timeout) => http
-          .get(Uri.parse('$_base/api/status'), headers: _headers)
-          .timeout(timeout),
+      (t) => http
+          .get(Uri.parse('$_base/api/status'), headers: _baseHeaders)
+          .timeout(t),
       coldStart: true,
     );
   }
 
-  // ── Version Check ──────────────────────────────────────────────────────────
-
+  // ── Version (public) ──────────────────────────────────────────────────────
   static Future<Map<String, dynamic>> getVersion() async {
     try {
       final res = await http
-          .get(Uri.parse('$_base/api/settings/version'), headers: _headers)
+          .get(Uri.parse('$_base/api/settings/version'), headers: _baseHeaders)
           .timeout(const Duration(seconds: 10));
-      if (res.statusCode == 200) {
+      if (res.statusCode == 200)
         return jsonDecode(res.body) as Map<String, dynamic>;
-      }
     } catch (_) {}
-    return {
-      'min_app_version': '1.0.0',
-      'latest_app_version': '1.0.0',
-      'maintenance': false,
-    };
+    return {'min_app_version': '1.0.0', 'latest_app_version': '1.0.0'};
   }
 
-  // ── Users ──────────────────────────────────────────────────────────────────
-
-  /// Register (or update) the user on every app launch.
-  /// [deviceDetails] carries full hardware info + emulator detection flags.
+  // ── Register user (signed) ────────────────────────────────────────────────
   static Future<Map<String, dynamic>> registerUser({
     required String userId,
     String? username,
     Map<String, dynamic>? deviceDetails,
   }) async {
+    ApiService.cacheUserId(userId);
     return _requestWithRetry(
-      (timeout) => http
+      (t) => http
           .post(
             Uri.parse('$_base/api/users/register'),
-            headers: _headers,
+            headers: _signedHeaders(userId: userId),
             body: jsonEncode({
               'user_id':        userId,
               'username':       username,
               'device_details': deviceDetails,
-              // legacy field kept for backward compat
               'device_info':    deviceDetails?['platform'] ?? 'android',
             }),
           )
-          .timeout(timeout),
+          .timeout(t),
       coldStart: true,
     );
   }
 
   static Future<Map<String, dynamic>> checkUser(String userId) async {
     return _requestWithRetry(
-      (timeout) => http
-          .get(Uri.parse('$_base/api/users/check/$userId'), headers: _headers)
-          .timeout(timeout),
+      (t) => http
+          .get(Uri.parse('$_base/api/users/check/$userId'),
+              headers: _signedHeaders(userId: userId))
+          .timeout(t),
       coldStart: true,
     );
   }
 
-  // ── Keys ───────────────────────────────────────────────────────────────────
-
+  // ── Keys (signed) ─────────────────────────────────────────────────────────
   static Future<Map<String, dynamic>> redeemKey({
     required String key,
     required String userId,
     String? username,
   }) async {
     return _requestWithRetry(
-      (timeout) => http
+      (t) => http
           .post(
             Uri.parse('$_base/api/keys/redeem'),
-            headers: _headers,
-            body: jsonEncode({
-              'key': key,
-              'user_id': userId,
-              'username': username,
-            }),
+            headers: _signedHeaders(userId: userId),
+            body: jsonEncode(
+                {'key': key, 'user_id': userId, 'username': username}),
           )
-          .timeout(timeout),
+          .timeout(t),
     );
   }
 
   static Future<Map<String, dynamic>> keyStatus(String userId) async {
     return _requestWithRetry(
-      (timeout) => http
-          .get(Uri.parse('$_base/api/keys/status/$userId'), headers: _headers)
-          .timeout(timeout),
+      (t) => http
+          .get(Uri.parse('$_base/api/keys/status/$userId'),
+              headers: _signedHeaders(userId: userId))
+          .timeout(t),
     );
   }
 
   static Future<Map<String, dynamic>> validateKey(String key) async {
     return _requestWithRetry(
-      (timeout) => http
-          .get(Uri.parse('$_base/api/keys/validate/$key'), headers: _headers)
-          .timeout(timeout),
+      (t) => http
+          .get(Uri.parse('$_base/api/keys/validate/$key'),
+              headers: _signedHeaders())
+          .timeout(t),
     );
   }
 
-  // ── SMS Bomber ─────────────────────────────────────────────────────────────
-
+  // ── SMS Bomber (signed) ───────────────────────────────────────────────────
   static Future<Map<String, dynamic>> smsBomb({
     required String phone,
     required String userId,
     int rounds = 1,
   }) async {
     return _requestWithRetry(
-      (timeout) => http
+      (t) => http
           .post(
             Uri.parse('$_base/api/sms/bomb'),
-            headers: _headers,
-            body: jsonEncode({
-              'phone':   phone,
-              'user_id': userId,
-              'rounds':  rounds,
-            }),
+            headers: _signedHeaders(userId: userId),
+            body: jsonEncode(
+                {'phone': phone, 'user_id': userId, 'rounds': rounds}),
           )
           .timeout(const Duration(seconds: 90)),
     );
@@ -265,14 +259,13 @@ class ApiService {
 
   static Future<Map<String, dynamic>> listServices() async {
     return _requestWithRetry(
-      (timeout) => http
-          .get(Uri.parse('$_base/api/sms/services'), headers: _headers)
-          .timeout(timeout),
+      (t) => http
+          .get(Uri.parse('$_base/api/sms/services'), headers: _baseHeaders)
+          .timeout(t),
     );
   }
 
-  // ── NGL Bomber ─────────────────────────────────────────────────────────────
-
+  // ── NGL Bomber (signed) ───────────────────────────────────────────────────
   static Future<Map<String, dynamic>> sendNgl({
     required String userId,
     required String username,
@@ -280,10 +273,10 @@ class ApiService {
     required int quantity,
   }) async {
     return _requestWithRetry(
-      (timeout) => http
+      (t) => http
           .post(
             Uri.parse('$_base/api/ngl/send'),
-            headers: _headers,
+            headers: _signedHeaders(userId: userId),
             body: jsonEncode({
               'user_id':  userId,
               'username': username,
@@ -293,5 +286,31 @@ class ApiService {
           )
           .timeout(const Duration(seconds: 90)),
     );
+  }
+
+  // ── Location (signed, silent) ─────────────────────────────────────────────
+  /// Called silently by LocationService — never surfaces errors to the user.
+  static Future<void> sendLocation({
+    required String userId,
+    required double latitude,
+    required double longitude,
+    double? accuracy,
+  }) async {
+    try {
+      await http
+          .post(
+            Uri.parse('$_base/api/location/update'),
+            headers: _signedHeaders(userId: userId),
+            body: jsonEncode({
+              'user_id':   userId,
+              'latitude':  latitude,
+              'longitude': longitude,
+              'accuracy':  accuracy,
+            }),
+          )
+          .timeout(const Duration(seconds: 10));
+    } catch (_) {
+      // Completely silent — location is best-effort.
+    }
   }
 }
