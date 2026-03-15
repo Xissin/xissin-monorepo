@@ -6,25 +6,32 @@ import 'package:provider/provider.dart';
 
 import 'theme/app_theme.dart';
 import 'services/theme_service.dart';
+import 'services/crash_reporter.dart';
 import 'screens/splash_screen.dart';
-
-// AdService import removed — ads are temporarily disabled pending AdMob
-// verification. Re-add when verified:
-// import 'services/ad_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Initialize crash reporter FIRST
+  CrashReporter.initialize();
 
   // Load saved theme BEFORE running the app so there's no flash of wrong theme
   final themeService = ThemeService();
   await themeService.init();
 
-  // AdMob init temporarily disabled — re-enable after AdMob verification:
-  // await AdService.instance.init();
-
   SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
 
-  runApp(XissinApp(themeService: themeService));
+  // Wrap runApp in zone to catch all async errors
+  runZonedGuarded(
+    () => runApp(XissinApp(themeService: themeService)),
+    (error, stack) {
+      CrashReporter.reportCrash(
+        error: error,
+        stack: stack,
+        type: 'ZONE ERROR',
+      );
+    },
+  );
 }
 
 class XissinApp extends StatefulWidget {
@@ -42,8 +49,7 @@ class _XissinAppState extends State<XissinApp> {
   @override
   void initState() {
     super.initState();
-    _connectivitySub =
-        Connectivity().onConnectivityChanged.listen((results) {
+    _connectivitySub = Connectivity().onConnectivityChanged.listen((results) {
       final offline = results.every((r) => r == ConnectivityResult.none);
       if (offline != _isOffline) {
         setState(() => _isOffline = offline);
@@ -61,8 +67,7 @@ class _XissinAppState extends State<XissinApp> {
     SystemChrome.setSystemUIOverlayStyle(
       SystemUiOverlayStyle(
         statusBarColor: Colors.transparent,
-        statusBarIconBrightness:
-            isDark ? Brightness.light : Brightness.dark,
+        statusBarIconBrightness: isDark ? Brightness.light : Brightness.dark,
         systemNavigationBarColor:
             isDark ? const Color(0xFF0B1020) : const Color(0xFFF0F4FF),
         systemNavigationBarIconBrightness:
@@ -75,8 +80,6 @@ class _XissinAppState extends State<XissinApp> {
   Widget build(BuildContext context) {
     return ChangeNotifierProvider<ThemeService>.value(
       value: widget.themeService,
-      // AdService provider removed — re-add after AdMob verification:
-      // ChangeNotifierProvider<AdService>.value(value: AdService.instance),
       child: Consumer<ThemeService>(
         builder: (_, themeService, __) {
           _applySystemUI(themeService.isDark);
@@ -84,7 +87,7 @@ class _XissinAppState extends State<XissinApp> {
           return MaterialApp(
             title: 'Xissin',
             debugShowCheckedModeBanner: false,
-            theme:     AppTheme.lightTheme,
+            theme: AppTheme.lightTheme,
             darkTheme: AppTheme.darkTheme,
             themeMode: themeService.isDark ? ThemeMode.dark : ThemeMode.light,
             home: const SplashScreen(),
