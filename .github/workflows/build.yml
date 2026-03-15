@@ -3,7 +3,11 @@ name: 🚀 Build Xissin APK
 on:
   push:
     tags:
-      - 'v*.*.*'   # triggers on v1.0.0, v1.0.1, v2.0.0 etc.
+      - 'v*.*.*'
+
+# ✅ THIS IS THE FIX — gives the token permission to create releases
+permissions:
+  contents: write
 
 jobs:
   build:
