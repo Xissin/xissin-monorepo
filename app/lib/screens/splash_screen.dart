@@ -4,10 +4,11 @@ import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:package_info_plus/package_info_plus.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../theme/app_theme.dart';
 import '../services/api_service.dart';
-import '../widgets/pulse_animation.dart';
 import '../widgets/shimmer_skeleton.dart';
 import 'home_screen.dart';
 
@@ -32,6 +33,11 @@ class _SplashScreenState extends State<SplashScreen>
   bool _showRetryButton = false;
   String? _errorMessage;
 
+  // ── Links ──────────────────────────────────────────────────────────────────
+  static const String _telegramUrl = 'https://t.me/Xissin_0';
+  static const String _driveUrl =
+      'https://drive.google.com/file/d/1ONwQUQiD8IRGA2ganJpaZ5brALtcOWMF/view?usp=sharing';
+
   static const _storage = FlutterSecureStorage(
     aOptions: AndroidOptions(encryptedSharedPreferences: true),
     iOptions: IOSOptions(accessibility: KeychainAccessibility.first_unlock),
@@ -44,7 +50,7 @@ class _SplashScreenState extends State<SplashScreen>
         vsync: this, duration: const Duration(milliseconds: 1200));
     _pulseController = AnimationController(
         vsync: this, duration: const Duration(milliseconds: 2000));
-    
+
     _fade = CurvedAnimation(parent: _ctrl, curve: Curves.easeIn);
     _scale = Tween<double>(begin: 0.7, end: 1.0).animate(
       CurvedAnimation(parent: _ctrl, curve: Curves.easeOutBack),
@@ -52,7 +58,7 @@ class _SplashScreenState extends State<SplashScreen>
     _pulse = Tween<double>(begin: 0.9, end: 1.1).animate(
       CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut),
     );
-    
+
     _ctrl.forward();
     _pulseController.repeat(reverse: true);
     _initApp();
@@ -64,6 +70,17 @@ class _SplashScreenState extends State<SplashScreen>
     _pulseController.dispose();
     super.dispose();
   }
+
+  // ── Open URL ───────────────────────────────────────────────────────────────
+
+  Future<void> _openUrl(String url) async {
+    final uri = Uri.parse(url);
+    if (await canLaunchUrl(uri)) {
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
+    }
+  }
+
+  // ── User ID ────────────────────────────────────────────────────────────────
 
   Future<String> _getOrCreateUserId() async {
     final stored = await _storage.read(key: 'xissin_user_id');
@@ -88,6 +105,8 @@ class _SplashScreenState extends State<SplashScreen>
     return id;
   }
 
+  // ── Main Init ──────────────────────────────────────────────────────────────
+
   Future<void> _initApp() async {
     setState(() {
       _showRetryButton = false;
@@ -101,6 +120,7 @@ class _SplashScreenState extends State<SplashScreen>
       try {
         final status = await ApiService.getStatus();
 
+        // Maintenance check
         if (status['maintenance'] == true) {
           final msg = status['maintenance_message'] as String? ??
               'Xissin is under maintenance. Please check back later.';
@@ -108,11 +128,26 @@ class _SplashScreenState extends State<SplashScreen>
           return;
         }
 
-        final minVersion = status['min_app_version'] as String? ?? '1.0.0';
-        const currentVersion = '1.0.0';
+        // Get real version from package
+        final packageInfo = await PackageInfo.fromPlatform();
+        final currentVersion = packageInfo.version;
+
+        final minVersion =
+            status['min_app_version'] as String? ?? '1.0.0';
+        final latestVersion =
+            status['latest_app_version'] as String? ?? '1.0.0';
+
+        // Hard block — MUST update, stop here
         if (_isVersionOutdated(currentVersion, minVersion)) {
-          _showUpdateDialog(minVersion);
-          return;
+          _showForceUpdateDialog(currentVersion, minVersion);
+          return; // ← stops app from going further
+        }
+
+        // Soft notify — update available, WAIT for user to respond
+        if (_isVersionOutdated(currentVersion, latestVersion)) {
+          final shouldContinue =
+              await _showSoftUpdateDialog(currentVersion, latestVersion);
+          if (!shouldContinue) return; // user closed dialog, continue below
         }
       } catch (_) {}
 
@@ -150,6 +185,8 @@ class _SplashScreenState extends State<SplashScreen>
     }
   }
 
+  // ── Error Handler ──────────────────────────────────────────────────────────
+
   void _handleError(String message) {
     _retryCount++;
     if (_retryCount < _maxAutoRetries) {
@@ -171,6 +208,8 @@ class _SplashScreenState extends State<SplashScreen>
     _initApp();
   }
 
+  // ── Dialogs ────────────────────────────────────────────────────────────────
+
   void _showBannedDialog() {
     setState(() => _status = 'Account restricted.');
     if (!mounted) return;
@@ -179,7 +218,8 @@ class _SplashScreenState extends State<SplashScreen>
       barrierDismissible: false,
       builder: (_) => AlertDialog(
         backgroundColor: AppColors.surface,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
+        shape:
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
         title: const Row(
           children: [
             Icon(Icons.block_rounded, color: AppColors.error, size: 22),
@@ -215,7 +255,8 @@ class _SplashScreenState extends State<SplashScreen>
       barrierDismissible: false,
       builder: (_) => AlertDialog(
         backgroundColor: AppColors.surface,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
+        shape:
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
         title: const Row(
           children: [
             Icon(Icons.build_circle_rounded,
@@ -235,51 +276,183 @@ class _SplashScreenState extends State<SplashScreen>
         ),
         actions: [
           TextButton(
-            onPressed: _manualRetry,
-            child: const Text('Try Again',
-                style: TextStyle(color: AppColors.primary)),
+            onPressed: () => exit(0),
+            child: const Text('Close',
+                style: TextStyle(color: AppColors.textSecondary)),
+          ),
+          ElevatedButton.icon(
+            onPressed: () => _openUrl(_telegramUrl),
+            icon: const Icon(Icons.telegram, size: 16),
+            label: const Text('Telegram'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.primary,
+              foregroundColor: Colors.white,
+            ),
           ),
         ],
       ),
     );
   }
 
-  void _showUpdateDialog(String minVersion) {
+  // ── Force Update Dialog (HARD BLOCK) ──────────────────────────────────────
+  void _showForceUpdateDialog(String current, String required) {
     setState(() => _status = 'Update required.');
     if (!mounted) return;
     showDialog(
       context: context,
-      barrierDismissible: false,
-      builder: (_) => AlertDialog(
-        backgroundColor: AppColors.surface,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
-        title: const Row(
-          children: [
-            Icon(Icons.system_update_rounded,
-                color: AppColors.primary, size: 22),
-            SizedBox(width: 10),
-            Text('Update Required',
-                style: TextStyle(
-                    color: AppColors.textPrimary,
-                    fontWeight: FontWeight.bold,
-                    fontSize: 17)),
+      barrierDismissible: false, // cannot dismiss
+      builder: (_) => WillPopScope(
+        onWillPop: () async => false, // back button disabled
+        child: AlertDialog(
+          backgroundColor: AppColors.surface,
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
+          title: const Row(
+            children: [
+              Icon(Icons.system_update_rounded,
+                  color: AppColors.primary, size: 22),
+              SizedBox(width: 10),
+              Text('Update Required',
+                  style: TextStyle(
+                      color: AppColors.textPrimary,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 17)),
+            ],
+          ),
+          content: Text(
+            'Your version (v$current) is no longer supported.\n'
+            'Required: v$required\n\n'
+            'Download the latest APK to continue.',
+            style: const TextStyle(
+                color: AppColors.textSecondary, fontSize: 13, height: 1.6),
+          ),
+          actions: [
+            // Option 1 — Telegram
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                onPressed: () => _openUrl(_telegramUrl),
+                icon: const Icon(Icons.telegram, size: 16),
+                label: const Text('Download via Telegram'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF229ED9),
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12)),
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
+            // Option 2 — Google Drive
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                onPressed: () => _openUrl(_driveUrl),
+                icon: const Icon(Icons.drive_folder_upload_rounded, size: 16),
+                label: const Text('Download via Google Drive'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF4285F4),
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12)),
+                ),
+              ),
+            ),
+            const SizedBox(height: 4),
+            // Close app
+            Center(
+              child: TextButton(
+                onPressed: () => exit(0),
+                child: const Text('Close App',
+                    style: TextStyle(color: AppColors.textSecondary)),
+              ),
+            ),
           ],
         ),
-        content: Text(
-          'This version of Xissin is outdated.\nMinimum required version: $minVersion\n\nPlease update the app from the Xissin Telegram channel.',
-          style: const TextStyle(
-              color: AppColors.textSecondary, fontSize: 13, height: 1.6),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => exit(0),
-            child: const Text('Close',
-                style: TextStyle(color: AppColors.textSecondary)),
-          ),
-        ],
       ),
     );
   }
+
+  // ── Soft Update Dialog (dismissible) — returns true to continue ────────────
+  Future<bool> _showSoftUpdateDialog(
+      String current, String latest) async {
+    if (!mounted) return true;
+
+    // await so the app WAITS for user to respond
+    await showDialog(
+      context: context,
+      barrierDismissible: false, // force them to tap a button
+      builder: (_) => WillPopScope(
+        onWillPop: () async => false,
+        child: AlertDialog(
+          backgroundColor: AppColors.surface,
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
+          title: const Row(
+            children: [
+              Icon(Icons.new_releases_rounded,
+                  color: Color(0xFF7EE7C1), size: 22),
+              SizedBox(width: 10),
+              Text('Update Available',
+                  style: TextStyle(
+                      color: AppColors.textPrimary,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 17)),
+            ],
+          ),
+          content: Text(
+            'A new version is available!\n\n'
+            'Current:  v$current\n'
+            'Latest:    v$latest\n\n'
+            'You can update now or continue with the current version.',
+            style: const TextStyle(
+                color: AppColors.textSecondary, fontSize: 13, height: 1.6),
+          ),
+          actions: [
+            // Skip — continue to app
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Later',
+                  style: TextStyle(color: AppColors.textSecondary)),
+            ),
+            // Option 1 — Telegram
+            ElevatedButton.icon(
+              onPressed: () => _openUrl(_telegramUrl),
+              icon: const Icon(Icons.telegram, size: 14),
+              label: const Text('Telegram'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF229ED9),
+                foregroundColor: Colors.white,
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10)),
+              ),
+            ),
+            // Option 2 — Google Drive
+            ElevatedButton.icon(
+              onPressed: () => _openUrl(_driveUrl),
+              icon: const Icon(Icons.drive_folder_upload_rounded, size: 14),
+              label: const Text('Drive'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF4285F4),
+                foregroundColor: Colors.white,
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10)),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+    return true; // continue to app after dialog closes
+  }
+
+  // ── Version Compare ────────────────────────────────────────────────────────
 
   bool _isVersionOutdated(String current, String minimum) {
     try {
@@ -301,6 +474,8 @@ class _SplashScreenState extends State<SplashScreen>
     if (mounted) setState(() => _status = s);
   }
 
+  // ── Build ──────────────────────────────────────────────────────────────────
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -313,14 +488,12 @@ class _SplashScreenState extends State<SplashScreen>
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                // Pulsing rings behind logo
                 AnimatedBuilder(
                   animation: _pulse,
                   builder: (context, child) {
                     return Stack(
                       alignment: Alignment.center,
                       children: [
-                        // Outer ring
                         Transform.scale(
                           scale: _pulse.value,
                           child: Container(
@@ -335,7 +508,6 @@ class _SplashScreenState extends State<SplashScreen>
                             ),
                           ),
                         ),
-                        // Middle ring
                         Transform.scale(
                           scale: _pulse.value * 0.9,
                           child: Container(
@@ -350,7 +522,6 @@ class _SplashScreenState extends State<SplashScreen>
                             ),
                           ),
                         ),
-                        // Logo container
                         Container(
                           width: 110,
                           height: 110,
@@ -411,7 +582,6 @@ class _SplashScreenState extends State<SplashScreen>
                     .fadeIn(duration: 500.ms)
                     .slideY(begin: 0.3, end: 0, duration: 500.ms),
                 const SizedBox(height: 70),
-
                 if (!_showRetryButton) ...[
                   const SizedBox(
                     width: 26,
@@ -420,9 +590,7 @@ class _SplashScreenState extends State<SplashScreen>
                       color: AppColors.primary,
                       strokeWidth: 2.5,
                     ),
-                  )
-                      .animate(delay: 400.ms)
-                      .fadeIn(duration: 400.ms),
+                  ).animate(delay: 400.ms).fadeIn(duration: 400.ms),
                   const SizedBox(height: 14),
                   Text(
                     _status,
@@ -440,7 +608,7 @@ class _SplashScreenState extends State<SplashScreen>
                       ),
                 ] else ...[
                   const Icon(Icons.wifi_off_rounded,
-                      color: AppColors.error, size: 32)
+                          color: AppColors.error, size: 32)
                       .animate()
                       .fadeIn(duration: 400.ms)
                       .shake(delay: 200.ms, duration: 400.ms),
