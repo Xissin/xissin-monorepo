@@ -7,21 +7,28 @@ import 'package:provider/provider.dart';
 import 'theme/app_theme.dart';
 import 'services/theme_service.dart';
 import 'services/crash_reporter.dart';
+import 'services/security_service.dart';
 import 'screens/splash_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Initialize crash reporter FIRST
+  // ── 1. Crash reporter ─────────────────────────────────────────────────────
   CrashReporter.initialize();
 
-  // Load saved theme BEFORE running the app so there's no flash of wrong theme
+  // ── 2. Theme ──────────────────────────────────────────────────────────────
   final themeService = ThemeService();
   await themeService.init();
 
+  // ── 3. Orientation lock ───────────────────────────────────────────────────
   SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
 
-  // Wrap runApp in zone to catch all async errors
+  // ── 4. Security checks ────────────────────────────────────────────────────
+  // FLAG_SECURE is handled natively in MainActivity.kt
+  // Runs early — dialog shown inside SplashScreen once UI is ready
+  unawaited(SecurityService.runChecks());
+
+  // ── 5. Zone error catching ────────────────────────────────────────────────
   runZonedGuarded(
     () => runApp(XissinApp(themeService: themeService)),
     (error, stack) {
@@ -87,14 +94,14 @@ class _XissinAppState extends State<XissinApp> {
           return MaterialApp(
             title: 'Xissin',
             debugShowCheckedModeBanner: false,
-            theme: AppTheme.lightTheme,
+            theme:     AppTheme.lightTheme,
             darkTheme: AppTheme.darkTheme,
             themeMode: themeService.isDark ? ThemeMode.dark : ThemeMode.light,
             home: const SplashScreen(),
             builder: (context, child) {
               return Column(
                 children: [
-                  // Offline banner
+                  // ── Offline banner ────────────────────────────────────────
                   AnimatedContainer(
                     duration: AppDurations.normal,
                     height: _isOffline ? 36 : 0,

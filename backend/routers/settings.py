@@ -29,3 +29,15 @@ def save_settings(req: ServerSettings):
     db.save_server_settings(data)
     db.append_log({"action": "settings_updated", "maintenance": req.maintenance})
     return {"success": True, "settings": data}
+
+# ── Public version check endpoint (no admin required) ─────────────────────────
+@router.get("/version")
+def get_version():
+    """Public endpoint — app uses this to check for updates."""
+    settings = db.get_server_settings()
+    return {
+        "min_app_version": settings.get("min_app_version", "1.0.0"),
+        "latest_app_version": settings.get("latest_app_version", "1.0.0"),
+        "maintenance": settings.get("maintenance", False),
+        "maintenance_message": settings.get("maintenance_message", ""),
+    }

@@ -30,30 +30,88 @@ android {
 
     signingConfigs {
         release {
-            keyAlias keyProperties['keyAlias']
+            keyAlias    keyProperties['keyAlias']
             keyPassword keyProperties['keyPassword']
-            storeFile keyProperties['storeFile'] ? file(keyProperties['storeFile']) : null
+            storeFile   keyProperties['storeFile'] ? file(keyProperties['storeFile']) : null
             storePassword keyProperties['storePassword']
         }
     }
 
     defaultConfig {
         applicationId "com.xissin.app"
-        minSdk flutter.minSdkVersion
-        targetSdk flutter.targetSdkVersion
-        versionCode flutter.versionCode
-        versionName flutter.versionName
+        minSdk       flutter.minSdkVersion
+        targetSdk    flutter.targetSdkVersion
+        versionCode  flutter.versionCode
+        versionName  flutter.versionName
+
     }
 
     buildTypes {
         release {
             signingConfig signingConfigs.release
-            minifyEnabled false
-            shrinkResources false
+
+            // ── R8 full-mode obfuscation + dead code removal ──────────────────
+            minifyEnabled    true
+            shrinkResources  true
+
+            proguardFiles(
+                getDefaultProguardFile('proguard-android-optimize.txt'),
+                'proguard-rules.pro'
+            )
+
+            // ── Disable debug symbols in release ──────────────────────────────
+            debuggable         false
+            jniDebuggable      false
+            renderscriptDebuggable false
+            zipAlignEnabled    true
         }
+
+        debug {
+            // Debug stays readable for development
+            minifyEnabled    false
+            shrinkResources  false
+            debuggable       true
+        }
+    }
+
+    // ── Packaging options ─────────────────────────────────────────────────────
+    packagingOptions {
+        // Strip unnecessary native debug info
+        doNotStrip "*/mips/*.so"
+        doNotStrip "*/mips64/*.so"
+        // Remove duplicate license files
+        exclude "META-INF/LICENSE"
+        exclude "META-INF/LICENSE.txt"
+        exclude "META-INF/NOTICE"
+        exclude "META-INF/NOTICE.txt"
+        exclude "META-INF/*.kotlin_module"
+    }
+
+    // ── Lint ──────────────────────────────────────────────────────────────────
+    lint {
+        disable 'InvalidPackage'
     }
 }
 
 flutter {
     source "../.."
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BUILD COMMAND FOR MAXIMUM PROTECTION — use this instead of plain flutter build
+// ─────────────────────────────────────────────────────────────────────────────
+//
+//  flutter build apk \
+//    --release \
+//    --obfuscate \
+//    --split-debug-info=./debug-symbols \
+//    --split-per-abi \
+//    --no-tree-shake-icons
+//
+//  --obfuscate             : renames ALL Dart class/method/field names to short
+//                            meaningless symbols (e.g. A.a.b()) — critical!
+//  --split-debug-info      : keeps the symbol mapping file ONLY on your machine,
+//                            so stack traces still work but APK has no symbols
+//  --split-per-abi         : smaller APKs, harder to analyse
+//
+// ─────────────────────────────────────────────────────────────────────────────
