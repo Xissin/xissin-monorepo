@@ -4,6 +4,16 @@ plugins {
     id "dev.flutter.flutter-gradle-plugin"
 }
 
+// Supports both local Windows build and GitHub Actions CI
+def keyPropertiesFile = new File(System.getenv("GITHUB_WORKSPACE") != null
+    ? "${System.getenv("GITHUB_WORKSPACE")}/app/android/key.properties"
+    : "C:/Users/Nathaniel/Desktop/Xissin-Publish/key.properties")
+
+def keyProperties = new Properties()
+if (keyPropertiesFile.exists()) {
+    keyProperties.load(new FileInputStream(keyPropertiesFile))
+}
+
 android {
     namespace "com.xissin.app"
     compileSdk flutter.compileSdkVersion
@@ -18,6 +28,15 @@ android {
         jvmTarget = "1.8"
     }
 
+    signingConfigs {
+        release {
+            keyAlias keyProperties['keyAlias']
+            keyPassword keyProperties['keyPassword']
+            storeFile keyProperties['storeFile'] ? file(keyProperties['storeFile']) : null
+            storePassword keyProperties['storePassword']
+        }
+    }
+
     defaultConfig {
         applicationId "com.xissin.app"
         minSdk flutter.minSdkVersion
@@ -28,7 +47,9 @@ android {
 
     buildTypes {
         release {
-            signingConfig signingConfigs.debug
+            signingConfig signingConfigs.release
+            minifyEnabled false
+            shrinkResources false
         }
     }
 }

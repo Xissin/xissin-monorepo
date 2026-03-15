@@ -1,0 +1,92 @@
+name: 🚀 Build Xissin APK
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    name: Build & Sign APK
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── 1. Checkout code ───────────────────────────────────────────────────
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v4
+
+      # ── 2. Setup Java ──────────────────────────────────────────────────────
+      - name: ☕ Setup Java
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      # ── 3. Setup Flutter ───────────────────────────────────────────────────
+      - name: 🐦 Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.41.4'
+          channel: 'stable'
+
+      # ── 4. Decode Keystore ─────────────────────────────────────────────────
+      - name: 🔑 Decode Keystore
+        run: |
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > $GITHUB_WORKSPACE/app/android/xissin-release.jks
+
+      # ── 5. Create key.properties ───────────────────────────────────────────
+      - name: 📝 Create key.properties
+        run: |
+          cat > $GITHUB_WORKSPACE/app/android/key.properties << EOF
+          storePassword=${{ secrets.KEY_STORE_PASSWORD }}
+          keyPassword=${{ secrets.KEY_PASSWORD }}
+          keyAlias=${{ secrets.KEY_ALIAS }}
+          storeFile=$GITHUB_WORKSPACE/app/android/xissin-release.jks
+          EOF
+
+      # ── 6. Get Flutter packages ────────────────────────────────────────────
+      - name: 📦 Flutter Pub Get
+        working-directory: app
+        run: flutter pub get
+
+      # ── 7. Build Release APK ───────────────────────────────────────────────
+      - name: 🔨 Build Release APK
+        working-directory: app
+        run: flutter build apk --release
+
+      # ── 8. Rename APK with date ────────────────────────────────────────────
+      - name: 📋 Rename APK
+        run: |
+          DATE=$(date +'%Y%m%d-%H%M')
+          mv app/build/app/outputs/flutter-apk/app-release.apk \
+             app/build/app/outputs/flutter-apk/Xissin-v1.0.0-${DATE}.apk
+
+      # ── 9. Upload APK as artifact ──────────────────────────────────────────
+      - name: 📤 Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Xissin-APK
+          path: app/build/app/outputs/flutter-apk/Xissin-*.apk
+          retention-days: 30
+
+      # ── 10. Notify Telegram on success ─────────────────────────────────────
+      - name: 📲 Notify Telegram
+        if: success()
+        run: |
+          DATE=$(date +'%Y-%m-%d %H:%M')
+          MESSAGE="✅ *Xissin APK Built Successfully!*%0A%0A📦 Version: v1.0.0%0A🕐 Time: ${DATE}%0A🔗 Download: https://github.com/Xissin/xissin-monorepo/actions%0A%0A_Push to main triggered this build._"
+          curl -s -X POST "https://api.telegram.org/bot8282381783:AAHs_2v8UGgNM48y1EulMhovNUkTw4ntpjY/sendMessage" \
+            -d "chat_id=1910648163" \
+            -d "text=${MESSAGE}" \
+            -d "parse_mode=Markdown"
+
+      # ── 11. Notify Telegram on failure ─────────────────────────────────────
+      - name: ❌ Notify Telegram on Failure
+        if: failure()
+        run: |
+          DATE=$(date +'%Y-%m-%d %H:%M')
+          MESSAGE="❌ *Xissin APK Build FAILED!*%0A%0A🕐 Time: ${DATE}%0A🔗 Check logs: https://github.com/Xissin/xissin-monorepo/actions%0A%0A_Please check the error logs._"
+          curl -s -X POST "https://api.telegram.org/bot8282381783:AAHs_2v8UGgNM48y1EulMhovNUkTw4ntpjY/sendMessage" \
+            -d "chat_id=1910648163" \
+            -d "text=${MESSAGE}" \
+            -d "parse_mode=Markdown"
