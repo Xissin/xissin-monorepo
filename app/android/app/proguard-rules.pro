@@ -1,24 +1,22 @@
 # ══════════════════════════════════════════════════════════════════════════════
 # Xissin App — proguard-rules.pro
-# Aggressive obfuscation + protection rules
 # ══════════════════════════════════════════════════════════════════════════════
 
 # ── 1. Optimisation passes ────────────────────────────────────────────────────
--optimizationpasses 7
+-optimizationpasses 5
 -dontusemixedcaseclassnames
 -dontskipnonpubliclibraryclasses
 -dontskipnonpubliclibraryclassmembers
 -verbose
 -allowaccessmodification
--mergeinterfacesaggressively
 
-# Aggressive optimisations (R8 extended list)
--optimizations !code/simplification/cast,!field/*,!class/merging/*,\
-               code/removal/simple,code/removal/advanced,\
-               code/removal/exception,code/removal/string,\
-               code/optimization/*
+# FIX 1: Removed backslash line continuation — R8 does NOT support multi-line
+# -optimizations rules. One single line only.
+-optimizations !code/simplification/cast,!field/*,!class/merging/*
 
-# ── 2. Keep Flutter engine (never obfuscate these) ───────────────────────────
+# FIX 2: Removed -mergeinterfacesaggressively — causes crashes with Flutter plugins
+
+# ── 2. Keep Flutter engine ────────────────────────────────────────────────────
 -keep class io.flutter.** { *; }
 -keep class io.flutter.embedding.** { *; }
 -keep class io.flutter.plugin.** { *; }
@@ -26,11 +24,11 @@
 -keep class io.flutter.view.** { *; }
 -keep class io.flutter.app.** { *; }
 
-# ── 3. Keep your app's entry point ───────────────────────────────────────────
+# ── 3. Keep your app entry point ─────────────────────────────────────────────
 -keep class com.xissin.app.MainActivity { *; }
 -keep class com.xissin.app.** { *; }
 
-# ── 4. Keep Kotlin metadata (required for reflection) ────────────────────────
+# ── 4. Keep Kotlin metadata ───────────────────────────────────────────────────
 -keepattributes *Annotation*
 -keepattributes Signature
 -keepattributes InnerClasses
@@ -41,7 +39,7 @@
 -keep class kotlin.reflect.** { *; }
 -dontwarn kotlin.**
 
-# ── 5. Android components (must never be renamed) ────────────────────────────
+# ── 5. Android components ─────────────────────────────────────────────────────
 -keep public class * extends android.app.Activity
 -keep public class * extends android.app.Application
 -keep public class * extends android.app.Service
@@ -52,8 +50,7 @@
 -keep public class * extends androidx.** { *; }
 -keep class androidx.lifecycle.** { *; }
 
-# ── 6. Serialisation (Gson / JSON models) ────────────────────────────────────
-# Keep field names used in JSON serialisation so responses still parse
+# ── 6. Serialisation ──────────────────────────────────────────────────────────
 -keepclassmembers class * {
     @com.google.gson.annotations.SerializedName <fields>;
 }
@@ -81,24 +78,24 @@
     public static final android.os.Parcelable$Creator *;
 }
 
-# ── 10. okhttp3 / http (used by Flutter http package) ────────────────────────
+# ── 10. okhttp3 / http ────────────────────────────────────────────────────────
 -keep class okhttp3.** { *; }
 -keep interface okhttp3.** { *; }
 -dontwarn okhttp3.**
 -dontwarn okio.**
 -keep class okio.** { *; }
 
-# ── 11. Google Play (in_app_purchase) ────────────────────────────────────────
+# ── 11. Google Play / billing ─────────────────────────────────────────────────
 -keep class com.google.android.gms.** { *; }
 -keep class com.android.billingclient.** { *; }
 -dontwarn com.google.android.gms.**
 
-# ── 12. WebView (webview_flutter) ────────────────────────────────────────────
+# ── 12. WebView ───────────────────────────────────────────────────────────────
 -keep class android.webkit.** { *; }
 -keep class * extends android.webkit.WebViewClient { *; }
 -keep class * extends android.webkit.WebChromeClient { *; }
 
-# ── 13. Flutter Secure Storage ───────────────────────────────────────────────
+# ── 13. Flutter Secure Storage ────────────────────────────────────────────────
 -keep class com.it_nomads.fluttersecurestorage.** { *; }
 
 # ── 14. Package info plugin ───────────────────────────────────────────────────
@@ -107,10 +104,13 @@
 # ── 15. Device info plugin ────────────────────────────────────────────────────
 -keep class dev.fluttercommunity.plus.device_info.** { *; }
 
-# ── 16. Connectivity plus ────────────────────────────────────────────────────
+# ── 16. Connectivity plus ─────────────────────────────────────────────────────
 -keep class dev.fluttercommunity.plus.connectivity.** { *; }
 
-# ── 17. Suppress known harmless warnings ─────────────────────────────────────
+# ── 17. Geolocator ────────────────────────────────────────────────────────────
+-keep class com.baseflow.geolocator.** { *; }
+
+# ── 18. Suppress known harmless warnings ──────────────────────────────────────
 -dontwarn javax.annotation.**
 -dontwarn org.conscrypt.**
 -dontwarn org.bouncycastle.**
@@ -119,8 +119,7 @@
 -dontwarn java.lang.invoke.**
 -dontwarn java.lang.reflect.**
 
-# ── 18. REMOVE all logging in release ────────────────────────────────────────
-# Strips Android Log calls — no stack traces or debug output in production
+# ── 19. Strip debug logging in release ────────────────────────────────────────
 -assumenosideeffects class android.util.Log {
     public static boolean isLoggable(java.lang.String, int);
     public static int v(...);
@@ -134,12 +133,10 @@
     public void print(...);
 }
 
-# ── 19. String encryption hints ──────────────────────────────────────────────
-# R8 will attempt to encrypt string constants with the below
--repackageclasses 'x'   # moves all classes into single package named 'x'
--flattenpackagehierarchy 'x'
+# ── 20. Repackage obfuscation ─────────────────────────────────────────────────
+# FIX 3: Removed inline comment after -repackageclasses — R8 does not support it
+# FIX 4: Removed -flattenpackagehierarchy — conflicts with -repackageclasses
+-repackageclasses 'x'
 
-# ── 20. Aggressive class renaming ─────────────────────────────────────────────
--obfuscationdictionary      proguard-dict.txt
--classobfuscationdictionary proguard-dict.txt
--packageobfuscationdictionary proguard-dict.txt
+# FIX 5: Removed -obfuscationdictionary lines — proguard-dict.txt does not exist
+# in the repo, causes FileNotFoundException crash on build
