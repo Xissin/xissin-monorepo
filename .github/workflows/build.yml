@@ -2,8 +2,8 @@ name: 🚀 Build Xissin APK
 
 on:
   push:
-    branches:
-      - main
+    tags:
+      - 'v*.*.*'   # triggers on v1.0.0, v1.0.1, v2.0.0 etc.
 
 jobs:
   build:
@@ -54,38 +54,59 @@ jobs:
         working-directory: app
         run: flutter build apk --release
 
-      # ── 8. Rename APK with date ────────────────────────────────────────────
+      # ── 8. Rename APK with tag version ────────────────────────────────────
       - name: 📋 Rename APK
         run: |
-          DATE=$(date +'%Y%m%d-%H%M')
+          TAG=${GITHUB_REF#refs/tags/}
           mv app/build/app/outputs/flutter-apk/app-release.apk \
-             app/build/app/outputs/flutter-apk/Xissin-v1.0.0-${DATE}.apk
+             app/build/app/outputs/flutter-apk/Xissin-${TAG}.apk
 
       # ── 9. Upload APK as artifact ──────────────────────────────────────────
       - name: 📤 Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Xissin-APK
+          name: Xissin-APK-${{ github.ref_name }}
           path: app/build/app/outputs/flutter-apk/Xissin-*.apk
           retention-days: 30
 
-      # ── 10. Notify Telegram on success ─────────────────────────────────────
+      # ── 10. Create GitHub Release ──────────────────────────────────────────
+      - name: 🎉 Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: app/build/app/outputs/flutter-apk/Xissin-*.apk
+          name: Xissin ${{ github.ref_name }}
+          body: |
+            ## 🚀 Xissin ${{ github.ref_name }}
+            
+            ### 📲 How to Install
+            1. Download the APK file below
+            2. Open it on your Android phone
+            3. Tap **Install** (enable Unknown Sources if prompted)
+            
+            ### 📢 Updates & Announcements
+            Join our Telegram: https://t.me/Xissin_0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── 11. Notify Telegram on success ─────────────────────────────────────
       - name: 📲 Notify Telegram
         if: success()
         run: |
+          TAG=${GITHUB_REF#refs/tags/}
           DATE=$(date +'%Y-%m-%d %H:%M')
-          MESSAGE="✅ *Xissin APK Built Successfully!*%0A%0A📦 Version: v1.0.0%0A🕐 Time: ${DATE}%0A🔗 Download: https://github.com/Xissin/xissin-monorepo/actions%0A%0A_Push to main triggered this build._"
+          MESSAGE="✅ *Xissin ${TAG} Released!*%0A%0A📦 Version: ${TAG}%0A🕐 Time: ${DATE}%0A%0A🔗 Download APK:%0Ahttps://github.com/Xissin/xissin-monorepo/releases/tag/${TAG}%0A%0A📢 Share on: @Xissin_0"
           curl -s -X POST "https://api.telegram.org/bot8282381783:AAHs_2v8UGgNM48y1EulMhovNUkTw4ntpjY/sendMessage" \
             -d "chat_id=1910648163" \
             -d "text=${MESSAGE}" \
             -d "parse_mode=Markdown"
 
-      # ── 11. Notify Telegram on failure ─────────────────────────────────────
+      # ── 12. Notify Telegram on failure ─────────────────────────────────────
       - name: ❌ Notify Telegram on Failure
         if: failure()
         run: |
+          TAG=${GITHUB_REF#refs/tags/}
           DATE=$(date +'%Y-%m-%d %H:%M')
-          MESSAGE="❌ *Xissin APK Build FAILED!*%0A%0A🕐 Time: ${DATE}%0A🔗 Check logs: https://github.com/Xissin/xissin-monorepo/actions%0A%0A_Please check the error logs._"
+          MESSAGE="❌ *Xissin ${TAG} Build FAILED!*%0A%0A🕐 Time: ${DATE}%0A🔗 Check logs: https://github.com/Xissin/xissin-monorepo/actions%0A%0A_Please check the error logs._"
           curl -s -X POST "https://api.telegram.org/bot8282381783:AAHs_2v8UGgNM48y1EulMhovNUkTw4ntpjY/sendMessage" \
             -d "chat_id=1910648163" \
             -d "text=${MESSAGE}" \
