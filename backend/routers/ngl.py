@@ -25,8 +25,16 @@ PH_TZ  = ZoneInfo("Asia/Manila")
 
 # FIX 1 & 2: Removed global ThreadPoolExecutor and blocking semaphore.
 # Now uses asyncio semaphore + httpx async client — fully non-blocking.
+# FIX CRASH: asyncio.Semaphore must NOT be created at module level in Python 3.11
+# (crashes before the event loop starts). Created lazily on first request instead.
 _MAX_CONCURRENT = 5
-_ngl_semaphore  = asyncio.Semaphore(_MAX_CONCURRENT)
+_ngl_semaphore: asyncio.Semaphore | None = None
+
+def _get_semaphore() -> asyncio.Semaphore:
+    global _ngl_semaphore
+    if _ngl_semaphore is None:
+        _ngl_semaphore = asyncio.Semaphore(_MAX_CONCURRENT)
+    return _ngl_semaphore
 
 _USER_AGENTS = [
     "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
@@ -172,7 +180,7 @@ async def send_ngl(req: NglRequest, request: Request):
 
     # FIX 3: asyncio.Semaphore properly queues up to _MAX_CONCURRENT requests
     # instead of immediately rejecting anything beyond 1.
-    async with _ngl_semaphore:
+    async with _get_semaphore():
         sent = failed = 0
 
         # FIX 1: Use async httpx client — fully non-blocking

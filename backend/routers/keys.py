@@ -7,6 +7,10 @@ from pydantic import BaseModel
 from typing import Optional
 import random
 import string
+import os
+import base64
+import pickle
+import requests as _requests
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -19,6 +23,32 @@ PH_TZ = ZoneInfo("Asia/Manila")
 
 def ph_now():
     return datetime.now(PH_TZ).replace(tzinfo=None)
+
+# ── Redis sync-trigger helper ─────────────────────────────────────────────────
+# After a key is redeemed we write xissin:sync_now so the auto_edit_bot
+# background loop wakes up immediately and edits the channel post.
+
+def _fire_sync_trigger():
+    """Write a Redis flag so auto_edit_bot syncs immediately."""
+    url   = os.environ.get("UPSTASH_REDIS_REST_URL", "").rstrip("/")
+    token = os.environ.get("UPSTASH_REDIS_REST_TOKEN", "")
+    if not url or not token:
+        return
+    try:
+        payload = base64.b64encode(
+            pickle.dumps(datetime.utcnow().isoformat())
+        ).decode("utf-8")
+        _requests.post(
+            f"{url}/set/xissin:sync_now",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "text/plain",
+            },
+            data=payload,
+            timeout=5,
+        )
+    except Exception:
+        pass   # non-critical, bot will sync on its 60s loop anyway
 
 # ── Models ────────────────────────────────────────────────────────────────────
 
@@ -81,10 +111,10 @@ def redeem_key(request: Request, req: RedeemKeyRequest):
     if now > expires:
         raise HTTPException(status_code=400, detail="Key has expired")
 
-    key_data["redeemed"]    = True
-    key_data["redeemed_by"] = req.user_id
+    key_data["redeemed"]             = True
+    key_data["redeemed_by"]          = req.user_id
     key_data["redeemed_by_username"] = req.username or ""
-    key_data["redeemed_at"] = now.isoformat()
+    key_data["redeemed_at"]          = now.isoformat()
     db.save_key(req.key, key_data)
 
     user = db.get_user(req.user_id) or {}
@@ -103,6 +133,9 @@ def redeem_key(request: Request, req: RedeemKeyRequest):
         "user_id":  req.user_id,
         "username": req.username,
     })
+
+    # ── Instantly trigger auto_edit_bot to update the channel post ──────────
+    _fire_sync_trigger()
 
     return {
         "success":    True,
@@ -124,7 +157,7 @@ def revoke_key(req: RevokeKeyRequest):
 
 @router.post("/delete", dependencies=[Depends(require_admin)])
 def delete_unredeemed_key(req: DeleteKeyRequest):
-    """Admin: delete an unredeemed key only. Redeemed keys are protected and cannot be deleted this way."""
+    """Admin: delete an unredeemed key only. Redeemed keys are protected."""
     key_data = db.get_key(req.key)
     if not key_data:
         raise HTTPException(status_code=404, detail="Key not found")
@@ -143,8 +176,8 @@ def list_keys():
     """Admin: list all keys."""
     keys = db.get_all_keys()
     return {
-        "total":    len(keys),
-        "keys":     list(keys.values()),
+        "total": len(keys),
+        "keys":  list(keys.values()),
     }
 
 
