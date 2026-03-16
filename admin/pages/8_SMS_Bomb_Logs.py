@@ -5,17 +5,17 @@ pages/8_SMS_Bomb_Logs.py — Dedicated SMS Bomb attack logs with per-service bre
 import streamlit as st
 import pandas as pd
 from utils.api import get, delete
+from utils.theme import inject_theme, page_header, auth_guard
 
 st.set_page_config(
     page_title="SMS Bomb Logs · Xissin Admin",
     page_icon="💣",
     layout="wide",
 )
-
+inject_theme()
 auth_guard()
 
 page_header("💣", "SMS Bomb Logs", "ATTACK HISTORY · PER-SERVICE BREAKDOWN")
-pass
 
 # ── Load ──────────────────────────────────────────────────────────────────────
 @st.cache_data(ttl=15, show_spinner=False)

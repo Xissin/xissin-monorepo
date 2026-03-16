@@ -7,12 +7,14 @@ Admin only — users never see this page.
 import streamlit as st
 import pandas as pd
 from datetime import datetime
+from utils.theme import inject_theme, page_header, auth_guard
 
 st.set_page_config(
     page_title="User Map · Xissin Admin",
     page_icon="📍",
     layout="wide",
 )
+inject_theme()
 
 auth_guard()
 
@@ -40,6 +42,7 @@ if not FOLIUM_OK:
     st.stop()
 
 from utils.api import get, post
+from utils.theme import inject_theme, page_header, auth_guard
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 def _has_active_key(user: dict) -> bool:

@@ -6,17 +6,17 @@ Shows model, brand, OS, emulator detection, last seen time.
 import streamlit as st
 import pandas as pd
 from utils.api import get
+from utils.theme import inject_theme, page_header, auth_guard
 
 st.set_page_config(
     page_title="Device Info · Xissin Admin",
     page_icon="📱",
     layout="wide",
 )
-
+inject_theme()
 auth_guard()
 
 page_header("📱", "Device Info", "HARDWARE · EMULATOR DETECTION · LAST SEEN")
-pass
 
 # ── Load ──────────────────────────────────────────────────────────────────────
 @st.cache_data(ttl=30, show_spinner=False)
