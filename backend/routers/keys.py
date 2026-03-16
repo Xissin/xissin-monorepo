@@ -1,5 +1,18 @@
 """
 routers/keys.py — Key management endpoints
+
+NAMESPACE FIX
+-------------
+All keys generated/redeemed here are tagged  "source": "app"
+and mirrored into  app:registry  in Upstash Redis.
+
+This ensures the xissin-monorepo auto_edit_bot (app:registry reader)
+and the Xissin-bot auto_edit_bot (tgbot:registry reader) NEVER
+interfere with each other — they live in completely separate namespaces.
+
+Redis keys used by this module:
+  app:registry      — dict of all app keys  { key_str: metadata }
+  app:sync_now      — trigger flag for auto_edit_bot background loop
 """
 
 from fastapi import APIRouter, HTTPException, Depends, Request
@@ -24,31 +37,96 @@ PH_TZ = ZoneInfo("Asia/Manila")
 def ph_now():
     return datetime.now(PH_TZ).replace(tzinfo=None)
 
-# ── Redis sync-trigger helper ─────────────────────────────────────────────────
-# After a key is redeemed we write xissin:sync_now so the auto_edit_bot
-# background loop wakes up immediately and edits the channel post.
+# ── Upstash helpers ───────────────────────────────────────────────────────────
+
+def _upstash_url() -> str:
+    return os.environ.get("UPSTASH_REDIS_REST_URL", "").rstrip("/")
+
+def _upstash_token() -> str:
+    return os.environ.get("UPSTASH_REDIS_REST_TOKEN", "")
+
+def _redis_get(key: str):
+    url, token = _upstash_url(), _upstash_token()
+    if not url or not token:
+        return None
+    try:
+        resp   = _requests.get(f"{url}/get/{key}",
+                               headers={"Authorization": f"Bearer {token}"}, timeout=10)
+        result = resp.json().get("result")
+        if result is None:
+            return None
+        return pickle.loads(base64.b64decode(result.encode("utf-8")))
+    except Exception:
+        return None
+
+def _redis_set(key: str, data) -> bool:
+    url, token = _upstash_url(), _upstash_token()
+    if not url or not token:
+        return False
+    try:
+        encoded = base64.b64encode(pickle.dumps(data)).decode("utf-8")
+        resp    = _requests.post(
+            f"{url}/set/{key}",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "text/plain"},
+            data=encoded,
+            timeout=10,
+        )
+        return resp.json().get("result") == "OK"
+    except Exception:
+        return False
+
+# ── App registry mirror ───────────────────────────────────────────────────────
+
+APP_REGISTRY_KEY = "app:registry"   # only app keys — read by auto_edit_bot_APP
+APP_SYNC_KEY     = "app:sync_now"   # trigger flag — read by auto_edit_bot_APP
+
+def _mirror_to_app_registry(key_str: str, metadata: dict):
+    """
+    Keep app:registry in Upstash in sync with every key create/update/delete.
+    This is the ONLY registry the app auto_edit_bot reads.
+    tgbot keys are stored separately under tgbot:registry — zero overlap.
+    """
+    try:
+        registry = _redis_get(APP_REGISTRY_KEY)
+        if not isinstance(registry, dict):
+            registry = {}
+        registry[key_str] = metadata
+        _redis_set(APP_REGISTRY_KEY, registry)
+    except Exception:
+        pass   # non-critical; bot falls back to 30s loop
+
+def _remove_from_app_registry(key_str: str):
+    """Remove a key from app:registry (called on revoke/delete)."""
+    try:
+        registry = _redis_get(APP_REGISTRY_KEY)
+        if isinstance(registry, dict) and key_str in registry:
+            del registry[key_str]
+            _redis_set(APP_REGISTRY_KEY, registry)
+    except Exception:
+        pass
 
 def _fire_sync_trigger():
-    """Write a Redis flag so auto_edit_bot syncs immediately."""
-    url   = os.environ.get("UPSTASH_REDIS_REST_URL", "").rstrip("/")
-    token = os.environ.get("UPSTASH_REDIS_REST_TOKEN", "")
-    if not url or not token:
-        return
+    """
+    Write app:sync_now so the APP auto_edit_bot background loop
+    wakes up immediately and edits the channel post.
+    Note: uses app:sync_now — NOT xissin:sync_now — so it only
+    triggers the app bot, never the tgbot bot.
+    """
     try:
         payload = base64.b64encode(
             pickle.dumps(datetime.utcnow().isoformat())
         ).decode("utf-8")
         _requests.post(
-            f"{url}/set/xissin:sync_now",
+            f"{_upstash_url()}/set/{APP_SYNC_KEY}",
             headers={
-                "Authorization": f"Bearer {token}",
+                "Authorization": f"Bearer {_upstash_token()}",
                 "Content-Type": "text/plain",
             },
             data=payload,
             timeout=5,
         )
     except Exception:
-        pass   # non-critical, bot will sync on its 60s loop anyway
+        pass   # non-critical
 
 # ── Models ────────────────────────────────────────────────────────────────────
 
@@ -80,18 +158,20 @@ def _generate_key_string() -> str:
 def generate_key(req: GenerateKeyRequest):
     """Admin: generate a new activation key."""
     key_str = _generate_key_string()
-    now = ph_now()
+    now     = ph_now()
     metadata = {
-        "key":          key_str,
-        "created_at":   now.isoformat(),
-        "expires_at":   (now + timedelta(days=req.duration_days)).isoformat(),
+        "key":           key_str,
+        "source":        "app",          # ← NAMESPACE TAG: identifies this as an app key
+        "created_at":    now.isoformat(),
+        "expires_at":    (now + timedelta(days=req.duration_days)).isoformat(),
         "duration_days": req.duration_days,
-        "note":         req.note or "",
-        "redeemed":     False,
-        "redeemed_by":  None,
-        "redeemed_at":  None,
+        "note":          req.note or "",
+        "redeemed":      False,
+        "redeemed_by":   None,
+        "redeemed_at":   None,
     }
     db.save_key(key_str, metadata)
+    _mirror_to_app_registry(key_str, metadata)   # ← keep app:registry in sync
     db.append_log({"action": "key_generated", "key": key_str, "days": req.duration_days})
     return {"success": True, "key": key_str, "expires_in_days": req.duration_days}
 
@@ -107,7 +187,7 @@ def redeem_key(request: Request, req: RedeemKeyRequest):
         raise HTTPException(status_code=400, detail="Key already redeemed")
 
     expires = datetime.fromisoformat(key_data["expires_at"])
-    now = ph_now()
+    now     = ph_now()
     if now > expires:
         raise HTTPException(status_code=400, detail="Key has expired")
 
@@ -115,7 +195,9 @@ def redeem_key(request: Request, req: RedeemKeyRequest):
     key_data["redeemed_by"]          = req.user_id
     key_data["redeemed_by_username"] = req.username or ""
     key_data["redeemed_at"]          = now.isoformat()
+    key_data["source"]               = key_data.get("source", "app")  # ← ensure tag present
     db.save_key(req.key, key_data)
+    _mirror_to_app_registry(req.key, key_data)   # ← update app:registry with redeemed state
 
     user = db.get_user(req.user_id) or {}
     user.update({
@@ -134,7 +216,8 @@ def redeem_key(request: Request, req: RedeemKeyRequest):
         "username": req.username,
     })
 
-    # ── Instantly trigger auto_edit_bot to update the channel post ──────────
+    # ── Instantly trigger APP auto_edit_bot to update the channel post ───────
+    # Uses app:sync_now — will NOT trigger the tgbot bot at all.
     _fire_sync_trigger()
 
     return {
@@ -151,6 +234,7 @@ def revoke_key(req: RevokeKeyRequest):
     if not key_data:
         raise HTTPException(status_code=404, detail="Key not found")
     db.delete_key(req.key)
+    _remove_from_app_registry(req.key)   # ← keep app:registry clean
     db.append_log({"action": "key_revoked", "key": req.key})
     return {"success": True, "message": "Key revoked"}
 
@@ -167,6 +251,7 @@ def delete_unredeemed_key(req: DeleteKeyRequest):
             detail="Cannot delete a redeemed key. Use /revoke if you must remove it."
         )
     db.delete_key(req.key)
+    _remove_from_app_registry(req.key)   # ← keep app:registry clean
     db.append_log({"action": "key_deleted", "key": req.key})
     return {"success": True, "message": f"Key {req.key} deleted successfully"}
 
