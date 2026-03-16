@@ -14,27 +14,9 @@ st.set_page_config(
     layout="wide",
 )
 
-if not st.session_state.get("authenticated"):
-    st.warning("⚠️ Please login first.")
-    st.stop()
+auth_guard()
 
-st.markdown("""
-<style>
-[data-testid="stAppViewContainer"] { background: #08101f; }
-[data-testid="stSidebar"]          { background: #0d1830; border-right: 1px solid #1d2c4a; }
-[data-testid="stSidebar"] *        { color: #eef2ff !important; }
-[data-testid="stHeader"]           { display: none; }
-[data-testid="metric-container"] {
-    background: #0d1830; border: 1px solid #1d2c4a;
-    border-radius: 14px; padding: 16px !important;
-}
-.stButton > button {
-    border-radius: 10px !important; font-weight: 700 !important;
-    border: 1px solid #1d2c4a !important;
-}
-hr { border-color: #1d2c4a !important; }
-</style>
-""", unsafe_allow_html=True)
+
 
 # ── Safe folium import ─────────────────────────────────────────────────────────
 try:
@@ -46,9 +28,8 @@ except ImportError as _e:
     FOLIUM_OK       = False
     _folium_err_msg = str(_e)
 
-st.markdown("## 📍 User Location Map")
-st.markdown("Real-time Philippines map — shows last known location of each user.")
-st.divider()
+page_header("📍", "User Map", "REAL-TIME PHILIPPINES LOCATION MAP")
+pass
 
 if not FOLIUM_OK:
     st.error(

@@ -12,13 +12,10 @@ st.set_page_config(
     layout="wide",
 )
 
-if not st.session_state.get("authenticated"):
-    st.warning("⚠️ Please login first.")
-    st.stop()
+auth_guard()
 
-st.markdown("## 💣 SMS Bomb Logs")
-st.markdown("Full attack history with per-service OTP breakdown")
-st.divider()
+page_header("💣", "SMS Bomb Logs", "ATTACK HISTORY · PER-SERVICE BREAKDOWN")
+pass
 
 # ── Load ──────────────────────────────────────────────────────────────────────
 @st.cache_data(ttl=15, show_spinner=False)

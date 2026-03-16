@@ -1,22 +1,13 @@
-"""
-pages/5_Activity_Logs.py — Full activity log with action type filter
-"""
-
+"""pages/5_Activity_Logs.py — Full activity log with action type filter"""
 import streamlit as st
 import pandas as pd
 from utils.api import get
+from utils.theme import inject_theme, page_header, auth_guard
 
 st.set_page_config(page_title="Activity Logs · Xissin Admin", page_icon="📋", layout="wide")
+inject_theme(); auth_guard()
+page_header("📋", "Activity Logs", "ALL BACKEND ACTIONS · FILTERED · SEARCHABLE")
 
-if not st.session_state.get("authenticated"):
-    st.warning("⚠️ Please login first.")
-    st.stop()
-
-st.markdown("## 📋 Activity Logs")
-st.markdown("All backend actions — filtered by type or searched by user")
-st.divider()
-
-# ── Controls ───────────────────────────────────────────────────────────────────
 col_a, col_b, col_c, col_d = st.columns([2, 1, 1, 1])
 with col_a:
     search = st.text_input("🔍 Search", placeholder="Filter by user ID, target, key...")
@@ -55,7 +46,8 @@ if search.strip():
             q in str(l.get("key", "")).lower() or
             q in str(l.get("phone", "")).lower()]
 
-st.caption(f"Showing **{len(logs)}** log entries")
+st.markdown(f'''<div style='font-family:"Share Tech Mono",monospace;font-size:10px;
+    color:#5a7a9a;margin-bottom:8px'>SHOWING {len(logs)} LOG ENTRIES</div>''', unsafe_allow_html=True)
 
 if not logs:
     st.info("No logs match your filter.")

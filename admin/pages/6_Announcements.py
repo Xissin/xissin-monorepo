@@ -6,14 +6,13 @@ import streamlit as st
 from utils.api import get_public, post, delete
 
 st.set_page_config(page_title="Announcements · Xissin Admin", page_icon="📢", layout="wide")
+from utils.theme import inject_theme, page_header, auth_guard
+inject_theme()
 
-if not st.session_state.get("authenticated"):
-    st.warning("⚠️ Please login first.")
-    st.stop()
+auth_guard()
 
-st.markdown("## 📢 Announcements")
-st.markdown("Broadcast messages to all app users in real-time")
-st.divider()
+page_header("📢", "Announcements", "BROADCAST · POST · DELETE")
+pass
 
 # ── Fetch ──────────────────────────────────────────────────────────────────────
 @st.cache_data(ttl=15, show_spinner=False)

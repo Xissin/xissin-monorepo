@@ -13,13 +13,10 @@ st.set_page_config(
     layout="wide",
 )
 
-if not st.session_state.get("authenticated"):
-    st.warning("⚠️ Please login first.")
-    st.stop()
+auth_guard()
 
-st.markdown("## 📱 Device Info")
-st.markdown("Hardware details collected on every app launch — emulator/VM detection included")
-st.divider()
+page_header("📱", "Device Info", "HARDWARE · EMULATOR DETECTION · LAST SEEN")
+pass
 
 # ── Load ──────────────────────────────────────────────────────────────────────
 @st.cache_data(ttl=30, show_spinner=False)

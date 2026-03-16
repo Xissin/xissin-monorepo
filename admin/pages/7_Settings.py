@@ -6,14 +6,13 @@ import streamlit as st
 from utils.api import get, post
 
 st.set_page_config(page_title="Settings · Xissin Admin", page_icon="⚙️", layout="wide")
+from utils.theme import inject_theme, page_header, auth_guard
+inject_theme()
 
-if not st.session_state.get("authenticated"):
-    st.warning("⚠️ Please login first.")
-    st.stop()
+auth_guard()
 
-st.markdown("## ⚙️ Server Control")
-st.markdown("Manage app-wide settings stored in Upstash Redis — no redeploy needed")
-st.divider()
+page_header("⚙️", "Server Control", "MAINTENANCE · FEATURES · VERSIONING")
+pass
 
 # ── Fetch ──────────────────────────────────────────────────────────────────────
 @st.cache_data(ttl=30, show_spinner=False)
