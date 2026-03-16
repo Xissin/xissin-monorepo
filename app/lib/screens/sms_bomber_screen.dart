@@ -6,16 +6,13 @@ import 'package:confetti/confetti.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../theme/app_theme.dart';
 import '../services/api_service.dart';
-// ad_service import removed — ads temporarily disabled pending AdMob verification
 import '../widgets/glass_neumorphic_card.dart';
 
-// Brand colours for SMS Bomber title
 const _kSmsRed    = Color(0xFFFF4E4E);
 const _kSmsOrange = Color(0xFFFF9A44);
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Data model
-// ─────────────────────────────────────────────────────────────────────────────
+// ── Data model ────────────────────────────────────────────────────────────────
+
 class _AttackRecord {
   final String phone;
   final int rounds;
@@ -59,17 +56,15 @@ class _AttackRecord {
       );
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Constants
-// ─────────────────────────────────────────────────────────────────────────────
+// ── Constants ─────────────────────────────────────────────────────────────────
+
 const _kHistoryKey  = 'sms_bomb_history';
 const _kLastFireKey = 'sms_bomb_last_fire';
 const _kCooldown    = Duration(minutes: 1);
 const _kMaxHistory  = 10;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Screen
-// ─────────────────────────────────────────────────────────────────────────────
+// ── Screen ────────────────────────────────────────────────────────────────────
+
 class SmsBomberScreen extends StatefulWidget {
   final String userId;
   const SmsBomberScreen({super.key, required this.userId});
@@ -107,10 +102,10 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
     super.dispose();
   }
 
-  // ── Persistence ─────────────────────────────────────────────────────────
+  // ── Persistence ────────────────────────────────────────────────────────────
+
   Future<void> _loadPersistedData() async {
     final prefs = await SharedPreferences.getInstance();
-
     final raw = prefs.getString(_kHistoryKey);
     if (raw != null) {
       try {
@@ -120,7 +115,6 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
         if (mounted) setState(() => _history = list);
       } catch (_) {}
     }
-
     final lastMs = prefs.getInt(_kLastFireKey);
     if (lastMs != null) {
       _lastFire = DateTime.fromMillisecondsSinceEpoch(lastMs);
@@ -138,16 +132,15 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
 
   Future<void> _saveLastFire() async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setInt(
-        _kLastFireKey, _lastFire!.millisecondsSinceEpoch);
+    await prefs.setInt(_kLastFireKey, _lastFire!.millisecondsSinceEpoch);
   }
 
-  // ── Cooldown ticker ──────────────────────────────────────────────────────
+  // ── Cooldown ───────────────────────────────────────────────────────────────
+
   void _tickCooldown() {
     if (_lastFire == null || !mounted) return;
     final elapsed = DateTime.now().difference(_lastFire!);
     final rem     = _kCooldown - elapsed;
-
     if (rem <= Duration.zero) {
       if (mounted) setState(() => _remaining = Duration.zero);
       return;
@@ -161,20 +154,15 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
     return '${d.inMinutes}:${s.toString().padLeft(2, '0')}';
   }
 
-  // ── Fire ─────────────────────────────────────────────────────────────────
+  // ── Fire ───────────────────────────────────────────────────────────────────
+
   Future<void> _fire() async {
     if (_onCooldown) {
-      _snack('Cooldown active — wait ${_fmtCooldown(_remaining)}',
-          error: true);
+      _snack('Cooldown active — wait ${_fmtCooldown(_remaining)}', error: true);
       return;
     }
-
     final phone = _phoneCtrl.text.trim();
-
-    if (phone.isEmpty) {
-      _snack('Enter a phone number', error: true);
-      return;
-    }
+    if (phone.isEmpty) { _snack('Enter a phone number', error: true); return; }
     if (phone.length != 10 ||
         !phone.startsWith('9') ||
         !RegExp(r'^9\d{9}$').hasMatch(phone)) {
@@ -183,10 +171,7 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
     }
 
     HapticFeedback.heavyImpact();
-    setState(() {
-      _loading      = true;
-      _showConfetti = false;
-    });
+    setState(() { _loading = true; _showConfetti = false; });
 
     try {
       final data = await ApiService.smsBomb(
@@ -226,11 +211,6 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
       });
 
       await _saveHistory();
-
-      // Interstitial ad removed — re-enable after AdMob verification:
-      // await Future.delayed(const Duration(milliseconds: 800));
-      // AdService.instance.showInterstitial();
-
     } on ApiException catch (e) {
       _snack(e.userMessage, error: true);
     } catch (e) {
@@ -243,10 +223,12 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
   void _snack(String msg, {bool error = false}) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text(msg),
+      content: Text(msg,
+          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
       backgroundColor: error ? AppColors.error : AppColors.accent,
-      behavior: SnackBarBehavior.floating,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      behavior:        SnackBarBehavior.floating,
+      shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(AppRadius.md)),
       margin: const EdgeInsets.all(12),
     ));
   }
@@ -254,15 +236,13 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
   void _repeatAttack(_AttackRecord r) {
     _phoneCtrl.text = r.phone;
     setState(() => _rounds = r.rounds.clamp(1, 3));
-    _scrollCtrl.animateTo(
-      0,
-      duration: const Duration(milliseconds: 500),
-      curve: Curves.easeOut,
-    );
+    _scrollCtrl.animateTo(0,
+        duration: const Duration(milliseconds: 500), curve: Curves.easeOut);
     _snack('Phone pre-filled — tap FIRE when ready 🎯');
   }
 
-  // ── Build ────────────────────────────────────────────────────────────────
+  // ── Build ──────────────────────────────────────────────────────────────────
+
   @override
   Widget build(BuildContext context) {
     final c = context.c;
@@ -283,9 +263,9 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
           child: const Text(
             'SMS Bomber',
             style: TextStyle(
-              color: Colors.white,
-              fontWeight: FontWeight.w800,
-              fontSize: 20,
+              color:         Colors.white,
+              fontWeight:    FontWeight.w800,
+              fontSize:      20,
               letterSpacing: 0.5,
             ),
           ),
@@ -299,10 +279,15 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // ── Warning ──────────────────────────────────────────
-                GlassNeumorphicCard(
-                  glowColor: c.error,
+
+                // ── Warning banner ─────────────────────────────────────────
+                Container(
                   padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color:        c.error.withOpacity(0.07),
+                    borderRadius: BorderRadius.circular(AppRadius.lg),
+                    border: Border.all(color: c.error.withOpacity(0.30), width: 1),
+                  ),
                   child: Row(
                     children: [
                       Icon(Icons.warning_amber_rounded,
@@ -324,40 +309,52 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
 
                 const SizedBox(height: 26),
 
-                // ── Target number ─────────────────────────────────────
-                const Text('Target Number',
+                // ── Target number ──────────────────────────────────────────
+                Text('Target Number',
                     style: TextStyle(
-                        color: AppColors.textSecondary,
-                        fontSize: 13,
+                        color:      c.textSecondary,
+                        fontSize:   13,
                         fontWeight: FontWeight.w500))
-                    .animate(delay: 100.ms)
-                    .fadeIn(duration: 400.ms),
+                    .animate(delay: 100.ms).fadeIn(duration: 400.ms),
+
                 const SizedBox(height: 8),
+
                 TextField(
-                  controller: _phoneCtrl,
+                  controller:   _phoneCtrl,
                   keyboardType: TextInputType.phone,
                   inputFormatters: [
                     FilteringTextInputFormatter.digitsOnly,
                     LengthLimitingTextInputFormatter(10),
                   ],
-                  style: const TextStyle(
-                      color: AppColors.textPrimary,
-                      fontSize: 16,
-                      letterSpacing: 1),
+                  style: TextStyle(
+                      color: c.textPrimary, fontSize: 16, letterSpacing: 1),
                   decoration: InputDecoration(
                     hintText: '9XXXXXXXXX',
-                    prefixIcon: const Icon(Icons.phone_android_rounded,
-                        color: AppColors.primary),
-                    prefix: const Text('+63 ',
+                    hintStyle: TextStyle(color: c.textSecondary),
+                    filled:    true,
+                    fillColor: c.surface,
+                    prefixIcon: Icon(Icons.phone_android_rounded,
+                        color: c.primary),
+                    prefix: Text('+63 ',
                         style: TextStyle(
-                            color: AppColors.primary,
+                            color:      c.primary,
                             fontWeight: FontWeight.bold,
-                            fontSize: 15)),
+                            fontSize:   15)),
                     suffixIcon: IconButton(
-                      icon: const Icon(Icons.clear_rounded,
-                          color: AppColors.textSecondary, size: 18),
+                      icon: Icon(Icons.clear_rounded,
+                          color: c.textSecondary, size: 18),
                       onPressed: () => _phoneCtrl.clear(),
                     ),
+                    border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(AppRadius.lg),
+                        borderSide: BorderSide.none),
+                    enabledBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(AppRadius.lg),
+                        borderSide: BorderSide(color: c.border, width: 1)),
+                    focusedBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(AppRadius.lg),
+                        borderSide:
+                            BorderSide(color: c.primary, width: 1.5)),
                   ),
                 )
                     .animate(delay: 150.ms)
@@ -366,27 +363,27 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
 
                 const SizedBox(height: 26),
 
-                // ── Rounds ────────────────────────────────────────────
+                // ── Rounds selector ────────────────────────────────────────
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    const Text('Rounds',
+                    Text('Rounds',
                         style: TextStyle(
-                            color: AppColors.textSecondary,
-                            fontSize: 13,
+                            color:      c.textSecondary,
+                            fontSize:   13,
                             fontWeight: FontWeight.w500)),
                     Container(
                       padding: const EdgeInsets.symmetric(
                           horizontal: 10, vertical: 4),
                       decoration: BoxDecoration(
-                        color: AppColors.primary.withOpacity(0.15),
-                        borderRadius: BorderRadius.circular(8),
+                        color: c.primary.withOpacity(0.15),
+                        borderRadius: BorderRadius.circular(AppRadius.sm),
                       ),
                       child: Text(
                         '$_rounds × 14 = ${_rounds * 14} SMS',
-                        style: const TextStyle(
-                            color: AppColors.primary,
-                            fontSize: 12,
+                        style: TextStyle(
+                            color:      c.primary,
+                            fontSize:   12,
                             fontWeight: FontWeight.bold),
                       ),
                     ),
@@ -405,43 +402,44 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
                           HapticFeedback.selectionClick();
                           setState(() => _rounds = n);
                         },
-                        child: Container(
-                          margin: EdgeInsets.only(right: i < 2 ? 8 : 0),
-                          padding: const EdgeInsets.symmetric(vertical: 13),
+                        child: AnimatedContainer(
+                          duration: AppDurations.fast,
+                          margin:  EdgeInsets.only(right: i < 2 ? 10 : 0),
+                          padding: const EdgeInsets.symmetric(vertical: 14),
                           decoration: BoxDecoration(
                             gradient: sel
-                                ? const LinearGradient(colors: [
-                                    AppColors.primary,
-                                    AppColors.secondary,
-                                  ])
+                                ? const LinearGradient(
+                                    colors: [AppColors.primary, AppColors.secondary])
                                 : null,
-                            color: sel ? null : AppColors.surface,
-                            borderRadius: BorderRadius.circular(12),
+                            color: sel ? null : c.surface,
+                            borderRadius: BorderRadius.circular(AppRadius.md),
                             border: Border.all(
-                                color: sel
-                                    ? AppColors.primary
-                                    : AppColors.border),
+                                color: sel ? AppColors.primary : c.border),
                             boxShadow: sel
-                                ? [
-                                    BoxShadow(
-                                        color: AppColors.primary
-                                            .withOpacity(0.3),
-                                        blurRadius: 12,
-                                        offset: const Offset(0, 4))
-                                  ]
+                                ? AppShadows.glow(AppColors.primary,
+                                    intensity: 0.35, blur: 14)
                                 : null,
                           ),
-                          child: Center(
-                            child: Text(
-                              '$n',
-                              style: TextStyle(
-                                color: sel
-                                    ? Colors.white
-                                    : AppColors.textSecondary,
-                                fontWeight: FontWeight.bold,
-                                fontSize: 15,
+                          child: Column(
+                            children: [
+                              Text(
+                                '$n',
+                                style: TextStyle(
+                                  color:      sel ? Colors.white : c.textSecondary,
+                                  fontWeight: FontWeight.bold,
+                                  fontSize:   18,
+                                ),
                               ),
-                            ),
+                              Text(
+                                '${n * 14} SMS',
+                                style: TextStyle(
+                                  color:    sel
+                                      ? Colors.white.withOpacity(0.75)
+                                      : c.textSecondary,
+                                  fontSize: 10,
+                                ),
+                              ),
+                            ],
                           ),
                         ),
                       ),
@@ -451,102 +449,115 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
 
                 const SizedBox(height: 32),
 
-                // ── FIRE button ───────────────────────────────────────
+                // ── FIRE button ────────────────────────────────────────────
                 SizedBox(
-                  width: double.infinity,
-                  height: 54,
-                  child: ElevatedButton(
-                    onPressed: (_loading || _onCooldown) ? null : _fire,
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor:
-                          _onCooldown ? AppColors.surface : AppColors.primary,
-                      disabledBackgroundColor: _onCooldown
-                          ? AppColors.surface
-                          : AppColors.primary.withOpacity(0.4),
-                      shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(14)),
-                      elevation: _onCooldown ? 0 : 6,
-                      side: _onCooldown
-                          ? BorderSide(
-                              color: AppColors.primary.withOpacity(0.4))
-                          : BorderSide.none,
+                  width:  double.infinity,
+                  height: 56,
+                  child: AnimatedContainer(
+                    duration: AppDurations.normal,
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(AppRadius.lg),
+                      boxShadow: (!_loading && !_onCooldown)
+                          ? AppShadows.doubleGlow(AppColors.primary)
+                          : null,
                     ),
-                    child: _loading
-                        ? const SizedBox(
-                            width: 22,
-                            height: 22,
-                            child: CircularProgressIndicator(
-                                color: Colors.white, strokeWidth: 2.5),
-                          )
-                        : _onCooldown
-                            ? Row(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  const Icon(Icons.timer_outlined,
-                                      size: 18,
-                                      color: AppColors.textSecondary),
-                                  const SizedBox(width: 8),
-                                  Text(
-                                    'Cooldown  ${_fmtCooldown(_remaining)}',
-                                    style: const TextStyle(
-                                        fontSize: 15,
-                                        fontWeight: FontWeight.bold,
-                                        color: AppColors.textSecondary,
-                                        letterSpacing: 1),
-                                  ),
-                                ],
-                              )
-                            : const Row(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  Icon(Icons.send_rounded,
-                                      size: 18, color: Colors.white),
-                                  SizedBox(width: 8),
-                                  Text('FIRE',
+                    child: ElevatedButton(
+                      onPressed: (_loading || _onCooldown) ? null : _fire,
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: _onCooldown
+                            ? c.surface
+                            : AppColors.primary,
+                        disabledBackgroundColor: _onCooldown
+                            ? c.surface
+                            : AppColors.primary.withOpacity(0.4),
+                        shape: RoundedRectangleBorder(
+                            borderRadius:
+                                BorderRadius.circular(AppRadius.lg)),
+                        elevation: _onCooldown ? 0 : 0,
+                        side: _onCooldown
+                            ? BorderSide(
+                                color: c.primary.withOpacity(0.4))
+                            : BorderSide.none,
+                      ),
+                      child: _loading
+                          ? const SizedBox(
+                              width: 22, height: 22,
+                              child: CircularProgressIndicator(
+                                  color: Colors.white, strokeWidth: 2.5),
+                            )
+                          : _onCooldown
+                              ? Row(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    Icon(Icons.timer_outlined,
+                                        size: 18, color: c.textSecondary),
+                                    const SizedBox(width: 8),
+                                    Text(
+                                      'Cooldown  ${_fmtCooldown(_remaining)}',
                                       style: TextStyle(
-                                          fontSize: 16,
-                                          fontWeight: FontWeight.w900,
-                                          letterSpacing: 3,
-                                          color: Colors.white)),
-                                ],
-                              ),
+                                        fontSize:   15,
+                                        fontWeight: FontWeight.bold,
+                                        color:      c.textSecondary,
+                                        letterSpacing: 1,
+                                      ),
+                                    ),
+                                  ],
+                                )
+                              : const Row(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    Icon(Icons.send_rounded,
+                                        size: 18, color: Colors.white),
+                                    SizedBox(width: 8),
+                                    Text(
+                                      'FIRE',
+                                      style: TextStyle(
+                                        fontSize:      16,
+                                        fontWeight:    FontWeight.w900,
+                                        letterSpacing: 3,
+                                        color:         Colors.white,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                    ),
                   ),
                 )
                     .animate(delay: 300.ms)
                     .fadeIn(duration: 400.ms)
                     .slideY(begin: 0.2, end: 0, duration: 400.ms),
 
-                // ── Cooldown progress bar ─────────────────────────────
+                // ── Cooldown progress bar ──────────────────────────────────
                 if (_onCooldown) ...[
                   const SizedBox(height: 8),
                   ClipRRect(
-                    borderRadius: BorderRadius.circular(4),
+                    borderRadius: BorderRadius.circular(AppRadius.xs),
                     child: LinearProgressIndicator(
                       value: 1.0 -
                           (_remaining.inMilliseconds /
                               _kCooldown.inMilliseconds),
                       minHeight: 5,
-                      backgroundColor: AppColors.primary.withOpacity(0.15),
-                      valueColor: const AlwaysStoppedAnimation<Color>(
-                          AppColors.primary),
+                      backgroundColor: c.primary.withOpacity(0.12),
+                      valueColor:
+                          AlwaysStoppedAnimation<Color>(c.primary),
                     ),
                   ),
                 ],
 
                 const SizedBox(height: 32),
 
-                // ── Attack History ────────────────────────────────────
+                // ── Attack History ─────────────────────────────────────────
                 if (_history.isNotEmpty) ...[
                   Row(
                     children: [
-                      const Icon(Icons.history_rounded,
+                      Icon(Icons.history_rounded,
                           color: AppColors.textSecondary, size: 16),
                       const SizedBox(width: 6),
                       Text(
                         'Attack History  (${_history.length}/$_kMaxHistory)',
                         style: const TextStyle(
-                            color: AppColors.textSecondary,
-                            fontSize: 13,
+                            color:      AppColors.textSecondary,
+                            fontSize:   13,
                             fontWeight: FontWeight.w600),
                       ),
                       const Spacer(),
@@ -559,7 +570,8 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
                             SizedBox(width: 4),
                             Text('Clear',
                                 style: TextStyle(
-                                    color: AppColors.error, fontSize: 12)),
+                                    color:    AppColors.error,
+                                    fontSize: 12)),
                           ],
                         ),
                       ),
@@ -574,12 +586,9 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
                       index:         i,
                       onAttackAgain: () => _repeatAttack(_history[i]),
                     )
-                        .animate(
-                            delay: Duration(
-                                milliseconds: 60 * i.clamp(0, 8)))
+                        .animate(delay: Duration(milliseconds: 60 * i.clamp(0, 8)))
                         .fadeIn(duration: 350.ms)
-                        .slideY(
-                            begin: 0.08, end: 0, duration: 350.ms);
+                        .slideY(begin: 0.08, end: 0, duration: 350.ms);
                   }),
 
                   const SizedBox(height: 20),
@@ -588,15 +597,15 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
             ),
           ),
 
-          // ── Confetti ──────────────────────────────────────────────────
+          // ── Confetti ───────────────────────────────────────────────────────
           if (_showConfetti)
             Align(
               alignment: Alignment.topCenter,
               child: ConfettiWidget(
-                confettiController: _confettiCtrl,
+                confettiController:  _confettiCtrl,
                 blastDirectionality: BlastDirectionality.explosive,
-                shouldLoop: false,
-                numberOfParticles: 30,
+                shouldLoop:          false,
+                numberOfParticles:   30,
                 colors: const [
                   AppColors.accent,
                   AppColors.primary,
@@ -614,11 +623,11 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
     final ok = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
-        backgroundColor: const Color(0xFF1E1E2E),
-        shape:
-            RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        backgroundColor: AppColors.surface,
+        shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(AppRadius.xl)),
         title: const Text('Clear History',
-            style: TextStyle(color: Colors.white)),
+            style: TextStyle(color: AppColors.textPrimary)),
         content: const Text('Delete all attack history?',
             style: TextStyle(color: AppColors.textSecondary)),
         actions: [
@@ -641,9 +650,8 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// History Card
-// ─────────────────────────────────────────────────────────────────────────────
+// ── History Card ──────────────────────────────────────────────────────────────
+
 class _HistoryCard extends StatefulWidget {
   final _AttackRecord record;
   final int           index;
@@ -676,27 +684,27 @@ class _HistoryCardState extends State<_HistoryCard> {
     final failPct = (r.failedPct  * 100).toStringAsFixed(1);
 
     return GlassNeumorphicCard(
-      padding: const EdgeInsets.all(14),
+      padding:   const EdgeInsets.all(14),
       glowColor: r.sent > 0
           ? AppColors.accent.withOpacity(0.4)
           : AppColors.error.withOpacity(0.3),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // Header
           Row(
             children: [
               Container(
-                padding: const EdgeInsets.symmetric(
-                    horizontal: 8, vertical: 3),
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                 decoration: BoxDecoration(
-                  color: AppColors.primary.withOpacity(0.15),
-                  borderRadius: BorderRadius.circular(6),
+                  color:        AppColors.primary.withOpacity(0.15),
+                  borderRadius: BorderRadius.circular(AppRadius.xs),
                 ),
                 child: Text(
                   '#${widget.index + 1}',
                   style: const TextStyle(
-                      color: AppColors.primary,
-                      fontSize: 11,
+                      color:      AppColors.primary,
+                      fontSize:   11,
                       fontWeight: FontWeight.bold),
                 ),
               ),
@@ -705,8 +713,8 @@ class _HistoryCardState extends State<_HistoryCard> {
                 child: Text(
                   '+63 ${r.phone}',
                   style: const TextStyle(
-                      color: AppColors.textPrimary,
-                      fontSize: 14,
+                      color:      AppColors.textPrimary,
+                      fontSize:   14,
                       fontWeight: FontWeight.bold,
                       fontFamily: 'monospace'),
                 ),
@@ -721,27 +729,16 @@ class _HistoryCardState extends State<_HistoryCard> {
 
           const SizedBox(height: 10),
 
+          // Stat chips
           Row(
             children: [
-              _MiniStat(
-                  label: 'Rounds',
-                  value: '${r.rounds}',
-                  color: AppColors.primary),
+              _MiniStat(label: 'Rounds',   value: '${r.rounds}', color: AppColors.primary),
               const SizedBox(width: 8),
-              _MiniStat(
-                  label: 'Total SMS',
-                  value: '${r.total}',
-                  color: AppColors.textSecondary),
+              _MiniStat(label: 'Total SMS', value: '${r.total}', color: AppColors.textSecondary),
               const SizedBox(width: 8),
-              _MiniStat(
-                  label: 'Sent',
-                  value: '${r.sent}',
-                  color: AppColors.accent),
+              _MiniStat(label: 'Sent',     value: '${r.sent}',   color: AppColors.accent),
               const SizedBox(width: 8),
-              _MiniStat(
-                  label: 'Failed',
-                  value: '${r.failed}',
-                  color: AppColors.error),
+              _MiniStat(label: 'Failed',   value: '${r.failed}', color: AppColors.error),
             ],
           ),
 
@@ -764,11 +761,11 @@ class _HistoryCardState extends State<_HistoryCard> {
 
           const SizedBox(height: 12),
 
+          // Footer row
           Row(
             children: [
               GestureDetector(
-                onTap: () =>
-                    setState(() => _expanded = !_expanded),
+                onTap: () => setState(() => _expanded = !_expanded),
                 child: Row(
                   children: [
                     Icon(
@@ -776,14 +773,13 @@ class _HistoryCardState extends State<_HistoryCard> {
                           ? Icons.keyboard_arrow_up_rounded
                           : Icons.keyboard_arrow_down_rounded,
                       color: AppColors.textSecondary,
-                      size: 18,
+                      size:  18,
                     ),
                     const SizedBox(width: 4),
                     Text(
                       _expanded ? 'Hide details' : 'Show details',
                       style: const TextStyle(
-                          color: AppColors.textSecondary,
-                          fontSize: 12),
+                          color: AppColors.textSecondary, fontSize: 12),
                     ),
                   ],
                 ),
@@ -793,7 +789,7 @@ class _HistoryCardState extends State<_HistoryCard> {
                 height: 32,
                 child: ElevatedButton.icon(
                   onPressed: widget.onAttackAgain,
-                  icon: const Icon(Icons.replay_rounded, size: 14),
+                  icon:  const Icon(Icons.replay_rounded, size: 14),
                   label: const Text('Attack Again',
                       style: TextStyle(fontSize: 12)),
                   style: ElevatedButton.styleFrom(
@@ -802,7 +798,7 @@ class _HistoryCardState extends State<_HistoryCard> {
                     padding: const EdgeInsets.symmetric(
                         horizontal: 12, vertical: 0),
                     shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(8)),
+                        borderRadius: BorderRadius.circular(AppRadius.sm)),
                     elevation: 2,
                   ),
                 ),
@@ -824,15 +820,12 @@ class _HistoryCardState extends State<_HistoryCard> {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Sub-widgets
-// ─────────────────────────────────────────────────────────────────────────────
+// ── Sub-widgets ───────────────────────────────────────────────────────────────
 
 class _MiniStat extends StatelessWidget {
   final String label, value;
   final Color  color;
-  const _MiniStat(
-      {required this.label, required this.value, required this.color});
+  const _MiniStat({required this.label, required this.value, required this.color});
 
   @override
   Widget build(BuildContext context) {
@@ -840,16 +833,14 @@ class _MiniStat extends StatelessWidget {
       child: Container(
         padding: const EdgeInsets.symmetric(vertical: 6),
         decoration: BoxDecoration(
-          color: color.withOpacity(0.10),
-          borderRadius: BorderRadius.circular(8),
+          color:        color.withOpacity(0.10),
+          borderRadius: BorderRadius.circular(AppRadius.sm),
         ),
         child: Column(
           children: [
             Text(value,
                 style: TextStyle(
-                    color: color,
-                    fontSize: 15,
-                    fontWeight: FontWeight.bold)),
+                    color: color, fontSize: 15, fontWeight: FontWeight.bold)),
             const SizedBox(height: 2),
             Text(label,
                 style: const TextStyle(
@@ -884,12 +875,12 @@ class _ProgressBar extends StatelessWidget {
         ),
         Expanded(
           child: ClipRRect(
-            borderRadius: BorderRadius.circular(4),
+            borderRadius: BorderRadius.circular(AppRadius.xs),
             child: LinearProgressIndicator(
-              value: pct.clamp(0.0, 1.0),
-              minHeight: 7,
-              backgroundColor: color.withOpacity(0.12),
-              valueColor: AlwaysStoppedAnimation<Color>(color),
+              value:            pct.clamp(0.0, 1.0),
+              minHeight:        7,
+              backgroundColor:  color.withOpacity(0.12),
+              valueColor:       AlwaysStoppedAnimation<Color>(color),
             ),
           ),
         ),
@@ -900,9 +891,7 @@ class _ProgressBar extends StatelessWidget {
             pctLabel,
             textAlign: TextAlign.right,
             style: TextStyle(
-                color: color,
-                fontSize: 11,
-                fontWeight: FontWeight.bold),
+                color: color, fontSize: 11, fontWeight: FontWeight.bold),
           ),
         ),
       ],
@@ -921,11 +910,11 @@ class _ServiceRow extends StatelessWidget {
     final msg = (data['message'] ?? '').toString();
 
     return Container(
-      margin: const EdgeInsets.only(bottom: 6),
+      margin:  const EdgeInsets.only(bottom: 6),
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
       decoration: BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: BorderRadius.circular(10),
+        color:        AppColors.surface,
+        borderRadius: BorderRadius.circular(AppRadius.sm),
         border: Border.all(
           color: ok
               ? AppColors.accent.withOpacity(0.25)
@@ -935,10 +924,8 @@ class _ServiceRow extends StatelessWidget {
       child: Row(
         children: [
           Icon(
-            ok
-                ? Icons.check_circle_outline_rounded
-                : Icons.cancel_outlined,
-            size: 15,
+            ok ? Icons.check_circle_outline_rounded : Icons.cancel_outlined,
+            size:  15,
             color: ok ? AppColors.accent : AppColors.error,
           ),
           const SizedBox(width: 8),
@@ -947,8 +934,8 @@ class _ServiceRow extends StatelessWidget {
             child: Text(
               data['service'] ?? '',
               style: const TextStyle(
-                  color: AppColors.textPrimary,
-                  fontSize: 12,
+                  color:      AppColors.textPrimary,
+                  fontSize:   12,
                   fontWeight: FontWeight.w600),
               overflow: TextOverflow.ellipsis,
             ),
@@ -962,8 +949,8 @@ class _ServiceRow extends StatelessWidget {
                       ? AppColors.accent
                       : AppColors.error.withOpacity(0.8),
                   fontSize: 11),
-              overflow: TextOverflow.ellipsis,
-              textAlign: TextAlign.right,
+              overflow:   TextOverflow.ellipsis,
+              textAlign:  TextAlign.right,
             ),
           ),
         ],

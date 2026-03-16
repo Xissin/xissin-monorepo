@@ -13,22 +13,20 @@ import 'screens/splash_screen.dart';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // ── 1. Crash reporter ─────────────────────────────────────────────────────
+  // ── 1. Crash reporter ──────────────────────────────────────────────────────
   CrashReporter.initialize();
 
-  // ── 2. Theme ──────────────────────────────────────────────────────────────
+  // ── 2. Theme ───────────────────────────────────────────────────────────────
   final themeService = ThemeService();
   await themeService.init();
 
-  // ── 3. Orientation lock ───────────────────────────────────────────────────
-  SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
+  // ── 3. Orientation lock ────────────────────────────────────────────────────
+  await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
 
-  // ── 4. Security checks ────────────────────────────────────────────────────
-  // FLAG_SECURE is handled natively in MainActivity.kt
-  // Runs early — dialog shown inside SplashScreen once UI is ready
+  // ── 4. Security checks (non-blocking) ─────────────────────────────────────
   unawaited(SecurityService.runChecks());
 
-  // ── 5. Zone error catching ────────────────────────────────────────────────
+  // ── 5. Zone error catching ─────────────────────────────────────────────────
   runZonedGuarded(
     () => runApp(XissinApp(themeService: themeService)),
     (error, stack) {
@@ -74,9 +72,10 @@ class _XissinAppState extends State<XissinApp> {
     SystemChrome.setSystemUIOverlayStyle(
       SystemUiOverlayStyle(
         statusBarColor: Colors.transparent,
-        statusBarIconBrightness: isDark ? Brightness.light : Brightness.dark,
+        statusBarIconBrightness:
+            isDark ? Brightness.light : Brightness.dark,
         systemNavigationBarColor:
-            isDark ? const Color(0xFF0B1020) : const Color(0xFFF0F4FF),
+            isDark ? AppColors.background : const Color(0xFFEEF2FF),
         systemNavigationBarIconBrightness:
             isDark ? Brightness.light : Brightness.dark,
       ),
@@ -96,29 +95,37 @@ class _XissinAppState extends State<XissinApp> {
             debugShowCheckedModeBanner: false,
             theme:     AppTheme.lightTheme,
             darkTheme: AppTheme.darkTheme,
-            themeMode: themeService.isDark ? ThemeMode.dark : ThemeMode.light,
+            themeMode:
+                themeService.isDark ? ThemeMode.dark : ThemeMode.light,
             home: const SplashScreen(),
             builder: (context, child) {
               return Column(
                 children: [
-                  // ── Offline banner ────────────────────────────────────────
+                  // ── Offline banner ─────────────────────────────────────────
                   AnimatedContainer(
                     duration: AppDurations.normal,
-                    height: _isOffline ? 36 : 0,
-                    color: const Color(0xFFFF6B6B),
+                    curve: Curves.easeInOut,
+                    height: _isOffline ? 40 : 0,
+                    decoration: const BoxDecoration(
+                      gradient: LinearGradient(
+                        colors: [Color(0xFFFF3B3B), Color(0xFFFF6B6B)],
+                      ),
+                    ),
+                    clipBehavior: Clip.hardEdge,
                     child: _isOffline
                         ? const Row(
                             mainAxisAlignment: MainAxisAlignment.center,
                             children: [
                               Icon(Icons.wifi_off_rounded,
-                                  color: Colors.white, size: 14),
-                              SizedBox(width: 6),
+                                  color: Colors.white, size: 15),
+                              SizedBox(width: 8),
                               Text(
                                 'No internet connection',
                                 style: TextStyle(
                                   color: Colors.white,
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.w600,
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w700,
+                                  letterSpacing: 0.3,
                                 ),
                               ),
                             ],

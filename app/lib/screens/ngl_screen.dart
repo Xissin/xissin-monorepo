@@ -7,7 +7,6 @@ import '../services/api_service.dart';
 import '../widgets/glass_neumorphic_card.dart';
 import '../widgets/haptic_button.dart';
 
-// Pink/orange brand colours for NGL
 const _kPink   = Color(0xFFFF6EC7);
 const _kOrange = Color(0xFFFF9A44);
 const _kGreen  = Color(0xFF7EE7C1);
@@ -31,13 +30,11 @@ class _NglScreenState extends State<NglScreen> {
   bool   _done       = false;
   int    _charCount  = 0;
 
-  // Result
   int    _sent       = 0;
   int    _failed     = 0;
   String _resultMsg  = '';
   bool   _resultOk   = false;
 
-  // Animated progress
   double _progress   = 0.0;
   Timer? _progressTimer;
 
@@ -58,7 +55,7 @@ class _NglScreenState extends State<NglScreen> {
     super.dispose();
   }
 
-  // ── Progress helpers ────────────────────────────────────────────────────────
+  // ── Progress ───────────────────────────────────────────────────────────────
 
   void _startFakeProgress() {
     _progress = 0.0;
@@ -77,26 +74,24 @@ class _NglScreenState extends State<NglScreen> {
     setState(() => _progress = success ? 1.0 : _progress);
   }
 
-  // ── Clipboard paste ─────────────────────────────────────────────────────────
+  // ── Paste username ─────────────────────────────────────────────────────────
 
   Future<void> _pasteUsername() async {
     final data = await Clipboard.getData('text/plain');
     if (data?.text != null && data!.text!.isNotEmpty) {
       HapticFeedback.selectionClick();
-      final raw = data.text!.trim();
-      // Strip ngl.link/ URL if the user copied a full link
+      final raw   = data.text!.trim();
       final clean = raw
           .replaceAll(RegExp(r'https?://(www\.)?ngl\.link/'), '')
           .replaceAll('@', '')
           .trim();
       _usernameCtrl.text = clean;
-      _usernameCtrl.selection = TextSelection.fromPosition(
-        TextPosition(offset: clean.length),
-      );
+      _usernameCtrl.selection =
+          TextSelection.fromPosition(TextPosition(offset: clean.length));
     }
   }
 
-  // ── Send ────────────────────────────────────────────────────────────────────
+  // ── Send ───────────────────────────────────────────────────────────────────
 
   Future<void> _send() async {
     if (!_formKey.currentState!.validate()) return;
@@ -136,7 +131,9 @@ class _NglScreenState extends State<NglScreen> {
     } catch (e) {
       _stopProgress(false);
       if (!mounted) return;
-      final err = e is ApiException ? e.userMessage : e.toString().replaceFirst('Exception: ', '');
+      final err = e is ApiException
+          ? e.userMessage
+          : e.toString().replaceFirst('Exception: ', '');
       setState(() {
         _loading   = false;
         _done      = true;
@@ -151,7 +148,7 @@ class _NglScreenState extends State<NglScreen> {
     HapticFeedback.selectionClick();
     setState(() {
       _done = _loading = false;
-      _progress = 0;
+      _progress  = 0;
       _sent = _failed = 0;
       _resultMsg = '';
       _charCount = 0;
@@ -160,7 +157,7 @@ class _NglScreenState extends State<NglScreen> {
     _messageCtrl.clear();
   }
 
-  // ── Build ───────────────────────────────────────────────────────────────────
+  // ── Build ──────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
@@ -194,9 +191,9 @@ class _NglScreenState extends State<NglScreen> {
         child: const Text(
           'NGL Bomber',
           style: TextStyle(
-            color: Colors.white,
-            fontWeight: FontWeight.w800,
-            fontSize: 20,
+            color:         Colors.white,
+            fontWeight:    FontWeight.w800,
+            fontSize:      20,
             letterSpacing: 0.5,
           ),
         ),
@@ -204,7 +201,7 @@ class _NglScreenState extends State<NglScreen> {
     );
   }
 
-  // ── Form ────────────────────────────────────────────────────────────────────
+  // ── Form ───────────────────────────────────────────────────────────────────
 
   Widget _buildForm(XissinColors c) {
     return Form(
@@ -215,54 +212,57 @@ class _NglScreenState extends State<NglScreen> {
           _InfoBanner(c: c),
           const SizedBox(height: 22),
 
-          // ── Username ──
+          // Username
           _Label('NGL Username', c),
           const SizedBox(height: 8),
           _buildUsernameField(c)
-              .animate().fadeIn(duration: 350.ms).slideY(begin: 0.08, end: 0),
+              .animate()
+              .fadeIn(duration: 350.ms)
+              .slideY(begin: 0.08, end: 0),
           const SizedBox(height: 18),
 
-          // ── Message ──
+          // Message + char counter
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               _Label('Anonymous Message', c),
-              Text(
-                '$_charCount / 300',
-                style: TextStyle(
-                  color: _charCount > 270
-                      ? _kRed
-                      : _charCount > 240
-                          ? _kOrange
-                          : c.textSecondary,
-                  fontSize: 11,
-                  fontWeight: FontWeight.w500,
-                ),
-              ),
+              _CharCounter(count: _charCount, max: 300, c: c),
             ],
           ),
           const SizedBox(height: 8),
           _buildMessageField(c)
-              .animate().fadeIn(duration: 350.ms, delay: 60.ms).slideY(begin: 0.08, end: 0),
+              .animate()
+              .fadeIn(duration: 350.ms, delay: 60.ms)
+              .slideY(begin: 0.08, end: 0),
           const SizedBox(height: 20),
 
-          // ── Quantity slider ──
-          _Label('Quantity: $_quantity message${_quantity == 1 ? '' : 's'}', c),
+          // Quantity
+          _QuantityLabel(quantity: _quantity, c: c),
           const SizedBox(height: 6),
           _buildQuantitySlider(c)
-              .animate().fadeIn(duration: 350.ms, delay: 120.ms),
+              .animate()
+              .fadeIn(duration: 350.ms, delay: 120.ms),
           const SizedBox(height: 28),
 
-          // ── Progress bar (while loading) ──
+          // Progress bar while loading
           if (_loading) ...[
-            _ProgressBar(progress: _progress, c: c)
-                .animate().fadeIn(duration: 300.ms),
+            _GradientProgressBar(progress: _progress, c: c)
+                .animate()
+                .fadeIn(duration: 300.ms),
             const SizedBox(height: 20),
           ],
 
-          // ── Send button ──
+          // Send button
           _SendButton(loading: _loading, onPressed: _send)
-              .animate().fadeIn(duration: 350.ms, delay: 160.ms),
+              .animate()
+              .fadeIn(duration: 350.ms, delay: 160.ms),
+
+          const SizedBox(height: 24),
+
+          // Tips section
+          _TipsCard(c: c)
+              .animate(delay: 300.ms)
+              .fadeIn(duration: 400.ms),
         ],
       ),
     );
@@ -271,27 +271,21 @@ class _NglScreenState extends State<NglScreen> {
   Widget _buildUsernameField(XissinColors c) {
     return TextFormField(
       controller: _usernameCtrl,
-      enabled: !_loading,
-      style: TextStyle(color: c.textPrimary),
-      decoration: _inputDeco(
-        c: c,
-        hint: 'e.g. john_doe  or  ngl.link/john_doe',
-        icon: Icons.alternate_email_rounded,
-        suffix: IconButton(
+      style: TextStyle(color: c.textPrimary, fontSize: 15),
+      decoration: _inputDecoration(c).copyWith(
+        hintText: 'ngl_username',
+        prefixIcon: const Icon(Icons.alternate_email_rounded,
+            color: _kPink, size: 20),
+        suffixIcon: IconButton(
           icon: Icon(Icons.content_paste_rounded,
-              size: 18, color: c.textSecondary),
-          tooltip: 'Paste',
+              color: c.textSecondary, size: 20),
           onPressed: _pasteUsername,
+          tooltip: 'Paste',
         ),
       ),
       validator: (v) {
         if (v == null || v.trim().isEmpty) return 'Enter a username';
-        final clean = v.trim()
-            .replaceAll(RegExp(r'https?://(www\.)?ngl\.link/'), '')
-            .replaceAll('@', '');
-        if (!RegExp(r'^[A-Za-z0-9._]{1,60}$').hasMatch(clean)) {
-          return 'Only letters, numbers, dots and underscores allowed';
-        }
+        if (v.trim().length < 2) return 'Username too short';
         return null;
       },
     );
@@ -300,110 +294,105 @@ class _NglScreenState extends State<NglScreen> {
   Widget _buildMessageField(XissinColors c) {
     return TextFormField(
       controller: _messageCtrl,
-      enabled: !_loading,
+      style: TextStyle(color: c.textPrimary, fontSize: 14, height: 1.5),
       maxLines: 4,
-      maxLength: 300,
+      maxLength:  300,
       buildCounter: (_, {required currentLength, required isFocused, maxLength}) =>
-          const SizedBox.shrink(), // hide default counter — we have our own
-      style: TextStyle(color: c.textPrimary),
-      decoration: _inputDeco(
-        c: c,
-        hint: 'Type your anonymous message...',
-        icon: Icons.message_rounded,
+          const SizedBox.shrink(), // hide default counter (we show our own)
+      decoration: _inputDecoration(c).copyWith(
+        hintText: 'Enter your anonymous message...',
+        alignLabelWithHint: true,
+        contentPadding:
+            const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
       ),
       validator: (v) {
         if (v == null || v.trim().isEmpty) return 'Enter a message';
-        if (v.trim().length > 300) return 'Max 300 characters';
+        if (v.trim().length < 3) return 'Message too short';
         return null;
       },
     );
   }
 
   Widget _buildQuantitySlider(XissinColors c) {
-    return GlassNeumorphicCard(
-      glowColor: _kPink,
-      padding: const EdgeInsets.fromLTRB(12, 4, 12, 4),
-      child: Row(
-        children: [
-          IconButton(
-            icon: const Icon(Icons.remove_rounded, size: 18),
-            color: _kPink,
-            onPressed: _loading || _quantity <= 1
-                ? null
-                : () {
-                    HapticFeedback.selectionClick();
-                    setState(() => _quantity = (_quantity - 1).clamp(1, 50));
-                  },
+    return Column(
+      children: [
+        SliderTheme(
+          data: SliderThemeData(
+            trackHeight:        4,
+            activeTrackColor:   _kPink,
+            inactiveTrackColor: c.border,
+            thumbColor:         _kPink,
+            thumbShape:
+                const RoundSliderThumbShape(enabledThumbRadius: 10),
+            overlayColor: _kPink.withOpacity(0.2),
+            overlayShape:
+                const RoundSliderOverlayShape(overlayRadius: 20),
           ),
-          Expanded(
-            child: Slider(
-              value: _quantity.toDouble(),
-              min: 1,
-              max: 50,
-              divisions: 49,
-              activeColor: _kPink,
-              inactiveColor: c.surface,
-              onChanged: _loading
-                  ? null
-                  : (v) {
-                      HapticFeedback.selectionClick();
-                      setState(() => _quantity = v.round());
-                    },
-            ),
+          child: Slider(
+            value: _quantity.toDouble(),
+            min:   1,
+            max:   50,
+            divisions: 49,
+            onChanged: (v) => setState(() => _quantity = v.toInt()),
           ),
-          IconButton(
-            icon: const Icon(Icons.add_rounded, size: 18),
-            color: _kPink,
-            onPressed: _loading || _quantity >= 50
-                ? null
-                : () {
-                    HapticFeedback.selectionClick();
-                    setState(() => _quantity = (_quantity + 1).clamp(1, 50));
-                  },
+        ),
+        // Tick marks
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [1, 10, 20, 30, 40, 50]
+                .map((n) => Text(
+                      '$n',
+                      style: TextStyle(
+                        color: _quantity == n
+                            ? _kPink
+                            : c.textSecondary,
+                        fontSize: 10,
+                        fontWeight: _quantity == n
+                            ? FontWeight.bold
+                            : FontWeight.normal,
+                      ),
+                    ))
+                .toList(),
           ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 
-  InputDecoration _inputDeco({
-    required XissinColors c,
-    required String hint,
-    required IconData icon,
-    Widget? suffix,
-  }) {
+  InputDecoration _inputDecoration(XissinColors c) {
     return InputDecoration(
-      hintText: hint,
-      hintStyle: TextStyle(color: c.textSecondary.withOpacity(0.55), fontSize: 13),
-      prefixIcon: Icon(icon, color: c.textSecondary, size: 19),
-      suffixIcon: suffix,
-      filled: true,
+      filled:    true,
       fillColor: c.surface,
-      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      hintStyle: TextStyle(color: c.textSecondary),
+      contentPadding:
+          const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
       border: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(14),
+        borderRadius: BorderRadius.circular(AppRadius.lg),
         borderSide: BorderSide.none,
       ),
       enabledBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(14),
-        borderSide: BorderSide(color: c.textSecondary.withOpacity(0.12), width: 1),
+        borderRadius: BorderRadius.circular(AppRadius.lg),
+        borderSide:
+            BorderSide(color: c.textSecondary.withOpacity(0.12), width: 1),
       ),
       focusedBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(14),
+        borderRadius: BorderRadius.circular(AppRadius.lg),
         borderSide: const BorderSide(color: _kPink, width: 1.5),
       ),
       errorBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(14),
+        borderRadius: BorderRadius.circular(AppRadius.lg),
         borderSide: const BorderSide(color: _kRed, width: 1.5),
       ),
       focusedErrorBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(14),
+        borderRadius: BorderRadius.circular(AppRadius.lg),
         borderSide: const BorderSide(color: _kRed, width: 1.5),
       ),
     );
   }
 
-  // ── Result ───────────────────────────────────────────────────────────────────
+  // ── Result ─────────────────────────────────────────────────────────────────
 
   Widget _buildResult(XissinColors c) {
     final color = _resultOk ? _kGreen : _kRed;
@@ -411,66 +400,73 @@ class _NglScreenState extends State<NglScreen> {
       children: [
         const SizedBox(height: 32),
 
-        // Icon circle
+        // Icon circle with double glow
         Container(
-          width: 88,
-          height: 88,
+          width:  96,
+          height: 96,
           decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            color: color.withOpacity(0.12),
-            border: Border.all(color: color.withOpacity(0.4), width: 2),
+            shape:     BoxShape.circle,
+            color:     color.withOpacity(0.10),
+            border:    Border.all(color: color.withOpacity(0.40), width: 2),
+            boxShadow: AppShadows.doubleGlow(color),
           ),
           child: Icon(
             _resultOk
                 ? Icons.check_circle_outline_rounded
                 : Icons.error_outline_rounded,
-            size: 44,
+            size:  48,
             color: color,
           ),
         )
             .animate()
             .scale(
-                begin: const Offset(0.4, 0.4),
+                begin:    const Offset(0.4, 0.4),
                 duration: 550.ms,
-                curve: Curves.elasticOut)
+                curve:    Curves.elasticOut)
             .fadeIn(duration: 300.ms),
 
-        const SizedBox(height: 22),
+        const SizedBox(height: 24),
 
-        // Result text
+        // Title
         Text(
-          _resultOk ? '🎉 Done!' : '❌ Failed',
+          _resultOk ? '🎉  Done!' : '❌  Failed',
           style: TextStyle(
-              color: color, fontSize: 22, fontWeight: FontWeight.w800),
+              color:      color,
+              fontSize:   24,
+              fontWeight: FontWeight.w800),
         ).animate().fadeIn(duration: 350.ms, delay: 150.ms),
 
         const SizedBox(height: 10),
 
-        Text(
-          _resultMsg,
-          textAlign: TextAlign.center,
-          style: TextStyle(
-              color: c.textSecondary, fontSize: 14, height: 1.5),
+        // Message
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 24),
+          child: Text(
+            _resultMsg,
+            textAlign: TextAlign.center,
+            style: TextStyle(
+                color: c.textSecondary, fontSize: 14, height: 1.5),
+          ),
         ).animate().fadeIn(duration: 350.ms, delay: 200.ms),
 
-        const SizedBox(height: 24),
+        const SizedBox(height: 28),
 
         // Stats
         if (_resultOk) ...[
           Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              _StatChip(label: 'Sent',   value: '$_sent',   color: _kGreen,  c: c),
-              const SizedBox(width: 14),
-              _StatChip(label: 'Failed', value: '$_failed', color: _kRed,    c: c),
+              _StatChip(label: 'Sent',   value: '$_sent',   color: _kGreen, c: c),
+              const SizedBox(width: 16),
+              _StatChip(label: 'Failed', value: '$_failed', color: _kRed,   c: c),
             ],
           ).animate().fadeIn(duration: 350.ms, delay: 280.ms),
-          const SizedBox(height: 30),
+          const SizedBox(height: 32),
         ],
 
-        // Send again
+        // Send again button
         SizedBox(
-          width: double.infinity,
+          width:  double.infinity,
           height: 52,
           child: ElevatedButton.icon(
             onPressed: _reset,
@@ -478,10 +474,10 @@ class _NglScreenState extends State<NglScreen> {
               backgroundColor: _kPink,
               foregroundColor: Colors.white,
               shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(16)),
+                  borderRadius: BorderRadius.circular(AppRadius.lg)),
               elevation: 0,
             ),
-            icon: const Icon(Icons.refresh_rounded, size: 20),
+            icon:  const Icon(Icons.refresh_rounded, size: 20),
             label: const Text('Send Again',
                 style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15)),
           ),
@@ -506,15 +502,92 @@ class _Label extends StatelessWidget {
       );
 }
 
+class _QuantityLabel extends StatelessWidget {
+  final int quantity;
+  final XissinColors c;
+  const _QuantityLabel({required this.quantity, required this.c});
+
+  @override
+  Widget build(BuildContext context) => Row(
+        children: [
+          Text(
+            'Quantity: ',
+            style: TextStyle(
+                color: c.textPrimary, fontWeight: FontWeight.w600, fontSize: 14),
+          ),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+            decoration: BoxDecoration(
+              color:        _kPink.withOpacity(0.15),
+              borderRadius: BorderRadius.circular(AppRadius.full),
+              border:       Border.all(color: _kPink.withOpacity(0.35), width: 1),
+            ),
+            child: Text(
+              '$quantity msg${quantity == 1 ? '' : 's'}',
+              style: const TextStyle(
+                color:      _kPink,
+                fontSize:   12,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ),
+        ],
+      );
+}
+
+// Character counter with color ring
+class _CharCounter extends StatelessWidget {
+  final int count;
+  final int max;
+  final XissinColors c;
+  const _CharCounter({required this.count, required this.max, required this.c});
+
+  Color get _color {
+    final ratio = count / max;
+    if (ratio > 0.9) return _kRed;
+    if (ratio > 0.8) return _kOrange;
+    return c.textSecondary;
+  }
+
+  @override
+  Widget build(BuildContext context) => Row(
+        children: [
+          SizedBox(
+            width: 20,
+            height: 20,
+            child: CircularProgressIndicator(
+              value:           count / max,
+              strokeWidth:     2.5,
+              backgroundColor: c.border,
+              valueColor:      AlwaysStoppedAnimation<Color>(_color),
+            ),
+          ),
+          const SizedBox(width: 6),
+          Text(
+            '$count / $max',
+            style: TextStyle(
+              color:      _color,
+              fontSize:   11,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+        ],
+      );
+}
+
 class _InfoBanner extends StatelessWidget {
   final XissinColors c;
   const _InfoBanner({required this.c});
 
   @override
   Widget build(BuildContext context) {
-    return GlassNeumorphicCard(
-      glowColor: _kOrange,
+    return Container(
       padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: _kOrange.withOpacity(0.07),
+        borderRadius: BorderRadius.circular(AppRadius.lg),
+        border: Border.all(color: _kOrange.withOpacity(0.25), width: 1),
+      ),
       child: Row(
         children: [
           const Icon(Icons.info_outline_rounded, size: 18, color: _kOrange),
@@ -533,10 +606,11 @@ class _InfoBanner extends StatelessWidget {
   }
 }
 
-class _ProgressBar extends StatelessWidget {
+// Gradient progress bar
+class _GradientProgressBar extends StatelessWidget {
   final double progress;
   final XissinColors c;
-  const _ProgressBar({required this.progress, required this.c});
+  const _GradientProgressBar({required this.progress, required this.c});
 
   @override
   Widget build(BuildContext context) {
@@ -549,24 +623,34 @@ class _ProgressBar extends StatelessWidget {
           children: [
             Text('Sending messages...',
                 style: TextStyle(
-                    color: c.textSecondary,
-                    fontSize: 12,
+                    color:      c.textSecondary,
+                    fontSize:   12,
                     fontWeight: FontWeight.w500)),
             Text('$pct%',
                 style: const TextStyle(
-                    color: _kPink,
-                    fontSize: 12,
+                    color:      _kPink,
+                    fontSize:   12,
                     fontWeight: FontWeight.w700)),
           ],
         ),
-        const SizedBox(height: 6),
+        const SizedBox(height: 8),
         ClipRRect(
-          borderRadius: BorderRadius.circular(8),
-          child: LinearProgressIndicator(
-            value: progress,
-            minHeight: 8,
-            backgroundColor: c.surface,
-            valueColor: const AlwaysStoppedAnimation(_kPink),
+          borderRadius: BorderRadius.circular(AppRadius.sm),
+          child: Stack(
+            children: [
+              Container(height: 8, color: c.surface),
+              FractionallySizedBox(
+                widthFactor: progress.clamp(0.0, 1.0),
+                child: Container(
+                  height: 8,
+                  decoration: const BoxDecoration(
+                    gradient: LinearGradient(
+                      colors: [_kPink, _kOrange],
+                    ),
+                  ),
+                ),
+              ),
+            ],
           ),
         ),
       ],
@@ -574,31 +658,84 @@ class _ProgressBar extends StatelessWidget {
   }
 }
 
+// Tips card
+class _TipsCard extends StatelessWidget {
+  final XissinColors c;
+  const _TipsCard({required this.c});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color:        c.surfaceAlt,
+        borderRadius: BorderRadius.circular(AppRadius.lg),
+        border:       Border.all(color: c.border, width: 1),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(children: [
+            const Icon(Icons.lightbulb_outline_rounded,
+                size: 15, color: _kOrange),
+            const SizedBox(width: 6),
+            Text('Tips',
+                style: TextStyle(
+                  color:      c.textPrimary,
+                  fontSize:   13,
+                  fontWeight: FontWeight.bold,
+                )),
+          ]),
+          const SizedBox(height: 10),
+          _tip('Enter only the username, not the full ngl.link URL', c),
+          _tip('Use the paste button to auto-clean copied links', c),
+          _tip('Max 50 messages per send to avoid rate limits', c),
+        ],
+      ),
+    );
+  }
+
+  Widget _tip(String text, XissinColors c) => Padding(
+        padding: const EdgeInsets.only(bottom: 6),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('• ', style: TextStyle(color: _kPink, fontSize: 13)),
+            Expanded(
+              child: Text(text,
+                  style: TextStyle(
+                      color: c.textSecondary, fontSize: 12, height: 1.4)),
+            ),
+          ],
+        ),
+      );
+}
+
 class _SendButton extends StatelessWidget {
-  final bool loading;
+  final bool         loading;
   final VoidCallback onPressed;
   const _SendButton({required this.loading, required this.onPressed});
 
   @override
   Widget build(BuildContext context) {
     return SizedBox(
-      width: double.infinity,
-      height: 52,
+      width:  double.infinity,
+      height: 54,
       child: ElevatedButton.icon(
         onPressed: loading ? null : onPressed,
         style: ElevatedButton.styleFrom(
-          backgroundColor: _kPink,
-          foregroundColor: Colors.white,
+          backgroundColor:         _kPink,
+          foregroundColor:         Colors.white,
           disabledBackgroundColor: _kPink.withOpacity(0.4),
-          shape:
-              RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(AppRadius.lg)),
           elevation: 0,
         ),
         icon: loading
             ? const SizedBox(
-                width: 18,
+                width:  18,
                 height: 18,
-                child: CircularProgressIndicator(
+                child:  CircularProgressIndicator(
                     strokeWidth: 2, color: Colors.white),
               )
             : const Icon(Icons.send_rounded, size: 20),
@@ -614,35 +751,37 @@ class _SendButton extends StatelessWidget {
 class _StatChip extends StatelessWidget {
   final String label;
   final String value;
-  final Color color;
+  final Color  color;
   final XissinColors c;
-  const _StatChip(
-      {required this.label,
-      required this.value,
-      required this.color,
-      required this.c});
+  const _StatChip({
+    required this.label,
+    required this.value,
+    required this.color,
+    required this.c,
+  });
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+      padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 16),
       decoration: BoxDecoration(
-        color: color.withOpacity(0.10),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: color.withOpacity(0.3), width: 1),
+        color:        color.withOpacity(0.10),
+        borderRadius: BorderRadius.circular(AppRadius.lg),
+        border:       Border.all(color: color.withOpacity(0.30), width: 1),
+        boxShadow:    AppShadows.glow(color, intensity: 0.10, blur: 12),
       ),
       child: Column(
         children: [
           Text(value,
               style: TextStyle(
-                  color: color,
-                  fontSize: 26,
+                  color:      color,
+                  fontSize:   28,
                   fontWeight: FontWeight.w800)),
-          const SizedBox(height: 2),
+          const SizedBox(height: 4),
           Text(label,
               style: TextStyle(
-                  color: c.textSecondary,
-                  fontSize: 12,
+                  color:      c.textSecondary,
+                  fontSize:   12,
                   fontWeight: FontWeight.w500)),
         ],
       ),
