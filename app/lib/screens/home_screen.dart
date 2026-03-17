@@ -3,10 +3,12 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:google_mobile_ads/google_mobile_ads.dart';
 import '../theme/app_theme.dart';
 import '../services/api_service.dart';
 import '../services/theme_service.dart';
 import '../services/location_service.dart';
+import '../services/ad_service.dart';
 import '../widgets/glass_neumorphic_card.dart';
 import '../widgets/shimmer_skeleton.dart';
 import '../widgets/staggered_grid.dart';
@@ -77,12 +79,16 @@ class _HomeScreenState extends State<HomeScreen> {
   void _goToSms() {
     if (!_hasKey) { _showNoKeyDialog(); return; }
     HapticFeedback.mediumImpact();
+    // Show interstitial ad before opening the tool
+    AdService.instance.showInterstitial();
     _pushSlide(SmsBomberScreen(userId: widget.userId));
   }
 
   void _goToNgl() {
     if (!_hasKey) { _showNoKeyDialog(); return; }
     HapticFeedback.mediumImpact();
+    // Show interstitial ad before opening the tool
+    AdService.instance.showInterstitial();
     _pushSlide(NglScreen(userId: widget.userId));
   }
 
@@ -179,6 +185,28 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  // ── Banner Ad widget ───────────────────────────────────────────────────────
+
+  Widget _buildBannerAd() {
+    return Consumer<AdService>(
+      builder: (_, adService, __) {
+        if (!adService.bannerReady || adService.bannerAd == null) {
+          // Return an invisible zero-height widget when not ready
+          return const SizedBox.shrink();
+        }
+        return SafeArea(
+          top: false,
+          child: Container(
+            alignment: Alignment.center,
+            width:  adService.bannerAd!.size.width.toDouble(),
+            height: adService.bannerAd!.size.height.toDouble(),
+            child:  AdWidget(ad: adService.bannerAd!),
+          ),
+        );
+      },
+    );
+  }
+
   // ── Build ──────────────────────────────────────────────────────────────────
 
   @override
@@ -190,7 +218,9 @@ class _HomeScreenState extends State<HomeScreen> {
         .toList();
 
     return Scaffold(
-      backgroundColor: c.background,
+      backgroundColor:    c.background,
+      // ── Sticky banner ad at the very bottom ────────────────────────────────
+      bottomNavigationBar: _buildBannerAd(),
       body: SafeArea(
         child: RefreshIndicator(
           onRefresh:       _refreshAll,
@@ -807,5 +837,3 @@ class _FeatureCard extends StatelessWidget {
             curve:  Curves.easeOutCubic);
   }
 }
-
-

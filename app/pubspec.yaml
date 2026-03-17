@@ -37,13 +37,11 @@ dependencies:
   in_app_purchase:   ^3.2.0
   webview_flutter:   ^4.10.0
 
+  # ── 💰 Ads ────────────────────────────────────────────────────────────────────
+  google_mobile_ads: ^5.1.0
+
   # ── 🔒 Security ──────────────────────────────────────────────────────────────
-  # Root / jailbreak detection (physical device check)
   safe_device: ^1.1.5
-
-  # FLAG_SECURE — prevents screenshots, screen recording, recent-apps preview
-
-  # Crypto — for HMAC request signing
   crypto: ^3.0.3
 
 dev_dependencies:

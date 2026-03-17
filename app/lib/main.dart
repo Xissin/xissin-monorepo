@@ -8,6 +8,7 @@ import 'theme/app_theme.dart';
 import 'services/theme_service.dart';
 import 'services/crash_reporter.dart';
 import 'services/security_service.dart';
+import 'services/ad_service.dart';
 import 'screens/splash_screen.dart';
 
 void main() async {
@@ -20,13 +21,16 @@ void main() async {
   final themeService = ThemeService();
   await themeService.init();
 
-  // ── 3. Orientation lock ────────────────────────────────────────────────────
+  // ── 3. AdMob ───────────────────────────────────────────────────────────────
+  await AdService.instance.init();
+
+  // ── 4. Orientation lock ────────────────────────────────────────────────────
   await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
 
-  // ── 4. Security checks (non-blocking) ─────────────────────────────────────
+  // ── 5. Security checks (non-blocking) ─────────────────────────────────────
   unawaited(SecurityService.runChecks());
 
-  // ── 5. Zone error catching ─────────────────────────────────────────────────
+  // ── 6. Zone error catching ─────────────────────────────────────────────────
   runZonedGuarded(
     () => runApp(XissinApp(themeService: themeService)),
     (error, stack) {
@@ -84,8 +88,11 @@ class _XissinAppState extends State<XissinApp> {
 
   @override
   Widget build(BuildContext context) {
-    return ChangeNotifierProvider<ThemeService>.value(
-      value: widget.themeService,
+    return MultiProvider(
+      providers: [
+        ChangeNotifierProvider<ThemeService>.value(value: widget.themeService),
+        ChangeNotifierProvider<AdService>.value(value: AdService.instance),
+      ],
       child: Consumer<ThemeService>(
         builder: (_, themeService, __) {
           _applySystemUI(themeService.isDark);
