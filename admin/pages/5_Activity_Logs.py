@@ -14,7 +14,6 @@ with col_a:
 with col_b:
     action_filter = st.selectbox("Action Type", [
         "All", "ngl_sent", "sms_bomb",
-        "key_redeemed", "key_generated", "key_revoked",
         "user_registered", "user_banned", "user_unbanned",
         "settings_updated", "announcement_created",
     ])
@@ -55,9 +54,6 @@ if not logs:
 
 # ── Timeline view ─────────────────────────────────────────────────────────────
 LOG_COLORS = {
-    "key_generated":      "#5B8CFF",
-    "key_redeemed":       "#7EE7C1",
-    "key_revoked":        "#FF6B6B",
     "user_registered":    "#A78BFA",
     "user_banned":        "#FF6B6B",
     "user_unbanned":      "#7EE7C1",

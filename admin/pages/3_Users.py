@@ -11,7 +11,7 @@ page_header("👥", "Users", "ALL REGISTERED APP USERS · BAN · UNBAN")
 
 col_a, col_b, col_c = st.columns([3,1,1])
 with col_a: search = st.text_input("🔍 Search", placeholder="Search by User ID or username...", label_visibility="collapsed")
-with col_b: status_filter = st.selectbox("Filter", ["All","Active","Banned","Has Key","No Key"], label_visibility="collapsed")
+with col_b: status_filter = st.selectbox("Filter", ["All","Active","Banned"], label_visibility="collapsed")
 with col_c:
     if st.button("↺  REFRESH", use_container_width=True): st.cache_data.clear(); st.rerun()
 
@@ -31,20 +31,16 @@ with st.spinner("Loading users..."):
 now = datetime.utcnow()
 for u in users:
     u["ngl_total"] = ngl_map.get(u.get("user_id",""), 0)
-    exp = u.get("key_expires","")
-    u["_has_key"] = bool(u.get("active_key") and exp and datetime.fromisoformat(exp) > now)
 
 total    = len(users)
 banned   = sum(1 for u in users if u.get("banned"))
-has_key  = sum(1 for u in users if u.get("_has_key"))
 total_ngl= sum(u.get("ngl_total",0) for u in users)
 
-c1,c2,c3,c4 = st.columns(4)
+c1,c2,c3 = st.columns(3)
 for col, icon, label, value, color, delay in [
     (c1,"👥","TOTAL USERS", total,    "#00e5ff",0.0),
-    (c2,"✅","WITH KEY",    has_key,  "#00ff9d",0.08),
-    (c3,"🚫","BANNED",      banned,   "#ff4757",0.16),
-    (c4,"💬","TOTAL NGL",   total_ngl,"#f472b6",0.24),
+    (c2,"🚫","BANNED",      banned,   "#ff4757",0.08),
+    (c3,"💬","TOTAL NGL",   total_ngl,"#f472b6",0.16),
 ]:
     with col:
         st.markdown(f"""<div style='background:linear-gradient(135deg,{color}0d,transparent);
@@ -65,8 +61,6 @@ if search.strip():
     filtered = [u for u in filtered if q in (u.get("user_id") or "").lower() or q in (u.get("username") or "").lower()]
 if status_filter == "Active":  filtered = [u for u in filtered if not u.get("banned")]
 if status_filter == "Banned":  filtered = [u for u in filtered if u.get("banned")]
-if status_filter == "Has Key": filtered = [u for u in filtered if u.get("_has_key")]
-if status_filter == "No Key":  filtered = [u for u in filtered if not u.get("_has_key")]
 
 st.markdown(f"""<div style='font-family:"Share Tech Mono",monospace;font-size:10px;
     color:#5a7a9a;margin-bottom:8px'>SHOWING {len(filtered)} OF {total} USERS</div>""", unsafe_allow_html=True)
@@ -74,12 +68,10 @@ st.markdown(f"""<div style='font-family:"Share Tech Mono",monospace;font-size:10
 if filtered:
     rows = []
     for u in filtered:
-        key_exp = (u.get("key_expires") or "")[:10]
         rows.append({
             "User ID":  u.get("user_id","-"),
             "Username": u.get("username") or "-",
             "Status":   "🚫 Banned" if u.get("banned") else "✅ Active",
-            "Key":      f"🔑 Active (exp {key_exp})" if u.get("_has_key") else "❌ No Key",
             "SMS Sent": u.get("total_sms",0),
             "NGL Sent": u.get("ngl_total",0),
             "Joined":   (u.get("joined_at") or "-")[:10],

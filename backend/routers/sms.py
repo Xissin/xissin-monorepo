@@ -765,22 +765,6 @@ def bomb(request: Request, req: BombRequest):
     if not user:
         raise HTTPException(status_code=403, detail="User not registered.")
 
-    if not user.get("active_key"):
-        raise HTTPException(status_code=403,
-                            detail="No active key. Please redeem a key first.")
-
-    if not db.get_key(user["active_key"]):
-        raise HTTPException(status_code=403,
-                            detail="Your key has been revoked. Contact admin.")
-
-    from datetime import datetime
-    from zoneinfo import ZoneInfo
-    expires = datetime.fromisoformat(user["key_expires"])
-    now     = datetime.now(ZoneInfo("Asia/Manila")).replace(tzinfo=None)
-    if now > expires:
-        raise HTTPException(status_code=403,
-                            detail="Your key has expired. Please redeem a new one.")
-
     # ── Per-user guard ────────────────────────────────────────────────────────
     with _active_users_lock:
         if req.user_id in _active_users:

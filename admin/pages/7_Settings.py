@@ -56,7 +56,6 @@ with col_left:
         st.markdown("---")
         feature_sms  = st.toggle("📱 SMS Bomber",  value=s.get("feature_sms",  True))
         feature_ngl  = st.toggle("💬 NGL Bomber",  value=s.get("feature_ngl",  True))
-        feature_keys = st.toggle("🔑 Key Manager", value=s.get("feature_keys", True))
 
     st.markdown("### 💬 Maintenance Message")
     with st.container(border=True):
@@ -89,7 +88,6 @@ with col_right:
             ("latest_app_version",  s.get("latest_app_version", "-")),
             ("feature_sms",         "✅ enabled" if s.get("feature_sms", True) else "❌ disabled"),
             ("feature_ngl",         "✅ enabled" if s.get("feature_ngl", True) else "❌ disabled"),
-            ("feature_keys",        "✅ enabled" if s.get("feature_keys", True) else "❌ disabled"),
         ]
         for key, val in rows:
             st.markdown(f"""
@@ -114,7 +112,6 @@ with col_save:
                 "latest_app_version":  latest_ver.strip() or "1.0.0",
                 "feature_sms":         feature_sms,
                 "feature_ngl":         feature_ngl,
-                "feature_keys":        feature_keys,
             }
             post("/api/settings/", payload)
             st.success("✓ Settings saved successfully!")

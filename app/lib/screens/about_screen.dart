@@ -202,7 +202,7 @@ class _AboutScreenState extends State<AboutScreen> {
             // ── Stats row ────────────────────────────────────────────────────
             Row(
               children: [
-                _StatBox(label: 'Tools',    value: '6',  color: c.primary,   c: c),
+                _StatBox(label: 'Tools',    value: '5',  color: c.primary,   c: c),
                 const SizedBox(width: 12),
                 _StatBox(label: 'PH SMS',   value: '14', color: c.secondary, c: c),
                 const SizedBox(width: 12),

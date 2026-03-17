@@ -26,8 +26,6 @@ def load_dashboard_data():
     results = {}
     try: results["users"]   = get("/api/users/list").get("users", [])
     except: results["users"] = []
-    try: results["keys"]    = get("/api/keys/list").get("keys", [])
-    except: results["keys"] = []
     try: results["status"]  = get_public("/api/status")
     except: results["status"] = {}
     try: results["ngl"]     = get("/api/ngl/stats")
@@ -42,14 +40,12 @@ with st.spinner("Loading command center..."):
     data = load_dashboard_data()
 
 users    = data["users"]
-keys     = data["keys"]
 status   = data["status"]
 ngl      = data["ngl"]
 logs     = data["logs"]
 ann_list = data["ann"]
 now      = datetime.utcnow()
 
-active_keys  = sum(1 for k in keys if not k.get("redeemed") and datetime.fromisoformat(k["expires_at"]) > now) if keys else 0
 banned_users = sum(1 for u in users if u.get("banned"))
 total_sms    = sum(u.get("total_sms", 0) for u in users)
 total_ngl    = ngl.get("total_ngl_sent", 0)
@@ -62,16 +58,14 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-cols = st.columns(8)
+cols = st.columns(6)
 metrics = [
     ("👥", "USERS",        len(users),    "#00e5ff", 0.0),
-    ("🟢", "ACTIVE KEYS",  active_keys,   "#00ff9d", 0.05),
-    ("🔑", "TOTAL KEYS",   len(keys),     "#a855f7", 0.1),
-    ("🚫", "BANNED",       banned_users,  "#ff4757", 0.15),
-    ("📱", "SMS SENT",     total_sms,     "#ff9500", 0.2),
-    ("💬", "NGL SENT",     total_ngl,     "#f472b6", 0.25),
-    ("📢", "ANNOUNCES",    len(ann_list), "#00b8d4", 0.3),
-    ("📦", "APP VERSION",  status.get("latest_app_version", "-"), "#a855f7", 0.35),
+    ("🚫", "BANNED",       banned_users,  "#ff4757", 0.05),
+    ("📱", "SMS SENT",     total_sms,     "#ff9500", 0.1),
+    ("💬", "NGL SENT",     total_ngl,     "#f472b6", 0.15),
+    ("📢", "ANNOUNCES",    len(ann_list), "#00b8d4", 0.2),
+    ("📦", "APP VERSION",  status.get("latest_app_version", "-"), "#a855f7", 0.25),
 ]
 for col, (icon, label, value, color, delay) in zip(cols, metrics):
     with col:
@@ -134,8 +128,6 @@ with col_left:
                              "#00ff9d" if features.get("sms_bomber") else "#ff4757"),
         ("NGL BOMBER",       "✓ ENABLED" if features.get("ngl_bomber") else "✗ DISABLED",
                              "#00ff9d" if features.get("ngl_bomber") else "#ff4757"),
-        ("KEY MANAGER",      "✓ ENABLED" if features.get("key_manager") else "✗ DISABLED",
-                             "#00ff9d" if features.get("key_manager") else "#ff4757"),
     ]
     for k, v, c in info_rows:
         st.markdown(f"""
@@ -195,9 +187,6 @@ with col_right:
     """, unsafe_allow_html=True)
 
     LOG_CFG = {
-        "key_generated":       ("#a855f7", "🔑"),
-        "key_redeemed":        ("#00ff9d", "✅"),
-        "key_revoked":         ("#ff4757", "🗑️"),
         "user_registered":     ("#00e5ff", "👤"),
         "user_banned":         ("#ff4757", "🚫"),
         "user_unbanned":       ("#00ff9d", "✅"),
