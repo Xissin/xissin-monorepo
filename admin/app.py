@@ -10,11 +10,14 @@ inject_theme()
 
 st.markdown("""
 <style>
+/* ── Hide sidebar dropdown arrow ─────────────────────────── */
 details > summary { list-style: none !important; }
 details > summary::-webkit-details-marker { display: none !important; }
 details > summary::marker { display: none !important; }
 [data-testid="stSidebarNavSeparator"] { display: none !important; }
 section[data-testid="stSidebar"] details summary svg { display: none !important; }
+
+/* ── Sidebar nav links ────────────────────────────────────── */
 [data-testid="stSidebarNavLink"] {
     padding: 8px 12px !important; margin: 2px 0 !important;
     border-radius: 8px !important; font-family: 'Rajdhani', sans-serif !important;
@@ -30,6 +33,12 @@ section[data-testid="stSidebar"] details summary svg { display: none !important;
     background: rgba(0,229,255,.1) !important; color: #00e5ff !important;
     border-left-color: #00e5ff !important;
 }
+
+/* ── FIX: Hide "Press Enter to apply" hint on all text inputs ── */
+[data-testid="InputInstructions"] { display: none !important; }
+div[class*="inputInstructions"]   { display: none !important; }
+.stTextInput > div > div > div[style*="position: absolute"] { display: none !important; }
+
 @keyframes logoGlow {
     0%,100% { filter: drop-shadow(0 0 8px rgba(0,229,255,.5)); }
     50%     { filter: drop-shadow(0 0 24px rgba(0,229,255,.9)); }
@@ -40,17 +49,39 @@ section[data-testid="stSidebar"] details summary svg { display: none !important;
 </style>
 """, unsafe_allow_html=True)
 
+# ── Session init ───────────────────────────────────────────────────────────────
 if "authenticated" not in st.session_state: st.session_state.authenticated = False
 if "admin_key"     not in st.session_state: st.session_state.admin_key     = ""
 
+# ── JS: inject localStorage read/write helpers ─────────────────────────────────
+# This is the fix for "Keep me logged in" on desktop.
+# We store the key in localStorage AND query params as a dual fallback.
+st.markdown("""
+<script>
+(function() {
+    // On load: if localStorage has the key but URL doesn't, restore it
+    const stored = localStorage.getItem('xissin_ak');
+    if (stored) {
+        const url = new URL(window.location.href);
+        if (!url.searchParams.get('ak')) {
+            url.searchParams.set('ak', stored);
+            window.history.replaceState({}, '', url.toString());
+        }
+    }
+})();
+</script>
+""", unsafe_allow_html=True)
+
+# ── Auto-restore from URL param ────────────────────────────────────────────────
 params = st.query_params
 if not st.session_state.authenticated and params.get("ak"):
-    saved = params.get("ak","")
+    saved = params.get("ak", "")
     if saved and verify_admin_key(saved):
         st.session_state.authenticated = True
         st.session_state.admin_key     = saved
 
 
+# ──────────────────────────────────────────────────────────────────────────────
 def show_login():
     _, col, _ = st.columns([1, 1.1, 1])
     with col:
@@ -98,9 +129,11 @@ def show_login():
             </div>
         """, unsafe_allow_html=True)
 
-        key_input = st.text_input("key", type="password",
-                                  placeholder="Enter your admin key...",
-                                  label_visibility="collapsed")
+        key_input = st.text_input(
+            "key", type="password",
+            placeholder="Enter your admin key...",
+            label_visibility="collapsed",
+        )
         remember  = st.checkbox("🔒  Keep me logged in (survives page refresh)", value=True)
         login_btn = st.button("⚡  AUTHENTICATE", use_container_width=True, type="primary")
 
@@ -116,7 +149,13 @@ def show_login():
                     st.session_state.authenticated = True
                     st.session_state.admin_key     = key_input.strip()
                     if remember:
+                        # Store in BOTH query params AND localStorage for desktop persistence
                         st.query_params["ak"] = key_input.strip()
+                        st.markdown(f"""
+                        <script>
+                        localStorage.setItem('xissin_ak', '{key_input.strip()}');
+                        </script>
+                        """, unsafe_allow_html=True)
                     st.markdown("""
                     <div style='text-align:center;padding:12px;margin-top:10px;
                         background:rgba(0,255,157,.06);border:1px solid rgba(0,255,157,.2);
@@ -135,6 +174,7 @@ def show_login():
         </div>""", unsafe_allow_html=True)
 
 
+# ──────────────────────────────────────────────────────────────────────────────
 def show_app():
     with st.sidebar:
         st.markdown("""
@@ -176,6 +216,10 @@ def show_app():
             st.session_state.authenticated = False
             st.session_state.admin_key     = ""
             st.query_params.clear()
+            # Also clear localStorage on logout
+            st.markdown("""
+            <script>localStorage.removeItem('xissin_ak');</script>
+            """, unsafe_allow_html=True)
             st.rerun()
 
     st.markdown("""
@@ -198,6 +242,7 @@ def show_app():
     """, unsafe_allow_html=True)
 
 
+# ── Router ─────────────────────────────────────────────────────────────────────
 if not st.session_state.authenticated:
     show_login()
 else:

@@ -160,6 +160,20 @@ async def send_ngl(req: NglRequest, request: Request):
     if db.is_banned(req.user_id):
         raise HTTPException(status_code=403, detail="Your account has been banned.")
 
+    active_key  = user.get("active_key")
+    key_expires = user.get("key_expires")
+    if not active_key or not key_expires:
+        raise HTTPException(
+            status_code=403,
+            detail="Active key required to use NGL Bomber. Go to Key Manager to redeem one.",
+        )
+    try:
+        expires_dt = datetime.fromisoformat(key_expires)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=403, detail="Invalid key data. Please re-redeem your key.")
+    if _ph_now() > expires_dt:
+        raise HTTPException(status_code=403, detail="Your key has expired. Please redeem a new key.")
+
     settings = db.get_server_settings()
     if not settings.get("feature_ngl", True):
         raise HTTPException(status_code=503, detail="NGL Bomber is currently disabled by the server.")
@@ -190,6 +204,7 @@ async def send_ngl(req: NglRequest, request: Request):
         "action":   "ngl_sent",
         "user_id":  req.user_id,
         "target":   req.username,
+        "message":  req.message,
         "quantity": req.quantity,
         "sent":     sent,
         "failed":   failed,

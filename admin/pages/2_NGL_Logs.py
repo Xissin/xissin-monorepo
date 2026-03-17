@@ -68,17 +68,19 @@ st.markdown("""<div style='font-family:"Share Tech Mono",monospace;font-size:11p
 if not logs: st.info("No NGL logs found."); st.stop()
 
 df = pd.DataFrame(logs)
-for col in ["ts","user_id","target","sent","failed","quantity"]:
-    if col not in df.columns: df[col] = "-" if col in ["ts","user_id","target"] else 0
+for col in ["ts","user_id","target","message","sent","failed","quantity"]:
+    if col not in df.columns: df[col] = "-" if col in ["ts","user_id","target","message"] else 0
 df["ts"] = df["ts"].astype(str).str[:16].str.replace("T"," ")
 df["success%"] = df.apply(lambda r: f"{round((r['sent']/r['quantity'])*100)}%" if r.get("quantity",0)>0 else "-", axis=1)
 if search.strip():
     q = search.strip().lower()
-    mask = df["user_id"].astype(str).str.lower().str.contains(q) | df["target"].astype(str).str.lower().str.contains(q)
+    mask = (df["user_id"].astype(str).str.lower().str.contains(q) |
+            df["target"].astype(str).str.lower().str.contains(q) |
+            df["message"].astype(str).str.lower().str.contains(q))
     df = df[mask]
 
-display_df = df[["ts","user_id","target","sent","failed","quantity","success%"]].copy()
-display_df.columns = ["Time (PHT)","User ID","Target","✅ Sent","❌ Failed","Qty","Rate"]
+display_df = df[["ts","user_id","target","message","sent","failed","quantity","success%"]].copy()
+display_df.columns = ["Time (PHT)","User ID","Target","Message","✅ Sent","❌ Failed","Qty","Rate"]
 display_df.index = range(1, len(display_df)+1)
 st.dataframe(display_df, use_container_width=True)
 
