@@ -32,9 +32,7 @@ dependencies:
   provider:          ^6.1.2
   flutter_animate:   ^4.5.0
   shimmer:           ^3.0.0
-  confetti:          ^0.8.0
   url_launcher:      ^6.3.0
-  in_app_purchase:   ^3.2.0
   webview_flutter:   ^4.10.0
 
   # ── 💰 Ads ────────────────────────────────────────────────────────────────────
@@ -42,7 +40,7 @@ dependencies:
 
   # ── 🔒 Security ──────────────────────────────────────────────────────────────
   safe_device: ^1.1.5
-  crypto: ^3.0.3
+  crypto:      ^3.0.3
 
 dev_dependencies:
   flutter_test:

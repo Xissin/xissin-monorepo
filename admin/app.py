@@ -10,14 +10,11 @@ inject_theme()
 
 st.markdown("""
 <style>
-/* ── Hide sidebar dropdown arrow ─────────────────────────── */
 details > summary { list-style: none !important; }
 details > summary::-webkit-details-marker { display: none !important; }
 details > summary::marker { display: none !important; }
 [data-testid="stSidebarNavSeparator"] { display: none !important; }
 section[data-testid="stSidebar"] details summary svg { display: none !important; }
-
-/* ── Sidebar nav links ────────────────────────────────────── */
 [data-testid="stSidebarNavLink"] {
     padding: 8px 12px !important; margin: 2px 0 !important;
     border-radius: 8px !important; font-family: 'Rajdhani', sans-serif !important;
@@ -43,11 +40,9 @@ section[data-testid="stSidebar"] details summary svg { display: none !important;
 </style>
 """, unsafe_allow_html=True)
 
-# ── Session init ───────────────────────────────────────────────────────────────
 if "authenticated" not in st.session_state: st.session_state.authenticated = False
 if "admin_key"     not in st.session_state: st.session_state.admin_key     = ""
 
-# ── Auto-restore from URL param ────────────────────────────────────────────────
 params = st.query_params
 if not st.session_state.authenticated and params.get("ak"):
     saved = params.get("ak","")
@@ -55,7 +50,7 @@ if not st.session_state.authenticated and params.get("ak"):
         st.session_state.authenticated = True
         st.session_state.admin_key     = saved
 
-# ──────────────────────────────────────────────────────────────────────────────
+
 def show_login():
     _, col, _ = st.columns([1, 1.1, 1])
     with col:
@@ -103,7 +98,9 @@ def show_login():
             </div>
         """, unsafe_allow_html=True)
 
-        key_input = st.text_input("key", type="password", placeholder="Enter your admin key...", label_visibility="collapsed")
+        key_input = st.text_input("key", type="password",
+                                  placeholder="Enter your admin key...",
+                                  label_visibility="collapsed")
         remember  = st.checkbox("🔒  Keep me logged in (survives page refresh)", value=True)
         login_btn = st.button("⚡  AUTHENTICATE", use_container_width=True, type="primary")
 
@@ -138,7 +135,6 @@ def show_login():
         </div>""", unsafe_allow_html=True)
 
 
-# ──────────────────────────────────────────────────────────────────────────────
 def show_app():
     with st.sidebar:
         st.markdown("""
@@ -194,7 +190,6 @@ def show_app():
             color:#3a5a7a;letter-spacing:3px;margin-bottom:24px'>SELECT A MODULE FROM THE SIDEBAR</p>
         <div style='display:inline-flex;gap:8px;flex-wrap:wrap;justify-content:center'>
             <span style='background:rgba(0,229,255,.07);border:1px solid rgba(0,229,255,.2);border-radius:6px;padding:5px 12px;font-family:"Share Tech Mono",monospace;font-size:10px;color:#00e5ff;letter-spacing:1px'>📊 DASHBOARD</span>
-            <span style='background:rgba(168,85,247,.07);border:1px solid rgba(168,85,247,.2);border-radius:6px;padding:5px 12px;font-family:"Share Tech Mono",monospace;font-size:10px;color:#a855f7;letter-spacing:1px'>🔑 KEYS</span>
             <span style='background:rgba(244,114,182,.07);border:1px solid rgba(244,114,182,.2);border-radius:6px;padding:5px 12px;font-family:"Share Tech Mono",monospace;font-size:10px;color:#f472b6;letter-spacing:1px'>👥 USERS</span>
             <span style='background:rgba(0,255,157,.07);border:1px solid rgba(0,255,157,.2);border-radius:6px;padding:5px 12px;font-family:"Share Tech Mono",monospace;font-size:10px;color:#00ff9d;letter-spacing:1px'>💣 SMS LOGS</span>
             <span style='background:rgba(255,149,0,.07);border:1px solid rgba(255,149,0,.2);border-radius:6px;padding:5px 12px;font-family:"Share Tech Mono",monospace;font-size:10px;color:#ff9500;letter-spacing:1px'>📍 MAP</span>
@@ -203,7 +198,6 @@ def show_app():
     """, unsafe_allow_html=True)
 
 
-# ── Router ─────────────────────────────────────────────────────────────────────
 if not st.session_state.authenticated:
     show_login()
 else:

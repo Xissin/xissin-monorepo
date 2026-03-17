@@ -595,7 +595,7 @@ class _InfoBanner extends StatelessWidget {
           Expanded(
             child: Text(
               'Sends anonymous messages to any NGL profile.\n'
-              'Requires an active key. Max 50 messages per send.',
+              'Max 50 messages per send.',
               style: TextStyle(
                   color: c.textSecondary, fontSize: 12, height: 1.45),
             ),

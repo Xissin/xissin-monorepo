@@ -11,28 +11,35 @@ import 'services/security_service.dart';
 import 'services/ad_service.dart';
 import 'screens/splash_screen.dart';
 
-void main() async {
-  WidgetsFlutterBinding.ensureInitialized();
-
-  // ── 1. Crash reporter ──────────────────────────────────────────────────────
-  CrashReporter.initialize();
-
-  // ── 2. Theme ───────────────────────────────────────────────────────────────
-  final themeService = ThemeService();
-  await themeService.init();
-
-  // ── 3. AdMob ───────────────────────────────────────────────────────────────
-  await AdService.instance.init();
-
-  // ── 4. Orientation lock ────────────────────────────────────────────────────
-  await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
-
-  // ── 5. Security checks (non-blocking) ─────────────────────────────────────
-  unawaited(SecurityService.runChecks());
-
-  // ── 6. Zone error catching ─────────────────────────────────────────────────
+// ── FIX: Everything must run INSIDE runZonedGuarded so that
+//         WidgetsFlutterBinding.ensureInitialized() and runApp()
+//         share the same zone — avoids the "Zone mismatch" assertion.
+void main() {
   runZonedGuarded(
-    () => runApp(XissinApp(themeService: themeService)),
+    () async {
+      // ── 1. Binding (FIRST, inside the zone) ───────────────────────────────
+      WidgetsFlutterBinding.ensureInitialized();
+
+      // ── 2. Crash reporter ─────────────────────────────────────────────────
+      CrashReporter.initialize();
+
+      // ── 3. Theme ──────────────────────────────────────────────────────────
+      final themeService = ThemeService();
+      await themeService.init();
+
+      // ── 4. AdMob ──────────────────────────────────────────────────────────
+      await AdService.instance.init();
+
+      // ── 5. Orientation lock ───────────────────────────────────────────────
+      await SystemChrome.setPreferredOrientations(
+          [DeviceOrientation.portraitUp]);
+
+      // ── 6. Security checks (non-blocking) ────────────────────────────────
+      unawaited(SecurityService.runChecks());
+
+      // ── 7. Launch ─────────────────────────────────────────────────────────
+      runApp(XissinApp(themeService: themeService));
+    },
     (error, stack) {
       CrashReporter.reportCrash(
         error: error,
@@ -60,9 +67,7 @@ class _XissinAppState extends State<XissinApp> {
     super.initState();
     _connectivitySub = Connectivity().onConnectivityChanged.listen((results) {
       final offline = results.every((r) => r == ConnectivityResult.none);
-      if (offline != _isOffline) {
-        setState(() => _isOffline = offline);
-      }
+      if (offline != _isOffline) setState(() => _isOffline = offline);
     });
   }
 
@@ -96,7 +101,6 @@ class _XissinAppState extends State<XissinApp> {
       child: Consumer<ThemeService>(
         builder: (_, themeService, __) {
           _applySystemUI(themeService.isDark);
-
           return MaterialApp(
             title: 'Xissin',
             debugShowCheckedModeBanner: false,
@@ -108,7 +112,6 @@ class _XissinAppState extends State<XissinApp> {
             builder: (context, child) {
               return Column(
                 children: [
-                  // ── Offline banner ─────────────────────────────────────────
                   AnimatedContainer(
                     duration: AppDurations.normal,
                     curve: Curves.easeInOut,

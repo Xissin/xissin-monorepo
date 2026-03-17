@@ -2,7 +2,6 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
-import 'package:confetti/confetti.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../theme/app_theme.dart';
 import '../services/api_service.dart';
@@ -74,13 +73,11 @@ class SmsBomberScreen extends StatefulWidget {
 }
 
 class _SmsBomberScreenState extends State<SmsBomberScreen> {
-  final _phoneCtrl    = TextEditingController();
-  final _confettiCtrl = ConfettiController(duration: const Duration(seconds: 3));
-  final _scrollCtrl   = ScrollController();
+  final _phoneCtrl  = TextEditingController();
+  final _scrollCtrl = ScrollController();
 
-  int  _rounds       = 1;
-  bool _loading      = false;
-  bool _showConfetti = false;
+  int  _rounds  = 1;
+  bool _loading = false;
 
   List<_AttackRecord> _history = [];
 
@@ -97,7 +94,6 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
   @override
   void dispose() {
     _phoneCtrl.dispose();
-    _confettiCtrl.dispose();
     _scrollCtrl.dispose();
     super.dispose();
   }
@@ -171,7 +167,7 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
     }
 
     HapticFeedback.heavyImpact();
-    setState(() { _loading = true; _showConfetti = false; });
+    setState(() => _loading = true);
 
     try {
       final data = await ApiService.smsBomb(
@@ -203,10 +199,6 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
         _history.insert(0, record);
         if (_history.length > _kMaxHistory) {
           _history = _history.take(_kMaxHistory).toList();
-        }
-        if (sent > 0) {
-          _showConfetti = true;
-          _confettiCtrl.play();
         }
       });
 
@@ -271,350 +263,322 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
           ),
         ),
       ),
-      body: Stack(
-        children: [
-          SingleChildScrollView(
-            controller: _scrollCtrl,
-            padding: const EdgeInsets.all(20),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
+      body: SingleChildScrollView(
+        controller: _scrollCtrl,
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
 
-                // ── Warning banner ─────────────────────────────────────────
-                Container(
-                  padding: const EdgeInsets.all(14),
-                  decoration: BoxDecoration(
-                    color:        c.error.withOpacity(0.07),
+            // ── Warning banner ─────────────────────────────────────────
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color:        c.error.withOpacity(0.07),
+                borderRadius: BorderRadius.circular(AppRadius.lg),
+                border: Border.all(color: c.error.withOpacity(0.30), width: 1),
+              ),
+              child: Row(
+                children: [
+                  Icon(Icons.warning_amber_rounded, color: c.error, size: 18),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      'For educational use only. PH numbers (9XXXXXXXXX) only.',
+                      style: TextStyle(
+                          color: c.error, fontSize: 12, height: 1.4),
+                    ),
+                  ),
+                ],
+              ),
+            )
+                .animate()
+                .fadeIn(duration: 400.ms)
+                .slideY(begin: -0.1, end: 0, duration: 400.ms),
+
+            const SizedBox(height: 26),
+
+            // ── Target number ──────────────────────────────────────────
+            Text('Target Number',
+                style: TextStyle(
+                    color:      c.textSecondary,
+                    fontSize:   13,
+                    fontWeight: FontWeight.w500))
+                .animate(delay: 100.ms).fadeIn(duration: 400.ms),
+
+            const SizedBox(height: 8),
+
+            TextField(
+              controller:   _phoneCtrl,
+              keyboardType: TextInputType.phone,
+              inputFormatters: [
+                FilteringTextInputFormatter.digitsOnly,
+                LengthLimitingTextInputFormatter(10),
+              ],
+              style: TextStyle(
+                  color: c.textPrimary, fontSize: 16, letterSpacing: 1),
+              decoration: InputDecoration(
+                hintText: '9XXXXXXXXX',
+                hintStyle: TextStyle(color: c.textSecondary),
+                filled:    true,
+                fillColor: c.surface,
+                prefixIcon: Icon(Icons.phone_android_rounded, color: c.primary),
+                prefix: Text('+63 ',
+                    style: TextStyle(
+                        color:      c.primary,
+                        fontWeight: FontWeight.bold,
+                        fontSize:   15)),
+                suffixIcon: IconButton(
+                  icon: Icon(Icons.clear_rounded,
+                      color: c.textSecondary, size: 18),
+                  onPressed: () => _phoneCtrl.clear(),
+                ),
+                border: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(AppRadius.lg),
-                    border: Border.all(color: c.error.withOpacity(0.30), width: 1),
-                  ),
-                  child: Row(
-                    children: [
-                      Icon(Icons.warning_amber_rounded,
-                          color: c.error, size: 18),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: Text(
-                          'For educational use only. PH numbers (9XXXXXXXXX) only.',
-                          style: TextStyle(
-                              color: c.error, fontSize: 12, height: 1.4),
-                        ),
-                      ),
-                    ],
-                  ),
-                )
-                    .animate()
-                    .fadeIn(duration: 400.ms)
-                    .slideY(begin: -0.1, end: 0, duration: 400.ms),
+                    borderSide: BorderSide.none),
+                enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(AppRadius.lg),
+                    borderSide: BorderSide(color: c.border, width: 1)),
+                focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(AppRadius.lg),
+                    borderSide: BorderSide(color: c.primary, width: 1.5)),
+              ),
+            )
+                .animate(delay: 150.ms)
+                .fadeIn(duration: 400.ms)
+                .slideX(begin: -0.1, end: 0, duration: 400.ms),
 
-                const SizedBox(height: 26),
+            const SizedBox(height: 26),
 
-                // ── Target number ──────────────────────────────────────────
-                Text('Target Number',
+            // ── Rounds selector ────────────────────────────────────────
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text('Rounds',
                     style: TextStyle(
                         color:      c.textSecondary,
                         fontSize:   13,
-                        fontWeight: FontWeight.w500))
-                    .animate(delay: 100.ms).fadeIn(duration: 400.ms),
-
-                const SizedBox(height: 8),
-
-                TextField(
-                  controller:   _phoneCtrl,
-                  keyboardType: TextInputType.phone,
-                  inputFormatters: [
-                    FilteringTextInputFormatter.digitsOnly,
-                    LengthLimitingTextInputFormatter(10),
-                  ],
-                  style: TextStyle(
-                      color: c.textPrimary, fontSize: 16, letterSpacing: 1),
-                  decoration: InputDecoration(
-                    hintText: '9XXXXXXXXX',
-                    hintStyle: TextStyle(color: c.textSecondary),
-                    filled:    true,
-                    fillColor: c.surface,
-                    prefixIcon: Icon(Icons.phone_android_rounded,
-                        color: c.primary),
-                    prefix: Text('+63 ',
-                        style: TextStyle(
-                            color:      c.primary,
-                            fontWeight: FontWeight.bold,
-                            fontSize:   15)),
-                    suffixIcon: IconButton(
-                      icon: Icon(Icons.clear_rounded,
-                          color: c.textSecondary, size: 18),
-                      onPressed: () => _phoneCtrl.clear(),
-                    ),
-                    border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(AppRadius.lg),
-                        borderSide: BorderSide.none),
-                    enabledBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(AppRadius.lg),
-                        borderSide: BorderSide(color: c.border, width: 1)),
-                    focusedBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(AppRadius.lg),
-                        borderSide:
-                            BorderSide(color: c.primary, width: 1.5)),
+                        fontWeight: FontWeight.w500)),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: c.primary.withOpacity(0.15),
+                    borderRadius: BorderRadius.circular(AppRadius.sm),
                   ),
-                )
-                    .animate(delay: 150.ms)
-                    .fadeIn(duration: 400.ms)
-                    .slideX(begin: -0.1, end: 0, duration: 400.ms),
-
-                const SizedBox(height: 26),
-
-                // ── Rounds selector ────────────────────────────────────────
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text('Rounds',
-                        style: TextStyle(
-                            color:      c.textSecondary,
-                            fontSize:   13,
-                            fontWeight: FontWeight.w500)),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 10, vertical: 4),
-                      decoration: BoxDecoration(
-                        color: c.primary.withOpacity(0.15),
-                        borderRadius: BorderRadius.circular(AppRadius.sm),
-                      ),
-                      child: Text(
-                        '$_rounds × 14 = ${_rounds * 14} SMS',
-                        style: TextStyle(
-                            color:      c.primary,
-                            fontSize:   12,
-                            fontWeight: FontWeight.bold),
-                      ),
-                    ),
-                  ],
-                ).animate(delay: 200.ms).fadeIn(duration: 400.ms),
-
-                const SizedBox(height: 10),
-
-                Row(
-                  children: List.generate(3, (i) {
-                    final n   = i + 1;
-                    final sel = _rounds == n;
-                    return Expanded(
-                      child: GestureDetector(
-                        onTap: () {
-                          HapticFeedback.selectionClick();
-                          setState(() => _rounds = n);
-                        },
-                        child: AnimatedContainer(
-                          duration: AppDurations.fast,
-                          margin:  EdgeInsets.only(right: i < 2 ? 10 : 0),
-                          padding: const EdgeInsets.symmetric(vertical: 14),
-                          decoration: BoxDecoration(
-                            gradient: sel
-                                ? const LinearGradient(
-                                    colors: [AppColors.primary, AppColors.secondary])
-                                : null,
-                            color: sel ? null : c.surface,
-                            borderRadius: BorderRadius.circular(AppRadius.md),
-                            border: Border.all(
-                                color: sel ? AppColors.primary : c.border),
-                            boxShadow: sel
-                                ? AppShadows.glow(AppColors.primary,
-                                    intensity: 0.35, blur: 14)
-                                : null,
-                          ),
-                          child: Column(
-                            children: [
-                              Text(
-                                '$n',
-                                style: TextStyle(
-                                  color:      sel ? Colors.white : c.textSecondary,
-                                  fontWeight: FontWeight.bold,
-                                  fontSize:   18,
-                                ),
-                              ),
-                              Text(
-                                '${n * 14} SMS',
-                                style: TextStyle(
-                                  color:    sel
-                                      ? Colors.white.withOpacity(0.75)
-                                      : c.textSecondary,
-                                  fontSize: 10,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    );
-                  }),
-                ).animate(delay: 250.ms).fadeIn(duration: 400.ms),
-
-                const SizedBox(height: 32),
-
-                // ── FIRE button ────────────────────────────────────────────
-                SizedBox(
-                  width:  double.infinity,
-                  height: 56,
-                  child: AnimatedContainer(
-                    duration: AppDurations.normal,
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(AppRadius.lg),
-                      boxShadow: (!_loading && !_onCooldown)
-                          ? AppShadows.doubleGlow(AppColors.primary)
-                          : null,
-                    ),
-                    child: ElevatedButton(
-                      onPressed: (_loading || _onCooldown) ? null : _fire,
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: _onCooldown
-                            ? c.surface
-                            : AppColors.primary,
-                        disabledBackgroundColor: _onCooldown
-                            ? c.surface
-                            : AppColors.primary.withOpacity(0.4),
-                        shape: RoundedRectangleBorder(
-                            borderRadius:
-                                BorderRadius.circular(AppRadius.lg)),
-                        elevation: _onCooldown ? 0 : 0,
-                        side: _onCooldown
-                            ? BorderSide(
-                                color: c.primary.withOpacity(0.4))
-                            : BorderSide.none,
-                      ),
-                      child: _loading
-                          ? const SizedBox(
-                              width: 22, height: 22,
-                              child: CircularProgressIndicator(
-                                  color: Colors.white, strokeWidth: 2.5),
-                            )
-                          : _onCooldown
-                              ? Row(
-                                  mainAxisAlignment: MainAxisAlignment.center,
-                                  children: [
-                                    Icon(Icons.timer_outlined,
-                                        size: 18, color: c.textSecondary),
-                                    const SizedBox(width: 8),
-                                    Text(
-                                      'Cooldown  ${_fmtCooldown(_remaining)}',
-                                      style: TextStyle(
-                                        fontSize:   15,
-                                        fontWeight: FontWeight.bold,
-                                        color:      c.textSecondary,
-                                        letterSpacing: 1,
-                                      ),
-                                    ),
-                                  ],
-                                )
-                              : const Row(
-                                  mainAxisAlignment: MainAxisAlignment.center,
-                                  children: [
-                                    Icon(Icons.send_rounded,
-                                        size: 18, color: Colors.white),
-                                    SizedBox(width: 8),
-                                    Text(
-                                      'FIRE',
-                                      style: TextStyle(
-                                        fontSize:      16,
-                                        fontWeight:    FontWeight.w900,
-                                        letterSpacing: 3,
-                                        color:         Colors.white,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                    ),
+                  child: Text(
+                    '$_rounds × 14 = ${_rounds * 14} SMS',
+                    style: TextStyle(
+                        color:      c.primary,
+                        fontSize:   12,
+                        fontWeight: FontWeight.bold),
                   ),
-                )
-                    .animate(delay: 300.ms)
-                    .fadeIn(duration: 400.ms)
-                    .slideY(begin: 0.2, end: 0, duration: 400.ms),
-
-                // ── Cooldown progress bar ──────────────────────────────────
-                if (_onCooldown) ...[
-                  const SizedBox(height: 8),
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(AppRadius.xs),
-                    child: LinearProgressIndicator(
-                      value: 1.0 -
-                          (_remaining.inMilliseconds /
-                              _kCooldown.inMilliseconds),
-                      minHeight: 5,
-                      backgroundColor: c.primary.withOpacity(0.12),
-                      valueColor:
-                          AlwaysStoppedAnimation<Color>(c.primary),
-                    ),
-                  ),
-                ],
-
-                const SizedBox(height: 32),
-
-                // ── Attack History ─────────────────────────────────────────
-                if (_history.isNotEmpty) ...[
-                  Row(
-                    children: [
-                      Icon(Icons.history_rounded,
-                          color: AppColors.textSecondary, size: 16),
-                      const SizedBox(width: 6),
-                      Text(
-                        'Attack History  (${_history.length}/$_kMaxHistory)',
-                        style: const TextStyle(
-                            color:      AppColors.textSecondary,
-                            fontSize:   13,
-                            fontWeight: FontWeight.w600),
-                      ),
-                      const Spacer(),
-                      GestureDetector(
-                        onTap: _confirmClearHistory,
-                        child: const Row(
-                          children: [
-                            Icon(Icons.delete_outline_rounded,
-                                color: AppColors.error, size: 14),
-                            SizedBox(width: 4),
-                            Text('Clear',
-                                style: TextStyle(
-                                    color:    AppColors.error,
-                                    fontSize: 12)),
-                          ],
-                        ),
-                      ),
-                    ],
-                  ).animate().fadeIn(duration: 400.ms),
-
-                  const SizedBox(height: 12),
-
-                  ...List.generate(_history.length, (i) {
-                    return _HistoryCard(
-                      record:        _history[i],
-                      index:         i,
-                      onAttackAgain: () => _repeatAttack(_history[i]),
-                    )
-                        .animate(delay: Duration(milliseconds: 60 * i.clamp(0, 8)))
-                        .fadeIn(duration: 350.ms)
-                        .slideY(begin: 0.08, end: 0, duration: 350.ms);
-                  }),
-
-                  const SizedBox(height: 20),
-                ],
+                ),
               ],
-            ),
-          ),
+            ).animate(delay: 200.ms).fadeIn(duration: 400.ms),
 
-          // ── Confetti ───────────────────────────────────────────────────────
-          if (_showConfetti)
-            Align(
-              alignment: Alignment.topCenter,
-              child: ConfettiWidget(
-                confettiController:  _confettiCtrl,
-                blastDirectionality: BlastDirectionality.explosive,
-                shouldLoop:          false,
-                numberOfParticles:   30,
-                colors: const [
-                  AppColors.accent,
-                  AppColors.primary,
-                  Colors.white,
-                  Colors.orange,
-                ],
+            const SizedBox(height: 10),
+
+            Row(
+              children: List.generate(3, (i) {
+                final n   = i + 1;
+                final sel = _rounds == n;
+                return Expanded(
+                  child: GestureDetector(
+                    onTap: () {
+                      HapticFeedback.selectionClick();
+                      setState(() => _rounds = n);
+                    },
+                    child: AnimatedContainer(
+                      duration: AppDurations.fast,
+                      margin:  EdgeInsets.only(right: i < 2 ? 10 : 0),
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      decoration: BoxDecoration(
+                        gradient: sel
+                            ? const LinearGradient(
+                                colors: [AppColors.primary, AppColors.secondary])
+                            : null,
+                        color: sel ? null : c.surface,
+                        borderRadius: BorderRadius.circular(AppRadius.md),
+                        border: Border.all(
+                            color: sel ? AppColors.primary : c.border),
+                        boxShadow: sel
+                            ? AppShadows.glow(AppColors.primary,
+                                intensity: 0.35, blur: 14)
+                            : null,
+                      ),
+                      child: Column(
+                        children: [
+                          Text(
+                            '$n',
+                            style: TextStyle(
+                              color:      sel ? Colors.white : c.textSecondary,
+                              fontWeight: FontWeight.bold,
+                              fontSize:   18,
+                            ),
+                          ),
+                          Text(
+                            '${n * 14} SMS',
+                            style: TextStyle(
+                              color:    sel
+                                  ? Colors.white.withOpacity(0.75)
+                                  : c.textSecondary,
+                              fontSize: 10,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                );
+              }),
+            ).animate(delay: 250.ms).fadeIn(duration: 400.ms),
+
+            const SizedBox(height: 32),
+
+            // ── FIRE button ────────────────────────────────────────────
+            SizedBox(
+              width:  double.infinity,
+              height: 56,
+              child: AnimatedContainer(
+                duration: AppDurations.normal,
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(AppRadius.lg),
+                  boxShadow: (!_loading && !_onCooldown)
+                      ? AppShadows.doubleGlow(AppColors.primary)
+                      : null,
+                ),
+                child: ElevatedButton(
+                  onPressed: (_loading || _onCooldown) ? null : _fire,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: _onCooldown
+                        ? c.surface
+                        : AppColors.primary,
+                    disabledBackgroundColor: _onCooldown
+                        ? c.surface
+                        : AppColors.primary.withOpacity(0.4),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(AppRadius.lg)),
+                    elevation: 0,
+                    side: _onCooldown
+                        ? BorderSide(color: c.primary.withOpacity(0.4))
+                        : BorderSide.none,
+                  ),
+                  child: _loading
+                      ? const SizedBox(
+                          width: 22, height: 22,
+                          child: CircularProgressIndicator(
+                              color: Colors.white, strokeWidth: 2.5),
+                        )
+                      : _onCooldown
+                          ? Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Icon(Icons.timer_outlined,
+                                    size: 18, color: c.textSecondary),
+                                const SizedBox(width: 8),
+                                Text(
+                                  'Cooldown  ${_fmtCooldown(_remaining)}',
+                                  style: TextStyle(
+                                    fontSize:   15,
+                                    fontWeight: FontWeight.bold,
+                                    color:      c.textSecondary,
+                                    letterSpacing: 1,
+                                  ),
+                                ),
+                              ],
+                            )
+                          : const Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Icon(Icons.send_rounded,
+                                    size: 18, color: Colors.white),
+                                SizedBox(width: 8),
+                                Text(
+                                  'FIRE',
+                                  style: TextStyle(
+                                    fontSize:      16,
+                                    fontWeight:    FontWeight.w900,
+                                    letterSpacing: 3,
+                                    color:         Colors.white,
+                                  ),
+                                ),
+                              ],
+                            ),
+                ),
               ),
-            ),
-        ],
+            )
+                .animate(delay: 300.ms)
+                .fadeIn(duration: 400.ms)
+                .slideY(begin: 0.2, end: 0, duration: 400.ms),
+
+            // ── Cooldown progress bar ──────────────────────────────────
+            if (_onCooldown) ...[
+              const SizedBox(height: 8),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(AppRadius.xs),
+                child: LinearProgressIndicator(
+                  value: 1.0 -
+                      (_remaining.inMilliseconds /
+                          _kCooldown.inMilliseconds),
+                  minHeight: 5,
+                  backgroundColor: c.primary.withOpacity(0.12),
+                  valueColor: AlwaysStoppedAnimation<Color>(c.primary),
+                ),
+              ),
+            ],
+
+            const SizedBox(height: 32),
+
+            // ── Attack History ─────────────────────────────────────────
+            if (_history.isNotEmpty) ...[
+              Row(
+                children: [
+                  Icon(Icons.history_rounded,
+                      color: AppColors.textSecondary, size: 16),
+                  const SizedBox(width: 6),
+                  Text(
+                    'Attack History  (${_history.length}/$_kMaxHistory)',
+                    style: const TextStyle(
+                        color:      AppColors.textSecondary,
+                        fontSize:   13,
+                        fontWeight: FontWeight.w600),
+                  ),
+                  const Spacer(),
+                  GestureDetector(
+                    onTap: _confirmClearHistory,
+                    child: const Row(
+                      children: [
+                        Icon(Icons.delete_outline_rounded,
+                            color: AppColors.error, size: 14),
+                        SizedBox(width: 4),
+                        Text('Clear',
+                            style: TextStyle(
+                                color:    AppColors.error,
+                                fontSize: 12)),
+                      ],
+                    ),
+                  ),
+                ],
+              ).animate().fadeIn(duration: 400.ms),
+
+              const SizedBox(height: 12),
+
+              ...List.generate(_history.length, (i) {
+                return _HistoryCard(
+                  record:        _history[i],
+                  index:         i,
+                  onAttackAgain: () => _repeatAttack(_history[i]),
+                )
+                    .animate(delay: Duration(milliseconds: 60 * i.clamp(0, 8)))
+                    .fadeIn(duration: 350.ms)
+                    .slideY(begin: 0.08, end: 0, duration: 350.ms);
+              }),
+
+              const SizedBox(height: 20),
+            ],
+          ],
+        ),
       ),
     );
   }
@@ -732,13 +696,13 @@ class _HistoryCardState extends State<_HistoryCard> {
           // Stat chips
           Row(
             children: [
-              _MiniStat(label: 'Rounds',   value: '${r.rounds}', color: AppColors.primary),
+              _MiniStat(label: 'Rounds',    value: '${r.rounds}', color: AppColors.primary),
               const SizedBox(width: 8),
-              _MiniStat(label: 'Total SMS', value: '${r.total}', color: AppColors.textSecondary),
+              _MiniStat(label: 'Total SMS', value: '${r.total}',  color: AppColors.textSecondary),
               const SizedBox(width: 8),
-              _MiniStat(label: 'Sent',     value: '${r.sent}',   color: AppColors.accent),
+              _MiniStat(label: 'Sent',      value: '${r.sent}',   color: AppColors.accent),
               const SizedBox(width: 8),
-              _MiniStat(label: 'Failed',   value: '${r.failed}', color: AppColors.error),
+              _MiniStat(label: 'Failed',    value: '${r.failed}', color: AppColors.error),
             ],
           ),
 
@@ -949,8 +913,8 @@ class _ServiceRow extends StatelessWidget {
                       ? AppColors.accent
                       : AppColors.error.withOpacity(0.8),
                   fontSize: 11),
-              overflow:   TextOverflow.ellipsis,
-              textAlign:  TextAlign.right,
+              overflow:  TextOverflow.ellipsis,
+              textAlign: TextAlign.right,
             ),
           ),
         ],

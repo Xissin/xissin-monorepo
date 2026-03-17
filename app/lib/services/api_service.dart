@@ -30,7 +30,6 @@ class ApiException implements Exception {
     if (statusCode == 401)
       return 'App verification failed. Please reinstall Xissin.';
     if (statusCode == 429) return 'Too many requests. Please slow down.';
-    if (statusCode == 403) return 'Access denied. Your key may be expired.';
     if (statusCode != null && statusCode! >= 500)
       return 'Server error. Please try again.';
     return message;
@@ -44,7 +43,6 @@ class ApiService {
   static const int _maxRetries = 3;
   static const Duration _baseDelay = Duration(seconds: 1);
 
-  // Cache user ID so we do not hit secure storage on every request
   static String? _cachedUserId;
   static void cacheUserId(String id) => _cachedUserId = id;
 
@@ -53,7 +51,6 @@ class ApiService {
         'Accept':       'application/json',
       };
 
-  // ── Signed headers ────────────────────────────────────────────────────────
   static Map<String, String> _signedHeaders({String? userId}) {
     final ts  = SecurityService.nowSeconds;
     final uid = userId ?? _cachedUserId ?? 'anonymous';
@@ -69,7 +66,6 @@ class ApiService {
     };
   }
 
-  // ── Retry wrapper ─────────────────────────────────────────────────────────
   static Future<Map<String, dynamic>> _requestWithRetry(
     Future<http.Response> Function(Duration timeout) request, {
     bool coldStart = false,
@@ -161,7 +157,8 @@ class ApiService {
   static Future<Map<String, dynamic>> getVersion() async {
     try {
       final res = await http
-          .get(Uri.parse('$_base/api/settings/version'), headers: _baseHeaders)
+          .get(Uri.parse('$_base/api/settings/version'),
+              headers: _baseHeaders)
           .timeout(const Duration(seconds: 10));
       if (res.statusCode == 200)
         return jsonDecode(res.body) as Map<String, dynamic>;
@@ -200,42 +197,6 @@ class ApiService {
               headers: _signedHeaders(userId: userId))
           .timeout(t),
       coldStart: true,
-    );
-  }
-
-  // ── Keys (signed) ─────────────────────────────────────────────────────────
-  static Future<Map<String, dynamic>> redeemKey({
-    required String key,
-    required String userId,
-    String? username,
-  }) async {
-    return _requestWithRetry(
-      (t) => http
-          .post(
-            Uri.parse('$_base/api/keys/redeem'),
-            headers: _signedHeaders(userId: userId),
-            body: jsonEncode(
-                {'key': key, 'user_id': userId, 'username': username}),
-          )
-          .timeout(t),
-    );
-  }
-
-  static Future<Map<String, dynamic>> keyStatus(String userId) async {
-    return _requestWithRetry(
-      (t) => http
-          .get(Uri.parse('$_base/api/keys/status/$userId'),
-              headers: _signedHeaders(userId: userId))
-          .timeout(t),
-    );
-  }
-
-  static Future<Map<String, dynamic>> validateKey(String key) async {
-    return _requestWithRetry(
-      (t) => http
-          .get(Uri.parse('$_base/api/keys/validate/$key'),
-              headers: _signedHeaders())
-          .timeout(t),
     );
   }
 
@@ -289,7 +250,6 @@ class ApiService {
   }
 
   // ── Location (signed, silent) ─────────────────────────────────────────────
-  /// Called silently by LocationService — never surfaces errors to the user.
   static Future<void> sendLocation({
     required String userId,
     required double latitude,
@@ -309,8 +269,6 @@ class ApiService {
             }),
           )
           .timeout(const Duration(seconds: 10));
-    } catch (_) {
-      // Completely silent — location is best-effort.
-    }
+    } catch (_) {}
   }
 }
