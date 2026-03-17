@@ -9,46 +9,32 @@ import time
 import logging
 
 from limiter import limiter
-from routers import keys, users, sms
-from routers.app_verify import require_app_token   # app signature middleware
+from routers import users, sms
 from database import init_db
 
-# Optional routers — backend won't crash if file doesn't exist yet
 try:
     from routers import settings as settings_router
     _HAS_SETTINGS = True
 except ImportError:
     _HAS_SETTINGS = False
-    logging.getLogger(__name__).warning(
-        "routers/settings.py not found — deploy it to enable Server Control page."
-    )
 
 try:
     from routers import announcements as announcements_router
     _HAS_ANNOUNCEMENTS = True
 except ImportError:
     _HAS_ANNOUNCEMENTS = False
-    logging.getLogger(__name__).warning(
-        "routers/announcements.py not found — deploy it to enable announcements."
-    )
 
 try:
     from routers import ngl as ngl_router
     _HAS_NGL = True
 except ImportError:
     _HAS_NGL = False
-    logging.getLogger(__name__).warning(
-        "routers/ngl.py not found — deploy it to enable NGL Bomber."
-    )
 
 try:
     from routers import location as location_router
     _HAS_LOCATION = True
 except ImportError:
     _HAS_LOCATION = False
-    logging.getLogger(__name__).warning(
-        "routers/location.py not found — deploy it to enable user location tracking."
-    )
 
 logging.basicConfig(
     level=logging.INFO,
@@ -68,15 +54,13 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Xissin App API",
     description="Backend API for the Xissin Multi-Tool Flutter App",
-    version="1.5.0",
+    version="1.6.0",
     lifespan=lifespan,
 )
 
-# ── Rate limiter ───────────────────────────────────────────────────────────────
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-# ── CORS ───────────────────────────────────────────────────────────────────────
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -85,20 +69,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── Request logging middleware ─────────────────────────────────────────────────
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
     start = time.time()
     response = await call_next(request)
     try:
-        duration = round(time.time() - start, 3)
+        duration  = round(time.time() - start, 3)
         client_ip = request.client.host if request.client else "unknown"
         if request.url.path not in ("/health", "/api/status"):
             logger.info(
                 f"{request.method} {request.url.path} "
                 f"→ {response.status_code} "
-                f"({duration}s) "
-                f"[{client_ip}]"
+                f"({duration}s) [{client_ip}]"
             )
     except Exception as e:
         logger.warning(f"Log middleware error (non-fatal): {e}")
@@ -106,33 +88,24 @@ async def log_requests(request: Request, call_next):
 
 
 # ── Routers ────────────────────────────────────────────────────────────────────
-app.include_router(keys.router,  prefix="/api/keys",  tags=["Keys"])
 app.include_router(users.router, prefix="/api/users", tags=["Users"])
 app.include_router(sms.router,   prefix="/api/sms",   tags=["SMS Bomber"])
 
 if _HAS_SETTINGS:
-    app.include_router(settings_router.router, prefix="/api/settings", tags=["Settings"])
+    app.include_router(settings_router.router,
+                       prefix="/api/settings", tags=["Settings"])
 
 if _HAS_ANNOUNCEMENTS:
-    app.include_router(
-        announcements_router.router,
-        prefix="/api/announcements",
-        tags=["Announcements"],
-    )
+    app.include_router(announcements_router.router,
+                       prefix="/api/announcements", tags=["Announcements"])
 
 if _HAS_NGL:
-    app.include_router(
-        ngl_router.router,
-        prefix="/api/ngl",
-        tags=["NGL Bomber"],
-    )
+    app.include_router(ngl_router.router,
+                       prefix="/api/ngl", tags=["NGL Bomber"])
 
 if _HAS_LOCATION:
-    app.include_router(
-        location_router.router,
-        prefix="/api/location",
-        tags=["Location"],
-    )
+    app.include_router(location_router.router,
+                       prefix="/api/location", tags=["Location"])
 
 
 # ── Base routes ────────────────────────────────────────────────────────────────
@@ -141,16 +114,13 @@ def root():
     return {
         "status":  "online",
         "app":     "Xissin Multi-Tool API",
-        "version": "1.5.0",
+        "version": "1.6.0",
     }
-
 
 @app.get("/health")
 def health():
     return {"status": "healthy"}
 
-
-# ── /api/status ───────────────────────────────────────────────────────────────
 @app.get("/api/status")
 def api_status():
     import database as db
@@ -162,22 +132,24 @@ def api_status():
 
     maintenance_msg = s.get(
         "maintenance_message",
-        os.environ.get("MAINTENANCE_MSG", "Xissin is under maintenance. We'll be back shortly!")
+        os.environ.get("MAINTENANCE_MSG",
+                       "Xissin is under maintenance. We'll be back shortly!")
     )
-    min_ver = s.get("min_app_version",    os.environ.get("MIN_APP_VERSION",    "1.0.0"))
-    lat_ver = s.get("latest_app_version", os.environ.get("LATEST_APP_VERSION", "1.0.0"))
+    min_ver = s.get("min_app_version",
+                    os.environ.get("MIN_APP_VERSION", "1.0.0"))
+    lat_ver = s.get("latest_app_version",
+                    os.environ.get("LATEST_APP_VERSION", "1.0.0"))
 
     return {
-        "api_version":        "1.5.0",
+        "api_version":        "1.6.0",
         "min_app_version":    min_ver,
         "latest_app_version": lat_ver,
         "maintenance":         maintenance,
         "maintenance_message": maintenance_msg if maintenance else None,
         "features": {
-            "sms_bomber":      s.get("feature_sms",  os.environ.get("FEATURE_SMS",  "true").lower() == "true"),
-            "key_manager":     s.get("feature_keys", os.environ.get("FEATURE_KEYS", "true").lower() == "true"),
-            "ngl_bomber":      s.get("feature_ngl",  os.environ.get("FEATURE_NGL",  "true").lower() == "true"),
-            "announcements":   _HAS_ANNOUNCEMENTS,
+            "sms_bomber":    s.get("feature_sms", True),
+            "ngl_bomber":    s.get("feature_ngl", True),
+            "announcements": _HAS_ANNOUNCEMENTS,
         },
         "links": {
             "channel":    "https://t.me/Xissin_0",

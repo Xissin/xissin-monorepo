@@ -16,8 +16,6 @@ logger = logging.getLogger(__name__)
 
 PH_TZ = ZoneInfo("Asia/Manila")
 
-# ── Upstash credentials ───────────────────────────────────────────────────────
-
 def _url() -> str:
     v = os.environ.get("UPSTASH_REDIS_REST_URL", "").strip().rstrip("/")
     if not v:
@@ -31,7 +29,6 @@ def _token() -> str:
     return v
 
 # ── Redis keys ────────────────────────────────────────────────────────────────
-RK_KEYS          = "xissin:app:keys"
 RK_USERS         = "xissin:app:users"
 RK_BANNED        = "xissin:app:banned"
 RK_LOGS          = "xissin:app:logs"
@@ -44,14 +41,12 @@ RK_SMS_LOGS      = "xissin:app:sms_logs"
 RK_DEVICE_INFO   = "xissin:app:device_info"
 RK_LOCATIONS     = "xissin:app:locations"
 
-# ── Default server settings ───────────────────────────────────────────────────
 DEFAULT_SETTINGS = {
     "maintenance":         False,
     "maintenance_message": "Xissin is under maintenance. We'll be back shortly!",
     "min_app_version":     "1.0.0",
     "latest_app_version":  "1.0.0",
     "feature_sms":         True,
-    "feature_keys":        True,
     "feature_ngl":         True,
 }
 
@@ -60,33 +55,24 @@ MAX_HISTORY_PER_USER = 20
 MAX_LOGS             = 500
 MAX_SMS_LOGS         = 1000
 
-# ── In-memory cache + lock ────────────────────────────────────────────────────
-_cache: dict  = {}
-_cache_lock   = threading.Lock()
+_cache: dict      = {}
+_cache_lock       = threading.Lock()
 
-# ── Shared httpx client (connection pooling — avoids reconnect on every call) ─
-# Created lazily per-thread to avoid event loop issues at import time.
-_http_client: httpx.AsyncClient | None = None
-_http_client_lock = asyncio.Lock() if False else threading.Lock()  # placeholder
-
-def ph_now() -> datetime:
-    return datetime.now(PH_TZ).replace(tzinfo=None)
-
-# ── Connection settings ───────────────────────────────────────────────────────
-# Shorter timeout + more retries = resilient against Railway network flakiness
-_CONNECT_TIMEOUT = 5    # seconds to establish connection
-_READ_TIMEOUT    = 8    # seconds to wait for response
-_MAX_RETRIES     = 3    # total attempts per operation
-_RETRY_DELAYS    = [0.5, 1.5, 3.0]  # backoff between retries
+_CONNECT_TIMEOUT  = 5
+_READ_TIMEOUT     = 8
+_MAX_RETRIES      = 3
+_RETRY_DELAYS     = [0.5, 1.5, 3.0]
 
 def _timeout() -> httpx.Timeout:
     return httpx.Timeout(connect=_CONNECT_TIMEOUT, read=_READ_TIMEOUT,
                          write=_READ_TIMEOUT, pool=_CONNECT_TIMEOUT)
 
+def ph_now() -> datetime:
+    return datetime.now(PH_TZ).replace(tzinfo=None)
+
 # ── Low-level async Upstash helpers ──────────────────────────────────────────
 
 async def _redis_get_async(key: str):
-    """GET with retry — returns parsed JSON or None."""
     last_err = None
     for attempt in range(_MAX_RETRIES):
         try:
@@ -110,7 +96,6 @@ async def _redis_get_async(key: str):
 
 
 async def _redis_set_async(key: str, data) -> bool:
-    """SET with retry — fire-and-forget friendly."""
     last_err = None
     for attempt in range(_MAX_RETRIES):
         try:
@@ -138,7 +123,6 @@ async def _redis_set_async(key: str, data) -> bool:
 
 
 async def _redis_delete_async(key: str) -> bool:
-    """DEL with retry."""
     for attempt in range(_MAX_RETRIES):
         try:
             async with httpx.AsyncClient(timeout=_timeout()) as client:
@@ -165,7 +149,8 @@ def _get_bg_loop() -> asyncio.AbstractEventLoop:
     with _bg_loop_lock:
         if _bg_loop is None or not _bg_loop.is_running():
             loop = asyncio.new_event_loop()
-            t = threading.Thread(target=loop.run_forever, daemon=True, name="redis-bg-loop")
+            t = threading.Thread(target=loop.run_forever,
+                                 daemon=True, name="redis-bg-loop")
             t.start()
             _bg_loop = loop
     return _bg_loop
@@ -175,7 +160,6 @@ def _redis_get(key: str):
     loop   = _get_bg_loop()
     future = asyncio.run_coroutine_threadsafe(_redis_get_async(key), loop)
     try:
-        # Generous outer timeout: connect(5) + read(8) * retries(3) + backoff = ~45s max
         return future.result(timeout=45)
     except Exception as e:
         logger.error(f"_redis_get({key}) timeout/error: {e}")
@@ -189,7 +173,7 @@ def _redis_set(key: str, data) -> bool:
 
 
 def _redis_delete(key: str) -> bool:
-    loop = _get_bg_loop()
+    loop   = _get_bg_loop()
     future = asyncio.run_coroutine_threadsafe(_redis_delete_async(key), loop)
     try:
         return future.result(timeout=20)
@@ -197,95 +181,52 @@ def _redis_delete(key: str) -> bool:
         return False
 
 
-# ── Expired key pruning ───────────────────────────────────────────────────────
-
-def _prune_expired_keys(keys_dict: dict) -> dict:
-    now     = ph_now().isoformat()
-    pruned  = {}
-    removed = 0
-    for k, meta in keys_dict.items():
-        expires_at = meta.get("expires_at", "")
-        try:
-            if expires_at and expires_at < now:
-                removed += 1
-                continue
-        except Exception:
-            pass
-        pruned[k] = meta
-    if removed:
-        logger.info(f"🧹 Pruned {removed} expired key(s) from Redis")
-    return pruned
-
-
-# ── Public API ────────────────────────────────────────────────────────────────
+# ── Init ──────────────────────────────────────────────────────────────────────
 
 async def init_db():
     global _cache
 
     _get_bg_loop()
 
-    raw_keys   = await _redis_get_async(RK_KEYS)   or {}
-    clean_keys = _prune_expired_keys(raw_keys)
-    if len(clean_keys) != len(raw_keys):
-        await _redis_set_async(RK_KEYS, clean_keys)
+    raw_users    = await _redis_get_async(RK_USERS)    or {}
+    raw_banned   = await _redis_get_async(RK_BANNED)   or []
+    raw_logs     = await _redis_get_async(RK_LOGS)     or []
+    raw_sms      = await _redis_get_async(RK_SMS_STATS) or {}
+    raw_ngl      = await _redis_get_async(RK_NGL_STATS) or {}
+    raw_settings = await _redis_get_async(RK_SETTINGS) or {}
+    raw_anns     = await _redis_get_async(RK_ANNOUNCEMENTS) or []
+    raw_hist     = await _redis_get_async(RK_SMS_HISTORY) or {}
+    raw_sms_logs = await _redis_get_async(RK_SMS_LOGS)  or []
+    raw_devices  = await _redis_get_async(RK_DEVICE_INFO) or {}
+    raw_locs     = await _redis_get_async(RK_LOCATIONS) or {}
 
-    raw_banned = await _redis_get_async(RK_BANNED) or []
-    if isinstance(raw_banned, list):
-        banned_set = set(raw_banned)
-    elif isinstance(raw_banned, set):
-        banned_set = raw_banned
-    else:
-        banned_set = set()
+    banned_set = set(raw_banned) if isinstance(raw_banned, list) else set()
 
-    raw_settings    = await _redis_get_async(RK_SETTINGS) or {}
     merged_settings = {**DEFAULT_SETTINGS, **raw_settings}
 
     with _cache_lock:
-        _cache["keys"]          = clean_keys
-        _cache["users"]         = await _redis_get_async(RK_USERS)         or {}
-        _cache["banned"]        = banned_set
-        _cache["logs"]          = await _redis_get_async(RK_LOGS)          or []
-        _cache["sms_stats"]     = await _redis_get_async(RK_SMS_STATS)     or {}
-        _cache["ngl_stats"]     = await _redis_get_async(RK_NGL_STATS)     or {}
-        _cache["settings"]      = merged_settings
-        _cache["announcements"] = await _redis_get_async(RK_ANNOUNCEMENTS) or []
-        _cache["sms_history"]   = await _redis_get_async(RK_SMS_HISTORY)   or {}
-        _cache["sms_logs"]      = await _redis_get_async(RK_SMS_LOGS)      or []
-        _cache["device_info"]   = await _redis_get_async(RK_DEVICE_INFO)   or {}
-        _cache["locations"]     = await _redis_get_async(RK_LOCATIONS)     or {}
+        _cache = {
+            "users":         raw_users    if isinstance(raw_users, dict)   else {},
+            "banned":        banned_set,
+            "logs":          raw_logs     if isinstance(raw_logs, list)    else [],
+            "sms_stats":     raw_sms      if isinstance(raw_sms, dict)     else {},
+            "ngl_stats":     raw_ngl      if isinstance(raw_ngl, dict)     else {},
+            "settings":      merged_settings,
+            "announcements": raw_anns     if isinstance(raw_anns, list)    else [],
+            "sms_history":   raw_hist     if isinstance(raw_hist, dict)    else {},
+            "sms_logs":      raw_sms_logs if isinstance(raw_sms_logs, list) else [],
+            "device_info":   raw_devices  if isinstance(raw_devices, dict) else {},
+            "locations":     raw_locs     if isinstance(raw_locs, dict)    else {},
+        }
 
     logger.info(
-        f"✅ DB loaded — keys:{len(_cache['keys'])} "
+        f"✅ DB loaded — "
         f"users:{len(_cache['users'])} "
         f"banned:{len(_cache['banned'])} "
-        f"announcements:{len(_cache['announcements'])} "
         f"sms_logs:{len(_cache['sms_logs'])} "
         f"locations:{len(_cache['locations'])} "
         f"maintenance:{merged_settings.get('maintenance', False)}"
     )
-
-# ── Keys ──────────────────────────────────────────────────────────────────────
-
-def get_all_keys() -> dict:
-    with _cache_lock:
-        return dict(_cache.get("keys", {}))
-
-def get_key(key_str: str) -> dict | None:
-    with _cache_lock:
-        return _cache.get("keys", {}).get(key_str)
-
-def save_key(key_str: str, metadata: dict):
-    with _cache_lock:
-        _cache.setdefault("keys", {})[key_str] = metadata
-        _cache["keys"] = _prune_expired_keys(_cache["keys"])
-        snapshot = dict(_cache["keys"])
-    _redis_set(RK_KEYS, snapshot)
-
-def delete_key(key_str: str):
-    with _cache_lock:
-        _cache.setdefault("keys", {}).pop(key_str, None)
-        snapshot = dict(_cache["keys"])
-    _redis_set(RK_KEYS, snapshot)
 
 # ── Users ─────────────────────────────────────────────────────────────────────
 
@@ -432,7 +373,8 @@ def save_user_location(user_id: str, location: dict):
     uid = str(user_id)
     with _cache_lock:
         locs      = _cache.setdefault("locations", {})
-        locs[uid] = {**location, "user_id": uid, "updated_at": ph_now().isoformat()}
+        locs[uid] = {**location, "user_id": uid,
+                     "updated_at": ph_now().isoformat()}
         snapshot  = dict(locs)
     _redis_set(RK_LOCATIONS, snapshot)
 
@@ -492,4 +434,7 @@ def save_server_settings(data: dict):
     with _cache_lock:
         _cache["settings"] = merged
     _redis_set(RK_SETTINGS, merged)
-    logger.info(f"⚙️ Server settings updated: maintenance={merged.get('maintenance')}")
+    logger.info(
+        f"⚙️ Server settings updated: "
+        f"maintenance={merged.get('maintenance')}"
+    )
