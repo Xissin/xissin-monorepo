@@ -153,17 +153,29 @@ class ApiService {
     );
   }
 
-  // ── Version (public) ──────────────────────────────────────────────────────
+  // ── Version + APK URL (public) ────────────────────────────────────────────
+  /// Returns: min_app_version, latest_app_version, maintenance,
+  ///          maintenance_message, apk_download_url, apk_version_notes
   static Future<Map<String, dynamic>> getVersion() async {
     try {
       final res = await http
-          .get(Uri.parse('$_base/api/settings/version'),
-              headers: _baseHeaders)
+          .get(
+            Uri.parse('$_base/api/settings/version'),
+            headers: _baseHeaders,
+          )
           .timeout(const Duration(seconds: 10));
-      if (res.statusCode == 200)
+      if (res.statusCode == 200) {
         return jsonDecode(res.body) as Map<String, dynamic>;
+      }
     } catch (_) {}
-    return {'min_app_version': '1.0.0', 'latest_app_version': '1.0.0'};
+    return {
+      'min_app_version':    '1.0.0',
+      'latest_app_version': '1.0.0',
+      'maintenance':        false,
+      'maintenance_message': '',
+      'apk_download_url':   '',
+      'apk_version_notes':  '',
+    };
   }
 
   // ── Register user (signed) ────────────────────────────────────────────────

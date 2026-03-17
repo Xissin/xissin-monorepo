@@ -1,5 +1,5 @@
 """
-pages/7_Settings.py — Server control: maintenance, versioning, feature flags
+pages/7_Settings.py — Server control: maintenance, versioning, feature flags, APK hosting
 """
 
 import streamlit as st
@@ -11,8 +11,7 @@ inject_theme()
 
 auth_guard()
 
-page_header("⚙️", "Server Control", "MAINTENANCE · FEATURES · VERSIONING")
-pass
+page_header("⚙️", "Server Control", "MAINTENANCE · FEATURES · VERSIONING · APK UPDATE")
 
 # ── Fetch ──────────────────────────────────────────────────────────────────────
 @st.cache_data(ttl=30, show_spinner=False)
@@ -42,6 +41,7 @@ st.divider()
 
 col_left, col_right = st.columns([1, 1])
 
+# ── LEFT COLUMN ────────────────────────────────────────────────────────────────
 with col_left:
     st.markdown("### 🔧 App Features")
     with st.container(border=True):
@@ -54,8 +54,8 @@ with col_left:
             st.warning("⚠️ Users will see the maintenance screen when this is saved!")
 
         st.markdown("---")
-        feature_sms  = st.toggle("📱 SMS Bomber",  value=s.get("feature_sms",  True))
-        feature_ngl  = st.toggle("💬 NGL Bomber",  value=s.get("feature_ngl",  True))
+        feature_sms = st.toggle("📱 SMS Bomber", value=s.get("feature_sms", True))
+        feature_ngl = st.toggle("💬 NGL Bomber", value=s.get("feature_ngl", True))
 
     st.markdown("### 💬 Maintenance Message")
     with st.container(border=True):
@@ -66,6 +66,7 @@ with col_left:
             label_visibility="collapsed",
         )
 
+# ── RIGHT COLUMN ───────────────────────────────────────────────────────────────
 with col_right:
     st.markdown("### 📦 App Versioning")
     with st.container(border=True):
@@ -80,14 +81,61 @@ with col_right:
             help="The current latest version shown in the app.",
         )
 
+    st.markdown("### 🚀 APK Download (Auto-Update)")
+    with st.container(border=True):
+        st.caption(
+            "Paste any Google Drive share link — the backend will auto-convert it "
+            "to a direct download URL when saved."
+        )
+
+        raw_apk_url = st.text_input(
+            "Google Drive APK Link",
+            value=s.get("apk_download_url", ""),
+            placeholder="https://drive.google.com/file/d/YOUR_FILE_ID/view?usp=sharing",
+            help="Paste the link exactly as Google Drive gives it to you.",
+        )
+
+        apk_version_notes = st.text_area(
+            "Version Notes (shown in update dialog)",
+            value=s.get("apk_version_notes", ""),
+            height=90,
+            placeholder="• Bug fixes\n• New feature added\n• Performance improvements",
+            help="What changed in this version. Shown to users before they download.",
+        )
+
+        # Preview the converted URL
+        if raw_apk_url:
+            import re
+            def _preview_convert(url):
+                if "uc?export=download" in url:
+                    return url
+                m = re.search(r"/file/d/([a-zA-Z0-9_-]+)", url)
+                if not m:
+                    m = re.search(r"[?&]id=([a-zA-Z0-9_-]+)", url)
+                if m:
+                    return f"https://drive.google.com/uc?export=download&id={m.group(1)}"
+                return url
+
+            converted = _preview_convert(raw_apk_url)
+            if converted != raw_apk_url:
+                st.success(f"✅ Will be saved as direct download:\n`{converted}`")
+            else:
+                st.info(f"🔗 Already a direct download URL.")
+
     st.markdown("### 💾 Current Saved Values")
     with st.container(border=True):
+        saved_apk = s.get("apk_download_url", "-") or "-"
+        # Truncate long URLs for display
+        display_apk = (saved_apk[:55] + "…") if len(saved_apk) > 58 else saved_apk
+
         rows = [
-            ("maintenance",         "🔴 ON" if s.get("maintenance") else "🟢 OFF"),
-            ("min_app_version",     s.get("min_app_version", "-")),
-            ("latest_app_version",  s.get("latest_app_version", "-")),
-            ("feature_sms",         "✅ enabled" if s.get("feature_sms", True) else "❌ disabled"),
-            ("feature_ngl",         "✅ enabled" if s.get("feature_ngl", True) else "❌ disabled"),
+            ("maintenance",        "🔴 ON" if s.get("maintenance") else "🟢 OFF"),
+            ("min_app_version",    s.get("min_app_version", "-")),
+            ("latest_app_version", s.get("latest_app_version", "-")),
+            ("feature_sms",        "✅ enabled" if s.get("feature_sms", True) else "❌ disabled"),
+            ("feature_ngl",        "✅ enabled" if s.get("feature_ngl", True) else "❌ disabled"),
+            ("apk_download_url",   display_apk),
+            ("apk_version_notes",  (s.get("apk_version_notes") or "-")[:40]),
         ]
         for key, val in rows:
             st.markdown(f"""
@@ -112,6 +160,8 @@ with col_save:
                 "latest_app_version":  latest_ver.strip() or "1.0.0",
                 "feature_sms":         feature_sms,
                 "feature_ngl":         feature_ngl,
+                "apk_download_url":    raw_apk_url.strip(),
+                "apk_version_notes":   apk_version_notes.strip(),
             }
             post("/api/settings/", payload)
             st.success("✓ Settings saved successfully!")
