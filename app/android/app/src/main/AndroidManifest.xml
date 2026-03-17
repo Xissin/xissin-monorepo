@@ -9,16 +9,34 @@
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
 
+    <!-- APK download & install permissions -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"/>
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28"/>
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
+
     <application
         android:label="Xissin"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
-        android:enableOnBackInvokedCallback="true">
+        android:enableOnBackInvokedCallback="true"
+        android:requestLegacyExternalStorage="true">
 
         <!-- ── AdMob App ID ─────────────────────────────────────────── -->
         <meta-data
             android:name="com.google.android.gms.ads.APPLICATION_ID"
             android:value="ca-app-pub-7516216593424837~8331813632"/>
+
+        <!-- ── FileProvider — needed so Android can install the APK ── -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="com.xissin.app.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths"/>
+        </provider>
 
         <activity
             android:name=".MainActivity"
@@ -63,6 +81,10 @@
         <intent>
             <action android:name="android.intent.action.PROCESS_TEXT"/>
             <data android:mimeType="text/plain"/>
+        </intent>
+        <!-- Required for APK install intent -->
+        <intent>
+            <action android:name="android.intent.action.INSTALL_PACKAGE"/>
         </intent>
         <!-- Required for Google Play Billing -->
         <package android:name="com.android.vending"/>
