@@ -9,6 +9,7 @@ import '../services/api_service.dart';
 import '../services/theme_service.dart';
 import '../services/location_service.dart';
 import '../services/ad_service.dart';
+import '../services/payment_service.dart';
 import '../widgets/glass_neumorphic_card.dart';
 import '../widgets/shimmer_skeleton.dart';
 import '../widgets/staggered_grid.dart';
@@ -71,11 +72,11 @@ class _HomeScreenState extends State<HomeScreen> {
     HapticFeedback.lightImpact();
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        behavior:         SnackBarBehavior.floating,
-        backgroundColor:  AppColors.surface,
+        behavior:        SnackBarBehavior.floating,
+        backgroundColor: AppColors.surface,
         shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(AppRadius.md)),
-        margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+        margin:   const EdgeInsets.fromLTRB(16, 0, 16, 16),
         duration: const Duration(seconds: 2),
         content: Row(children: [
           const Icon(Icons.construction_rounded,
@@ -89,6 +90,68 @@ class _HomeScreenState extends State<HomeScreen> {
         ]),
       ),
     );
+  }
+
+  // ── Remove Ads purchase flow ───────────────────────────────────────────────
+
+  Future<void> _onRemoveAdsTap() async {
+    HapticFeedback.mediumImpact();
+    final adService = AdService.instance;
+
+    // Already premium — show status
+    if (adService.adsRemoved) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          behavior:        SnackBarBehavior.floating,
+          backgroundColor: const Color(0xFF1A2740),
+          shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(AppRadius.md)),
+          margin:   const EdgeInsets.fromLTRB(16, 0, 16, 16),
+          duration: const Duration(seconds: 3),
+          content: const Row(children: [
+            Icon(Icons.star_rounded, color: Color(0xFFFFD700), size: 18),
+            SizedBox(width: 10),
+            Text(
+              '✨ Ads already removed! Thank you!',
+              style: TextStyle(
+                  color: Colors.white, fontWeight: FontWeight.w600),
+            ),
+          ]),
+        ),
+      );
+      return;
+    }
+
+    // Show purchase dialog
+    final purchased = await PaymentService.showRemoveAdsDialog(
+      context: context,
+      userId:  widget.userId,
+    );
+
+    if (purchased == true && mounted) {
+      await adService.onPurchaseComplete(widget.userId);
+      setState(() {}); // Refresh UI to show premium badge
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          behavior:        SnackBarBehavior.floating,
+          backgroundColor: const Color(0xFF1A2740),
+          shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(AppRadius.md)),
+          margin:   const EdgeInsets.fromLTRB(16, 0, 16, 16),
+          duration: const Duration(seconds: 4),
+          content: const Row(children: [
+            Icon(Icons.check_circle_rounded,
+                color: Color(0xFF7EE7C1), size: 18),
+            SizedBox(width: 10),
+            Text(
+              '🎉 Ads removed! Enjoy Xissin!',
+              style: TextStyle(
+                  color: Colors.white, fontWeight: FontWeight.w600),
+            ),
+          ]),
+        ),
+      );
+    }
   }
 
   // ── Slide page transition helper ───────────────────────────────────────────
@@ -115,6 +178,8 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget _buildBannerAd() {
     return Consumer<AdService>(
       builder: (_, adService, __) {
+        // Hide banner if user is premium
+        if (adService.adsRemoved) return const SizedBox.shrink();
         if (!adService.bannerReady || adService.bannerAd == null) {
           return const SizedBox.shrink();
         }
@@ -137,8 +202,8 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget build(BuildContext context) {
     final c = context.c;
 
-    final dismissed  = <String>{};
-    final visible    = _announcements
+    final dismissed = <String>{};
+    final visible   = _announcements
         .where((a) => !dismissed.contains(a['id']?.toString()))
         .toList();
 
@@ -177,6 +242,103 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ),
 
+              // ── Remove Ads banner (shown only to non-premium users) ────────
+              SliverToBoxAdapter(
+                child: Consumer<AdService>(
+                  builder: (_, adService, __) {
+                    if (adService.adsRemoved) {
+                      // Premium badge
+                      return Padding(
+                        padding: const EdgeInsets.fromLTRB(22, 16, 22, 0),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 14, vertical: 8),
+                          decoration: BoxDecoration(
+                            gradient: LinearGradient(
+                              colors: [
+                                const Color(0xFFFFD700).withOpacity(0.12),
+                                const Color(0xFFFF9F43).withOpacity(0.12),
+                              ],
+                            ),
+                            borderRadius: BorderRadius.circular(AppRadius.md),
+                            border: Border.all(
+                                color: const Color(0xFFFFD700).withOpacity(0.30)),
+                          ),
+                          child: const Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(Icons.star_rounded,
+                                  color: Color(0xFFFFD700), size: 16),
+                              SizedBox(width: 8),
+                              Text(
+                                '✨  Ad-Free  —  Thank you for supporting Xissin!',
+                                style: TextStyle(
+                                  color:      Color(0xFFFFD700),
+                                  fontSize:   12,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ).animate().fadeIn(duration: 400.ms),
+                      );
+                    }
+
+                    // Remove Ads promo banner
+                    return Padding(
+                      padding: const EdgeInsets.fromLTRB(22, 16, 22, 0),
+                      child: GestureDetector(
+                        onTap: _onRemoveAdsTap,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 14, vertical: 10),
+                          decoration: BoxDecoration(
+                            gradient: LinearGradient(
+                              colors: [
+                                const Color(0xFF6C63FF).withOpacity(0.15),
+                                const Color(0xFFFF6B9D).withOpacity(0.10),
+                              ],
+                            ),
+                            borderRadius: BorderRadius.circular(AppRadius.md),
+                            border: Border.all(
+                                color: const Color(0xFF6C63FF).withOpacity(0.35)),
+                          ),
+                          child: Row(
+                            children: [
+                              const Icon(Icons.block_rounded,
+                                  color: Color(0xFF6C63FF), size: 18),
+                              const SizedBox(width: 10),
+                              const Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      'Remove Ads — ₱99 Lifetime',
+                                      style: TextStyle(
+                                        color:      Color(0xFF6C63FF),
+                                        fontSize:   13,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                    Text(
+                                      'Pay once via GCash · No ads forever',
+                                      style: TextStyle(
+                                          color: Colors.white38, fontSize: 11),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              const Icon(Icons.chevron_right_rounded,
+                                  color: Color(0xFF6C63FF), size: 20),
+                            ],
+                          ),
+                        ),
+                      ).animate(delay: 200.ms).fadeIn(duration: 400.ms),
+                    );
+                  },
+                ),
+              ),
+
               // ── Section heading ────────────────────────────────────────────
               SliverToBoxAdapter(
                 child: Padding(
@@ -196,7 +358,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         padding: const EdgeInsets.symmetric(
                             horizontal: 8, vertical: 3),
                         decoration: BoxDecoration(
-                          color: c.primary.withOpacity(0.15),
+                          color:        c.primary.withOpacity(0.15),
                           borderRadius: BorderRadius.circular(AppRadius.full),
                         ),
                         child: Text(
@@ -290,6 +452,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Widget _buildHeader(XissinColors c) {
     final themeService = context.watch<ThemeService>();
+    final adService    = context.watch<AdService>();
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(22, 24, 22, 0),
@@ -313,9 +476,44 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ),
               ),
-              Text(
-                'Multi-Tool Suite',
-                style: TextStyle(color: c.textSecondary, fontSize: 12),
+              Row(
+                children: [
+                  Text(
+                    'Multi-Tool Suite',
+                    style: TextStyle(color: c.textSecondary, fontSize: 12),
+                  ),
+                  // Premium badge next to subtitle
+                  if (adService.adsRemoved) ...[
+                    const SizedBox(width: 6),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 6, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFFFD700).withOpacity(0.15),
+                        borderRadius: BorderRadius.circular(6),
+                        border: Border.all(
+                            color: const Color(0xFFFFD700).withOpacity(0.40)),
+                      ),
+                      child: const Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.star_rounded,
+                              color: Color(0xFFFFD700), size: 9),
+                          SizedBox(width: 3),
+                          Text(
+                            'PRO',
+                            style: TextStyle(
+                              color:         Color(0xFFFFD700),
+                              fontSize:      9,
+                              fontWeight:    FontWeight.bold,
+                              letterSpacing: 0.5,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ],
               ),
             ],
           )
@@ -324,10 +522,34 @@ class _HomeScreenState extends State<HomeScreen> {
               .slideX(begin: -0.2, end: 0, duration: 500.ms),
           Row(
             children: [
+              // Remove Ads icon button in header (for non-premium users)
+              if (!adService.adsRemoved)
+                GestureDetector(
+                  onTap: _onRemoveAdsTap,
+                  child: Container(
+                    width: 40, height: 40,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF6C63FF).withOpacity(0.12),
+                      borderRadius: BorderRadius.circular(AppRadius.md),
+                      border: Border.all(
+                        color: const Color(0xFF6C63FF).withOpacity(0.30),
+                        width: 1,
+                      ),
+                    ),
+                    child: const Icon(Icons.block_rounded,
+                        size: 18, color: Color(0xFF6C63FF)),
+                  ),
+                )
+                    .animate(delay: 50.ms)
+                    .fadeIn(duration: 500.ms)
+                    .scale(
+                        begin: const Offset(0.8, 0.8), duration: 400.ms),
+              const SizedBox(width: 8),
               _TelegramButton(c: c)
                   .animate(delay: 100.ms)
                   .fadeIn(duration: 500.ms)
-                  .scale(begin: const Offset(0.8, 0.8), duration: 400.ms),
+                  .scale(
+                      begin: const Offset(0.8, 0.8), duration: 400.ms),
               const SizedBox(width: 8),
               HapticIconButton(
                 icon: themeService.isDark

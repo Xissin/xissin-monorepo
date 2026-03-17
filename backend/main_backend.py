@@ -36,6 +36,12 @@ try:
 except ImportError:
     _HAS_LOCATION = False
 
+try:
+    from routers import payments as payments_router
+    _HAS_PAYMENTS = True
+except ImportError:
+    _HAS_PAYMENTS = False
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s"
@@ -54,7 +60,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Xissin App API",
     description="Backend API for the Xissin Multi-Tool Flutter App",
-    version="1.6.0",
+    version="1.7.0",
     lifespan=lifespan,
 )
 
@@ -107,6 +113,10 @@ if _HAS_LOCATION:
     app.include_router(location_router.router,
                        prefix="/api/location", tags=["Location"])
 
+if _HAS_PAYMENTS:
+    app.include_router(payments_router.router,
+                       prefix="/api/payments", tags=["Payments"])
+
 
 # ── Base routes ────────────────────────────────────────────────────────────────
 @app.get("/")
@@ -114,7 +124,7 @@ def root():
     return {
         "status":  "online",
         "app":     "Xissin Multi-Tool API",
-        "version": "1.6.0",
+        "version": "1.7.0",
     }
 
 @app.get("/health")
@@ -141,7 +151,7 @@ def api_status():
                     os.environ.get("LATEST_APP_VERSION", "1.0.0"))
 
     return {
-        "api_version":        "1.6.0",
+        "api_version":        "1.7.0",
         "min_app_version":    min_ver,
         "latest_app_version": lat_ver,
         "maintenance":         maintenance,
@@ -150,6 +160,7 @@ def api_status():
             "sms_bomber":    s.get("feature_sms", True),
             "ngl_bomber":    s.get("feature_ngl", True),
             "announcements": _HAS_ANNOUNCEMENTS,
+            "remove_ads":    _HAS_PAYMENTS,
         },
         "links": {
             "channel":    "https://t.me/Xissin_0",

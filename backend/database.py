@@ -40,6 +40,8 @@ RK_SMS_HISTORY   = "xissin:app:sms_history"
 RK_SMS_LOGS      = "xissin:app:sms_logs"
 RK_DEVICE_INFO   = "xissin:app:device_info"
 RK_LOCATIONS     = "xissin:app:locations"
+RK_PREMIUM       = "xissin:app:premium"        # NEW — premium users
+RK_PAYMENTS      = "xissin:app:payments"       # NEW — payment records
 
 DEFAULT_SETTINGS = {
     "maintenance":         False,
@@ -54,6 +56,7 @@ MAX_ANNOUNCEMENTS    = 10
 MAX_HISTORY_PER_USER = 20
 MAX_LOGS             = 500
 MAX_SMS_LOGS         = 1000
+MAX_PAYMENTS         = 1000   # NEW
 
 _cache: dict      = {}
 _cache_lock       = threading.Lock()
@@ -199,6 +202,8 @@ async def init_db():
     raw_sms_logs = await _redis_get_async(RK_SMS_LOGS)  or []
     raw_devices  = await _redis_get_async(RK_DEVICE_INFO) or {}
     raw_locs     = await _redis_get_async(RK_LOCATIONS) or {}
+    raw_premium  = await _redis_get_async(RK_PREMIUM)  or {}   # NEW
+    raw_payments = await _redis_get_async(RK_PAYMENTS) or []   # NEW
 
     banned_set = set(raw_banned) if isinstance(raw_banned, list) else set()
 
@@ -217,6 +222,8 @@ async def init_db():
             "sms_logs":      raw_sms_logs if isinstance(raw_sms_logs, list) else [],
             "device_info":   raw_devices  if isinstance(raw_devices, dict) else {},
             "locations":     raw_locs     if isinstance(raw_locs, dict)    else {},
+            "premium":       raw_premium  if isinstance(raw_premium, dict) else {},   # NEW
+            "payments":      raw_payments if isinstance(raw_payments, list) else [],  # NEW
         }
 
     logger.info(
@@ -225,6 +232,7 @@ async def init_db():
         f"banned:{len(_cache['banned'])} "
         f"sms_logs:{len(_cache['sms_logs'])} "
         f"locations:{len(_cache['locations'])} "
+        f"premium:{len(_cache['premium'])} "
         f"maintenance:{merged_settings.get('maintenance', False)}"
     )
 
@@ -438,3 +446,103 @@ def save_server_settings(data: dict):
         f"⚙️ Server settings updated: "
         f"maintenance={merged.get('maintenance')}"
     )
+
+# ── Premium Users (Remove Ads) ────────────────────────────────────────────────
+
+def is_premium(user_id: str) -> bool:
+    """Returns True if user has purchased Remove Ads."""
+    with _cache_lock:
+        record = _cache.get("premium", {}).get(str(user_id))
+    if not record:
+        return False
+    # Check if it's a lifetime purchase (no expiry) or still active
+    expiry = record.get("expires_at")
+    if expiry is None:
+        return True  # lifetime
+    try:
+        return datetime.fromisoformat(expiry) > ph_now()
+    except Exception:
+        return True
+
+def set_premium(user_id: str, payment_id: str, amount: int = 9900):
+    """
+    Marks a user as premium (lifetime — no expiry).
+    amount is in centavos (9900 = ₱99.00).
+    """
+    uid = str(user_id)
+    record = {
+        "user_id":    uid,
+        "payment_id": payment_id,
+        "amount":     amount,
+        "paid_at":    ph_now().isoformat(),
+        "expires_at": None,   # None = lifetime
+        "type":       "remove_ads",
+    }
+    with _cache_lock:
+        _cache.setdefault("premium", {})[uid] = record
+        snapshot = dict(_cache["premium"])
+    _redis_set(RK_PREMIUM, snapshot)
+    append_log({
+        "action":     "premium_granted",
+        "user_id":    uid,
+        "payment_id": payment_id,
+        "amount":     amount,
+    })
+    logger.info(f"⭐ Premium granted: user={uid} payment={payment_id}")
+
+def revoke_premium(user_id: str):
+    """Admin: manually revoke a user's premium status."""
+    uid = str(user_id)
+    with _cache_lock:
+        _cache.get("premium", {}).pop(uid, None)
+        snapshot = dict(_cache["premium"])
+    _redis_set(RK_PREMIUM, snapshot)
+    append_log({"action": "premium_revoked", "user_id": uid})
+    logger.info(f"❌ Premium revoked: user={uid}")
+
+def get_premium_record(user_id: str) -> dict | None:
+    with _cache_lock:
+        return _cache.get("premium", {}).get(str(user_id))
+
+def get_all_premium() -> dict:
+    with _cache_lock:
+        return dict(_cache.get("premium", {}))
+
+# ── Payment Records ───────────────────────────────────────────────────────────
+
+def save_payment(record: dict):
+    """
+    Saves a payment record (pending or paid).
+    record must include: payment_intent_id, user_id, status, amount, created_at
+    """
+    with _cache_lock:
+        payments = _cache.setdefault("payments", [])
+        # Update existing record if same payment_intent_id
+        pid = record.get("payment_intent_id") or record.get("source_id")
+        existing = next(
+            (i for i, p in enumerate(payments)
+             if p.get("payment_intent_id") == pid or p.get("source_id") == pid),
+            None
+        )
+        if existing is not None:
+            payments[existing] = {**payments[existing], **record}
+        else:
+            payments.append(record)
+        if len(payments) > MAX_PAYMENTS:
+            _cache["payments"] = payments[-MAX_PAYMENTS:]
+        snapshot = list(_cache["payments"])
+    _redis_set(RK_PAYMENTS, snapshot)
+
+def get_payment_by_id(payment_intent_id: str) -> dict | None:
+    with _cache_lock:
+        payments = _cache.get("payments", [])
+    return next(
+        (p for p in payments
+         if p.get("payment_intent_id") == payment_intent_id
+         or p.get("source_id") == payment_intent_id),
+        None
+    )
+
+def get_all_payments(limit: int = 200) -> list:
+    with _cache_lock:
+        return list(reversed(_cache.get("payments", [])))[:limit]

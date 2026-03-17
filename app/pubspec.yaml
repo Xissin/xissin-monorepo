@@ -17,7 +17,7 @@ dependencies:
 
   # ── Device / Storage ────────────────────────────────────────────────────────
   device_info_plus:         ^10.1.0
-  shared_preferences:       ^2.2.3
+  shared_preferences: ^2.5.4
   flutter_secure_storage:   ^9.2.2
   package_info_plus:        ^8.1.3
 
@@ -45,6 +45,7 @@ dependencies:
   open_file: ^3.5.11
   permission_handler: ^12.0.1
   path_provider: ^2.1.5
+  cached_network_image: ^3.4.1
 
 dev_dependencies:
   flutter_test:
