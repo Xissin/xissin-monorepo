@@ -1,35 +1,91 @@
-# Flutter/Dart
-.dart_tool/
-.flutter-plugins
-.flutter-plugins-dependencies
-.packages
-.pub-cache/
-.pub/
+# ============================================================
+#  XISSIN MONOREPO — .gitignore
+#  Prevents secrets, build artifacts, and junk from being
+#  committed to the public GitHub repository.
+# ============================================================
+
+# ── Environment / Secrets ────────────────────────────────────
+.env
+.env.*
+*.env
+.env.local
+.env.production
+.env.development
+secrets.json
+secrets.yaml
+secrets.yml
+
+# ── Python ───────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
 build/
+.eggs/
+*.egg
+pip-log.txt
+.tox/
+.cache/
+*.coverage
+.coverage
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ── Virtual Environments ─────────────────────────────────────
+venv/
+env/
+ENV/
+.venv/
+.virtualenv/
+
+# ── Flutter / Dart ───────────────────────────────────────────
+app/build/
+app/.dart_tool/
+app/.flutter-plugins
+app/.flutter-plugins-dependencies
+app/.packages
+app/pubspec.lock
+*.g.dart
+*.freezed.dart
+app/android/.gradle/
+app/android/local.properties
+app/android/key.properties
+app/android/app/google-services.json
+app/ios/Flutter/flutter_export_environment.sh
+app/ios/Pods/
+app/ios/.symlinks/
+app/.idea/
 *.iml
 
-# Android
-android/local.properties
-android/.gradle/
-android/key.properties
+# ── Admin (Streamlit) ─────────────────────────────────────────
+admin/.streamlit/secrets.toml
 
-# iOS
-ios/.symlinks/
-ios/Flutter/App.framework
-ios/Flutter/Flutter.framework
-ios/Flutter/Flutter.podspec
-ios/Flutter/Generated.xcconfig
-ios/Flutter/app.flx
-ios/Flutter/app.zip
-ios/Flutter/flutter_assets/
-ios/Flutter/flutter_export_environment.sh
-ios/ServiceDefinitions.json
-ios/Runner/GeneratedPluginRegistrant.*
-*.xcworkspace
+# ── APK / Build outputs ───────────────────────────────────────
+*.apk
+*.aab
+*.ipa
+*.dSYM.zip
+*.dSYM
 
-# IDEs
+# ── IDE / OS ─────────────────────────────────────────────────
 .idea/
-*.iml
 .vscode/
 *.swp
-*.DS_Store
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Logs ─────────────────────────────────────────────────────
+*.log
+logs/
+npm-debug.log*
+
+# ── Node ─────────────────────────────────────────────────────
+node_modules/
