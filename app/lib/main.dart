@@ -7,13 +7,9 @@ import 'package:provider/provider.dart';
 import 'theme/app_theme.dart';
 import 'services/theme_service.dart';
 import 'services/crash_reporter.dart';
-import 'services/security_service.dart';
 import 'services/ad_service.dart';
 import 'screens/splash_screen.dart';
 
-// ── FIX: Everything must run INSIDE runZonedGuarded so that
-//         WidgetsFlutterBinding.ensureInitialized() and runApp()
-//         share the same zone — avoids the "Zone mismatch" assertion.
 void main() {
   runZonedGuarded(
     () async {
@@ -34,10 +30,7 @@ void main() {
       await SystemChrome.setPreferredOrientations(
           [DeviceOrientation.portraitUp]);
 
-      // ── 6. Security checks (non-blocking) ────────────────────────────────
-      unawaited(SecurityService.runChecks());
-
-      // ── 7. Launch ─────────────────────────────────────────────────────────
+      // ── 6. Launch ─────────────────────────────────────────────────────────
       runApp(XissinApp(themeService: themeService));
     },
     (error, stack) {
