@@ -43,9 +43,16 @@ class _HomeScreenState extends State<HomeScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       LocationService.tryCollectAndSend(widget.userId);
     });
+    // Full AdService init now that we have userId — verifies premium + loads interstitial
+    AdService.instance.init(userId: widget.userId).then((_) {
+      // Re-init banner after premium check completes (in case user is premium)
+      if (mounted && !AdService.instance.adsRemoved && !_bannerReady) {
+        _initBanner();
+      }
+    });
     // Listen for premium state changes (e.g. user pays while on screen)
     AdService.instance.addListener(_onAdServiceChanged);
-    // Load our own banner ad
+    // Load our own banner ad (may load before premium check — will be disposed if premium)
     _initBanner();
   }
 

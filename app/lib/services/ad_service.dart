@@ -44,22 +44,15 @@ class AdService extends ChangeNotifier {
 
   // ── Lifecycle ────────────────────────────────────────────────────────────────
 
-  Future<void> init({String? userId}) async {
+  /// Step 1 — called from main(), no userId needed yet.
+  Future<void> initSdkOnly() async {
     if (_initialized) return;
     _initialized = true;
 
-    // 1. Load cached premium state immediately (no network wait)
     await _loadCachedPremium();
-
-    // 2. Verify with backend in background
-    if (userId != null) {
-      _verifyPremiumInBackground(userId);
-    }
-
-    if (_adsRemoved) return; // Don't init ads SDK if premium
+    if (_adsRemoved) return;
 
     await MobileAds.instance.initialize();
-
     await MobileAds.instance.updateRequestConfiguration(
       RequestConfiguration(
         tagForChildDirectedTreatment: TagForChildDirectedTreatment.unspecified,
@@ -67,8 +60,21 @@ class AdService extends ChangeNotifier {
         maxAdContentRating:           MaxAdContentRating.t,
       ),
     );
+    // Interstitial and premium check happen in init(userId) from HomeScreen
+  }
 
-    _loadInterstitial();
+  /// Step 2 — called from HomeScreen.initState() once userId is known.
+  /// Safe to call multiple times.
+  Future<void> init({String? userId}) async {
+    if (!_initialized) await initSdkOnly();
+
+    if (userId != null && !_adsRemoved) {
+      _verifyPremiumInBackground(userId);
+    }
+
+    if (!_adsRemoved && !_interstitialReady && _interstitialAd == null) {
+      _loadInterstitial();
+    }
   }
 
   // ── Premium state management ─────────────────────────────────────────────────

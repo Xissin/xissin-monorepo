@@ -23,8 +23,10 @@ void main() {
       final themeService = ThemeService();
       await themeService.init();
 
-      // ── 4. AdMob ──────────────────────────────────────────────────────────
-      await AdService.instance.init();
+      // ── 4. AdMob SDK init (userId not known yet — banner load happens in HomeScreen) ──
+      // We only initialize the MobileAds SDK here. AdService.init(userId) is
+      // called in HomeScreen.initState() once the userId is available.
+      await AdService.instance.initSdkOnly();
 
       // ── 5. Orientation lock ───────────────────────────────────────────────
       await SystemChrome.setPreferredOrientations(

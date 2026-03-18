@@ -1,12 +1,12 @@
 @echo off
 setlocal enabledelayedexpansion
-title Xissin App Updater v2.1
+title Xissin App Updater v2.2
 color 0A
 
 :: ============================================================
-::  XISSIN APP UPDATER v2.1
+::  XISSIN APP UPDATER v2.2
 ::  Full release flow — pubspec → GitHub → Drive → Admin Panel
-::  v2.1: Auto-computes APK SHA-256 checksum for security
+::  v2.2: Also updates Railway env vars automatically
 :: ============================================================
 
 set "PUBSPEC=C:\Users\Nathaniel\Desktop\xissin-monorepo\app\pubspec.yaml"
@@ -29,7 +29,7 @@ for /f "tokens=1,2 delims=+" %%a in ("!CURRENT_VERSION_FULL!") do (
 cls
 echo.
 echo  +====================================================+
-echo  ^|          XISSIN APP UPDATER v2.1                  ^|
+echo  ^|          XISSIN APP UPDATER v2.2                  ^|
 echo  +====================================================+
 echo.
 echo  Current App Version : v!CURRENT_VERSION!
@@ -50,6 +50,9 @@ echo       - min_app_version  (force update, optional)
 echo       - APK Download URL (paste Drive link)
 echo       - APK SHA-256      (auto-filled for you)
 echo       - Version Notes    (shown in update dialog)
+echo  [6G] Update Railway env vars  ^<-- NEW
+echo       - LATEST_APP_VERSION
+echo       - LATEST_APK_SHA256
 echo  ====================================================
 echo.
 pause
@@ -238,7 +241,7 @@ echo  ^|  2. Go to your GitHub Releases page               ^|
 echo  ^|  3. Find release v!NEW_VERSION!                   ^|
 echo  ^|  4. Download the APK file to:                     ^|
 echo  ^|     D:\Download\                                  ^|
-echo  ^|  5. Name it:  xissin_v!NEW_VERSION!.apk           ^|
+echo  ^|  5. The file will be named: Xissin-v!NEW_VERSION!.apk  ^|
 echo  +----------------------------------------------------+
 echo.
 echo  Opening GitHub Releases page...
@@ -269,7 +272,7 @@ echo  +====================================================+
 echo.
 
 :: Try the expected filename first
-set "APK_PATH=!APK_DOWNLOAD_DIR!\xissin_v!NEW_VERSION!.apk"
+set "APK_PATH=!APK_DOWNLOAD_DIR!\Xissin-v!NEW_VERSION!.apk"
 set "APK_FOUND=0"
 
 if exist "!APK_PATH!" (
@@ -556,6 +559,37 @@ if /i "!DONE6F!" equ "N" (
 echo  Please type Y or N only.
 goto STEP6F_CONFIRM
 
+:: ── 6G: Update Railway env vars ─────────────────────────────
+:STEP6G
+echo.
+echo  --------------------------------------------------
+echo  [6G] UPDATE RAILWAY ENV VARS  ^<-- KEEPS FALLBACK IN SYNC
+echo  --------------------------------------------------
+echo  Update these 2 variables in Railway so the backend
+echo  fallback also uses the new version:
+echo.
+echo  Go to: railway.app --^> your backend --^> Variables
+echo.
+echo  1. LATEST_APP_VERSION  --^> set to: !NEW_VERSION!
+echo  2. LATEST_APK_SHA256   --^> set to: !APK_SHA256!
+echo.
+echo  (SHA-256 is still in your clipboard from Step 4b)
+echo.
+echo  Opening Railway in browser...
+start "" "https://railway.app"
+echo.
+:STEP6G_CONFIRM
+set /p "DONE6G=  Done updating Railway env vars? (Y/N): "
+if /i "!DONE6G!" equ "Y" goto DONE
+if /i "!DONE6G!" equ "N" (
+    echo.
+    echo  Please update them before continuing.
+    start "" "https://railway.app"
+    goto STEP6G_CONFIRM
+)
+echo  Please type Y or N only.
+goto STEP6G_CONFIRM
+
 :: ============================================================
 :DONE
 cls
@@ -572,6 +606,7 @@ echo  [3] GitHub Tag     --^> v!NEW_VERSION! created
 echo  [4] APK            --^> Downloaded + SHA-256 computed
 echo  [5] Google Drive   --^> APK uploaded, link saved
 echo  [6] Admin Panel    --^> All 5 fields updated + saved
+echo  [6G] Railway       --^> LATEST_APP_VERSION + LATEST_APK_SHA256 updated
 echo       latest_app_version   = !NEW_VERSION!
 if /i "!FORCE!" equ "Y" (
 echo       min_app_version      = !NEW_VERSION!  [FORCE UPDATE ON]
