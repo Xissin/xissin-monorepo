@@ -106,8 +106,6 @@ async def _paymongo_get(endpoint: str) -> dict:
     return resp.json()
 
 
-# ── 1. Create QRPh Payment Source ─────────────────────────────────────────────
-
 # ── 0. Public product info endpoint (app fetches this on dialog open) ─────────
 
 @router.get("/remove-ads-info")
@@ -144,12 +142,13 @@ async def create_payment(req: CreatePaymentRequest):
     if db.is_premium(user_id):
         return {"already_premium": True}
 
-    REMOVE_ADS_PRICE = _get_remove_ads_price()
+    # ✅ FIX: call the function, don't use undefined bare variable
+    price = _get_remove_ads_price()
 
     payload = {
         "data": {
             "attributes": {
-                "amount":   REMOVE_ADS_PRICE,
+                "amount":   price,
                 "currency": "PHP",
                 "type":     "qrph",
                 "redirect": {
@@ -174,14 +173,13 @@ async def create_payment(req: CreatePaymentRequest):
     source_id   = source.get("id", "")
     attributes  = source.get("attributes", {})
     qr_image    = attributes.get("qr_code_image", "") or attributes.get("qr_image", "")
-    # Some PayMongo responses embed QR in redirect URL instead
     redirect_url = attributes.get("redirect", {}).get("checkout_url", "")
 
     # Save as pending payment
     db.save_payment({
         "source_id":   source_id,
         "user_id":     user_id,
-        "amount":      REMOVE_ADS_PRICE,  # local var from _get_remove_ads_price()
+        "amount":      price,
         "status":      "pending",
         "type":        "qrph",
         "product":     "remove_ads",
@@ -194,8 +192,8 @@ async def create_payment(req: CreatePaymentRequest):
         "source_id":    source_id,
         "qr_image_url": qr_image,
         "redirect_url": redirect_url,
-        "amount":       REMOVE_ADS_PRICE,
-        "amount_php":   REMOVE_ADS_PRICE / 100,
+        "amount":       price,
+        "amount_php":   price / 100,
     }
 
 
@@ -220,7 +218,6 @@ async def check_payment_status(req: PaymentStatusRequest):
         status = source.get("attributes", {}).get("status", "")
 
         if status == "chargeable":
-            # Payment confirmed by PayMongo — grant premium
             price = _get_remove_ads_price()
             db.set_premium(user_id, req.source_id, price)
             db.save_payment({
@@ -288,7 +285,9 @@ async def payment_webhook(
 
     if event_type in ("source.chargeable", "payment.paid") and user_id:
         if not db.is_premium(user_id):
-            db.set_premium(user_id, resource_id, REMOVE_ADS_PRICE)
+            # ✅ FIX: call the function instead of bare undefined variable
+            price = _get_remove_ads_price()
+            db.set_premium(user_id, resource_id, price)
             db.save_payment({
                 "source_id": resource_id,
                 "user_id":   user_id,
@@ -341,7 +340,9 @@ def admin_get_premium_users():
 @router.post("/admin/grant/{user_id}", dependencies=[Depends(require_admin)])
 def admin_grant_premium(user_id: str):
     """Manually grant premium to a user (e.g. if they paid via GCash send)."""
-    db.set_premium(str(user_id), "manual_admin", REMOVE_ADS_PRICE)
+    # ✅ FIX: call the function instead of bare undefined variable
+    price = _get_remove_ads_price()
+    db.set_premium(str(user_id), "manual_admin", price)
     return {"success": True, "user_id": user_id}
 
 
