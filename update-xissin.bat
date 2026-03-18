@@ -150,7 +150,7 @@ echo.
 echo  ^> git push
 git push
 
-if !errorlevel! neq 0 (
+if !ERRORLEVEL! NEQ 0 (
     echo.
     echo  ERROR: Git push failed!
     echo  Check your internet connection and GitHub login.
@@ -192,7 +192,7 @@ echo.
 echo  ^> git push origin v!NEW_VERSION!
 git push origin v!NEW_VERSION!
 
-if !errorlevel! neq 0 (
+if !ERRORLEVEL! NEQ 0 (
     echo.
     echo  ERROR: Tag push failed!
     echo  If the tag already exists on remote, run:
@@ -291,7 +291,7 @@ echo  Please wait...
 echo.
 
 :: Use PowerShell to get SHA-256 hash and capture it cleanly
-for /f "usebackq delims=" %%H in (`powershell -NoProfile -Command "(Get-FileHash '!APK_PATH!' -Algorithm SHA256).Hash.ToLower()"`) do (
+for /f "usebackq delims=" %%H in (`powershell -NoProfile -Command "(Get-FileHash '"!APK_PATH!"' -Algorithm SHA256).Hash.ToLower()"`) do (
     set "APK_SHA256=%%H"
 )
 
@@ -309,7 +309,7 @@ echo.
 echo  [OK] Checksum computed! Copy it to the Admin Panel in Step 6.
 echo.
 echo  (This has also been saved to clipboard for you)
-echo !APK_SHA256! | clip
+powershell -Command "Set-Clipboard -Value '!APK_SHA256!'"
 echo.
 pause
 goto STEP5
@@ -350,7 +350,7 @@ if "!DRIVE_LINK!"=="" (
 
 :: Validate it looks like a Drive link
 echo !DRIVE_LINK! | findstr /i "drive.google.com" >nul
-if !errorlevel! neq 0 (
+if !ERRORLEVEL! NEQ 0 (
     echo.
     echo  WARNING: That does not look like a Google Drive link.
     echo  Expected: https://drive.google.com/file/d/.../view
