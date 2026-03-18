@@ -1,18 +1,20 @@
 """
-routers/payments.py — Remove Ads payment via PayMongo (QRPh / QR code)
+routers/payments.py — Remove Ads payment via PayMongo QRPh
+Uses the NEW Payment Intent workflow (NOT the deprecated /sources workflow)
 
 Flow:
-  1. App POST /api/payments/create  → backend creates PayMongo Source (QRPh)
-                                     → returns qr_image_url + source_id
-  2. App shows QR code to user
-  3. User scans QR in GCash/Maya/bank app and pays
-  4. PayMongo sends webhook POST /api/payments/webhook
+  1. App POST /api/payments/create
+       → backend creates PaymentIntent + PaymentMethod (qrph) + Attach
+       → returns qr_image_url (base64) + payment_intent_id
+  2. App shows QR code to user (base64 image)
+  3. User scans QR in GCash / Maya / any bank app and pays
+  4. PayMongo sends webhook POST /api/payments/webhook  (payment.paid)
   5. Backend verifies → marks user premium → ads disappear
 
-Environment variables needed in Railway:
-  PAYMONGO_SECRET_KEY      = sk_live_xxxxx   (from PayMongo Dashboard → Developers)
-  PAYMONGO_PUBLIC_KEY      = pk_live_xxxxx   (from PayMongo Dashboard → Developers)
-  PAYMONGO_WEBHOOK_SECRET  = whsec_xxxxx     (from PayMongo Dashboard → Webhooks)
+Environment variables in Railway:
+  PAYMONGO_SECRET_KEY      = sk_live_xxxxx
+  PAYMONGO_PUBLIC_KEY      = pk_live_xxxxx
+  PAYMONGO_WEBHOOK_SECRET  = whsec_xxxxx   (from PayMongo Dashboard → Webhooks)
 """
 
 import base64
@@ -29,17 +31,17 @@ from typing import Optional
 import database as db
 from auth import require_admin
 
-logger  = logging.getLogger(__name__)
-router  = APIRouter()
+logger = logging.getLogger(__name__)
+router = APIRouter()
 
 # ── Config ────────────────────────────────────────────────────────────────────
 PAYMONGO_BASE           = "https://api.paymongo.com/v1"
-_DEFAULT_PRICE_CENTAVOS = 9900   # fallback ₱99.00
+_DEFAULT_PRICE_CENTAVOS = 9900   # ₱99.00
 _DEFAULT_LABEL          = "Xissin — Remove Ads (Lifetime)"
+BACKEND_URL             = "https://xissin-app-backend-production.up.railway.app"
 
 
 def _get_remove_ads_price() -> int:
-    """Read price from settings (centavos). Falls back to ₱99 if not set."""
     try:
         s = db.get_server_settings()
         return int(s.get("remove_ads_price") or _DEFAULT_PRICE_CENTAVOS)
@@ -63,18 +65,18 @@ def _webhook_secret() -> str:
     return os.environ.get("PAYMONGO_WEBHOOK_SECRET", "").strip()
 
 
-# ── Request / Response models ─────────────────────────────────────────────────
+# ── Request models ────────────────────────────────────────────────────────────
 
 class CreatePaymentRequest(BaseModel):
     user_id: str
 
 
 class PaymentStatusRequest(BaseModel):
-    source_id: str
-    user_id:   str
+    payment_intent_id: str
+    user_id: str
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ── HTTP helpers ──────────────────────────────────────────────────────────────
 
 async def _paymongo_post(endpoint: str, payload: dict) -> dict:
     async with httpx.AsyncClient(timeout=15) as client:
@@ -88,10 +90,9 @@ async def _paymongo_post(endpoint: str, payload: dict) -> dict:
         )
     if resp.status_code not in (200, 201):
         logger.error(f"PayMongo {endpoint} error {resp.status_code}: {resp.text}")
-        raise HTTPException(
-            status_code=502,
-            detail=f"Payment provider error: {resp.json().get('errors', [{}])[0].get('detail', 'Unknown error')}"
-        )
+        errors = resp.json().get("errors", [{}])
+        detail = errors[0].get("detail", "Unknown payment provider error")
+        raise HTTPException(status_code=502, detail=detail)
     return resp.json()
 
 
@@ -106,11 +107,11 @@ async def _paymongo_get(endpoint: str) -> dict:
     return resp.json()
 
 
-# ── 0. Public product info endpoint (app fetches this on dialog open) ─────────
+# ── 0. Public info endpoint ───────────────────────────────────────────────────
 
 @router.get("/remove-ads-info")
 def get_remove_ads_info():
-    """Public — Flutter app fetches price, label, benefits before showing dialog."""
+    """Flutter app fetches this on dialog open to show price & benefits."""
     s = db.get_server_settings()
     price = int(s.get("remove_ads_price") or _DEFAULT_PRICE_CENTAVOS)
     return {
@@ -128,137 +129,161 @@ def get_remove_ads_info():
     }
 
 
-# ── 1. Create QRPh Payment Source ─────────────────────────────────────────────
+# ── 1. Create QRPh Payment (NEW Payment Intent workflow) ─────────────────────
 
 @router.post("/create")
 async def create_payment(req: CreatePaymentRequest):
     """
-    Creates a QRPh source. Returns qr_image_url and source_id.
-    The Flutter app displays the QR code for the user to scan.
+    Step 1: Create PaymentIntent
+    Step 2: Create PaymentMethod (type=qrph)
+    Step 3: Attach PaymentMethod → returns QR base64 image
     """
     user_id = str(req.user_id)
 
-    # Don't charge if already premium
     if db.is_premium(user_id):
         return {"already_premium": True}
 
-    # ✅ FIX: call the function, don't use undefined bare variable
     price = _get_remove_ads_price()
 
-    payload = {
+    # ── Step 1: Create Payment Intent ────────────────────────────────────────
+    intent_payload = {
         "data": {
             "attributes": {
                 "amount":   price,
                 "currency": "PHP",
-                "type":     "qrph",
-                "redirect": {
-                    "success": "https://xissin-app-backend-production.up.railway.app/api/payments/success",
-                    "failed":  "https://xissin-app-backend-production.up.railway.app/api/payments/failed",
-                },
+                "payment_method_allowed": ["qrph"],
+                "description": "Xissin — Remove Ads Lifetime",
                 "metadata": {
-                    "user_id":  user_id,
-                    "product":  "remove_ads",
-                },
-                "billing": {
-                    "name":  "Xissin User",
-                    "email": f"user_{user_id}@xissin.app",
-                    "phone": "+63",
+                    "user_id": user_id,
+                    "product": "remove_ads",
                 },
             }
         }
     }
+    intent_data = await _paymongo_post("/payment_intents", intent_payload)
+    intent_id   = intent_data["data"]["id"]
+    client_key  = intent_data["data"]["attributes"]["client_key"]
 
-    data = await _paymongo_post("/sources", payload)
-    source = data.get("data", {})
-    source_id   = source.get("id", "")
-    attributes  = source.get("attributes", {})
-    qr_image    = attributes.get("qr_code_image", "") or attributes.get("qr_image", "")
-    redirect_url = attributes.get("redirect", {}).get("checkout_url", "")
+    # ── Step 2: Create QRPh Payment Method ───────────────────────────────────
+    pm_payload = {
+        "data": {
+            "attributes": {
+                "type": "qrph",
+                "billing": {
+                    "name":  "Xissin User",
+                    "email": f"user_{user_id}@xissin.app",
+                },
+            }
+        }
+    }
+    pm_data = await _paymongo_post("/payment_methods", pm_payload)
+    pm_id   = pm_data["data"]["id"]
 
-    # Save as pending payment
+    # ── Step 3: Attach PaymentMethod to PaymentIntent ─────────────────────────
+    attach_payload = {
+        "data": {
+            "attributes": {
+                "payment_method": pm_id,
+                "client_key":     client_key,
+                "return_url":     f"{BACKEND_URL}/api/payments/success",
+            }
+        }
+    }
+    attach_data = await _paymongo_post(
+        f"/payment_intents/{intent_id}/attach", attach_payload
+    )
+
+    # ── Extract QR image from next_action ─────────────────────────────────────
+    next_action = attach_data["data"]["attributes"].get("next_action") or {}
+    code_block  = next_action.get("code") or {}
+    qr_image    = code_block.get("image_url", "")   # base64 PNG string
+
+    # Save pending payment
     db.save_payment({
-        "source_id":   source_id,
-        "user_id":     user_id,
-        "amount":      price,
-        "status":      "pending",
-        "type":        "qrph",
-        "product":     "remove_ads",
-        "created_at":  db.ph_now().isoformat(),
+        "payment_intent_id": intent_id,
+        "payment_method_id": pm_id,
+        "user_id":           user_id,
+        "amount":            price,
+        "status":            "pending",
+        "type":              "qrph",
+        "product":           "remove_ads",
+        "created_at":        db.ph_now().isoformat(),
     })
 
-    logger.info(f"💳 QRPh source created: {source_id} for user={user_id}")
+    logger.info(f"💳 QRPh intent created: {intent_id} for user={user_id}")
 
     return {
-        "source_id":    source_id,
-        "qr_image_url": qr_image,
-        "redirect_url": redirect_url,
-        "amount":       price,
-        "amount_php":   price / 100,
+        "payment_intent_id": intent_id,
+        "qr_image_url":      qr_image,   # base64 — show directly in Flutter Image.memory()
+        "amount":            price,
+        "amount_php":        price / 100,
     }
 
 
-# ── 2. Poll payment status (app polls this every 5 seconds) ──────────────────
+# ── 2. Poll payment status ────────────────────────────────────────────────────
 
 @router.post("/status")
 async def check_payment_status(req: PaymentStatusRequest):
     """
-    App polls this every 5 seconds while showing the QR code.
-    Returns {'paid': True/False, 'premium': True/False}
+    App polls every 5 seconds while QR is displayed.
+    NOTE: Per PayMongo docs, prefer webhook over polling.
     """
     user_id = str(req.user_id)
 
-    # Fast path: already marked premium
+    # Fast path
     if db.is_premium(user_id):
         return {"paid": True, "premium": True}
 
-    # Check PayMongo directly
     try:
-        data   = await _paymongo_get(f"/sources/{req.source_id}")
-        source = data.get("data", {})
-        status = source.get("attributes", {}).get("status", "")
+        data       = await _paymongo_get(f"/payment_intents/{req.payment_intent_id}")
+        attributes = data["data"]["attributes"]
+        status     = attributes.get("status", "")
 
-        if status == "chargeable":
+        if status == "succeeded":
             price = _get_remove_ads_price()
-            db.set_premium(user_id, req.source_id, price)
+            db.set_premium(user_id, req.payment_intent_id, price)
             db.save_payment({
-                "source_id": req.source_id,
-                "user_id":   user_id,
-                "status":    "paid",
-                "paid_at":   db.ph_now().isoformat(),
+                "payment_intent_id": req.payment_intent_id,
+                "user_id":           user_id,
+                "status":            "paid",
+                "paid_at":           db.ph_now().isoformat(),
             })
-            logger.info(f"✅ Payment confirmed via poll: user={user_id} source={req.source_id}")
+            logger.info(f"✅ Payment confirmed via poll: user={user_id} intent={req.payment_intent_id}")
             return {"paid": True, "premium": True}
 
-        return {"paid": False, "premium": False, "source_status": status}
+        # QR expired — tell app to regenerate
+        if status == "awaiting_payment_method":
+            return {"paid": False, "premium": False, "expired": True, "intent_status": status}
+
+        return {"paid": False, "premium": False, "intent_status": status}
 
     except HTTPException:
         return {"paid": False, "premium": False}
 
 
-# ── 3. Webhook (PayMongo calls this automatically on payment) ─────────────────
+# ── 3. Webhook ────────────────────────────────────────────────────────────────
 
 @router.post("/webhook")
 async def payment_webhook(
-    request:   Request,
+    request: Request,
     paymongo_signature: Optional[str] = Header(None, alias="paymongo-signature"),
 ):
     """
-    PayMongo calls this endpoint automatically when a payment succeeds.
-    Register this URL in PayMongo Dashboard → Webhooks:
-      https://xissin-app-backend-production.up.railway.app/api/payments/webhook
-    Events to subscribe: source.chargeable, payment.paid
+    Register in PayMongo Dashboard → Webhooks:
+      URL: https://xissin-app-backend-production.up.railway.app/api/payments/webhook
+      Events: payment.paid, payment.failed, qrph.expired
     """
     body = await request.body()
 
-    # Verify webhook signature if secret is configured
+    # Verify signature
     wh_secret = _webhook_secret()
     if wh_secret and paymongo_signature:
         try:
-            parts       = dict(p.split("=", 1) for p in paymongo_signature.split(","))
-            ts          = parts.get("t", "")
-            test_sig    = parts.get("te", "") or parts.get("li", "")
-            to_sign     = f"{ts}.{body.decode()}"
-            expected    = hmac.new(
+            parts    = dict(p.split("=", 1) for p in paymongo_signature.split(","))
+            ts       = parts.get("t", "")
+            test_sig = parts.get("te", "") or parts.get("li", "")
+            to_sign  = f"{ts}.{body.decode()}"
+            expected = hmac.new(
                 wh_secret.encode(), to_sign.encode(), hashlib.sha256
             ).hexdigest()
             if not hmac.compare_digest(expected, test_sig):
@@ -274,36 +299,41 @@ async def payment_webhook(
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON")
 
-    event_type = event.get("data", {}).get("attributes", {}).get("type", "")
-    resource   = event.get("data", {}).get("attributes", {}).get("data", {})
-    attributes = resource.get("attributes", {})
-    metadata   = attributes.get("metadata") or {}
-    user_id    = str(metadata.get("user_id", ""))
-    resource_id= resource.get("id", "")
+    event_type  = event.get("data", {}).get("attributes", {}).get("type", "")
+    resource    = event.get("data", {}).get("attributes", {}).get("data", {})
+    attributes  = resource.get("attributes", {})
+    metadata    = attributes.get("metadata") or {}
+    user_id     = str(metadata.get("user_id", ""))
+    resource_id = resource.get("id", "")
+    intent_id   = attributes.get("payment_intent_id", resource_id)
 
-    logger.info(f"📬 Webhook received: type={event_type} user={user_id} id={resource_id}")
+    logger.info(f"📬 Webhook: type={event_type} user={user_id} id={resource_id}")
 
-    if event_type in ("source.chargeable", "payment.paid") and user_id:
+    if event_type == "payment.paid" and user_id:
         if not db.is_premium(user_id):
-            # ✅ FIX: call the function instead of bare undefined variable
             price = _get_remove_ads_price()
-            db.set_premium(user_id, resource_id, price)
+            db.set_premium(user_id, intent_id, price)
             db.save_payment({
-                "source_id": resource_id,
-                "user_id":   user_id,
-                "status":    "paid",
-                "paid_at":   db.ph_now().isoformat(),
+                "payment_intent_id": intent_id,
+                "user_id":           user_id,
+                "status":            "paid",
+                "paid_at":           db.ph_now().isoformat(),
             })
             logger.info(f"✅ Premium granted via webhook: user={user_id}")
+
+    elif event_type == "payment.failed":
+        logger.warning(f"❌ Payment failed: user={user_id} id={resource_id}")
+
+    elif event_type == "qrph.expired":
+        logger.info(f"⏰ QRPh expired: id={resource_id}")
 
     return {"received": True}
 
 
-# ── 4. Check if user is premium (app calls on startup) ────────────────────────
+# ── 4. Premium status ─────────────────────────────────────────────────────────
 
 @router.get("/premium/{user_id}")
 async def get_premium_status(user_id: str):
-    """App calls this on startup to check if ads should be removed."""
     premium = db.is_premium(str(user_id))
     record  = db.get_premium_record(str(user_id)) if premium else None
     return {
@@ -313,7 +343,7 @@ async def get_premium_status(user_id: str):
     }
 
 
-# ── 5. Redirect pages (PayMongo redirects here after QR scan) ─────────────────
+# ── 5. Redirect pages ─────────────────────────────────────────────────────────
 
 @router.get("/success")
 def payment_success():
@@ -325,7 +355,7 @@ def payment_failed():
     return {"status": "failed", "message": "Payment was not completed. Please try again."}
 
 
-# ── Admin endpoints ───────────────────────────────────────────────────────────
+# ── Admin ─────────────────────────────────────────────────────────────────────
 
 @router.get("/admin/all", dependencies=[Depends(require_admin)])
 def admin_get_all_payments():
@@ -339,8 +369,6 @@ def admin_get_premium_users():
 
 @router.post("/admin/grant/{user_id}", dependencies=[Depends(require_admin)])
 def admin_grant_premium(user_id: str):
-    """Manually grant premium to a user (e.g. if they paid via GCash send)."""
-    # ✅ FIX: call the function instead of bare undefined variable
     price = _get_remove_ads_price()
     db.set_premium(str(user_id), "manual_admin", price)
     return {"success": True, "user_id": user_id}
