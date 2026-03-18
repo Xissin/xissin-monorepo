@@ -180,8 +180,24 @@ class _SplashScreenState extends State<SplashScreen>
 
     String? networkType;
     try {
-      final conn  = await Connectivity().checkConnectivity();
-      networkType = conn.toString().split('.').last;
+      final results = await Connectivity().checkConnectivity();
+      // results is a List<ConnectivityResult> in connectivity_plus v6+
+      // Pick the best connection type from the list
+      if (results.contains(ConnectivityResult.wifi)) {
+        networkType = 'wifi';
+      } else if (results.contains(ConnectivityResult.mobile)) {
+        networkType = 'mobile';
+      } else if (results.contains(ConnectivityResult.ethernet)) {
+        networkType = 'ethernet';
+      } else if (results.contains(ConnectivityResult.vpn)) {
+        networkType = 'vpn';
+      } else if (results.contains(ConnectivityResult.bluetooth)) {
+        networkType = 'bluetooth';
+      } else if (results.contains(ConnectivityResult.none)) {
+        networkType = 'none';
+      } else {
+        networkType = 'unknown';
+      }
     } catch (_) {}
 
     String? screenResolution;
