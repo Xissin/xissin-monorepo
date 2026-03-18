@@ -74,6 +74,10 @@ def _auth_header() -> str:
 
 
 def _webhook_secret() -> str:
+    """
+    Returns the webhook secret from env.
+    Returns empty string if not set — caller must check and reject.
+    """
     return os.environ.get("PAYMONGO_WEBHOOK_SECRET", "").strip()
 
 
@@ -419,24 +423,41 @@ async def payment_webhook(
     """
     body = await request.body()
 
-    # Verify HMAC signature — blocks fake/spoofed webhook calls
+    # ── FAIL CLOSED: reject immediately if anything is missing or wrong ───────
     wh_secret = _webhook_secret()
-    if wh_secret and paymongo_signature:
-        try:
-            parts    = dict(p.split("=", 1) for p in paymongo_signature.split(","))
-            ts       = parts.get("t", "")
-            test_sig = parts.get("te", "") or parts.get("li", "")
-            to_sign  = f"{ts}.{body.decode()}"
-            expected = hmac.new(
-                wh_secret.encode(), to_sign.encode(), hashlib.sha256
-            ).hexdigest()
-            if not hmac.compare_digest(expected, test_sig):
-                logger.warning("⚠️ Webhook signature mismatch — possible spoofed request!")
-                raise HTTPException(status_code=400, detail="Invalid signature")
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.warning(f"Webhook sig check error (non-fatal): {e}")
+
+    # 1. Webhook secret must be configured in Railway env vars
+    if not wh_secret:
+        logger.error(
+            "❌ PAYMONGO_WEBHOOK_SECRET is not set — rejecting all webhook calls. "
+            "Set this env var in Railway."
+        )
+        raise HTTPException(status_code=500, detail="Webhook not configured on server.")
+
+    # 2. Signature header must be present
+    if not paymongo_signature:
+        logger.warning("⚠️ Webhook received without paymongo-signature header — rejected.")
+        raise HTTPException(status_code=401, detail="Missing webhook signature.")
+
+    # 3. Signature must be valid — any parse or mismatch error → reject
+    try:
+        parts    = dict(p.split("=", 1) for p in paymongo_signature.split(","))
+        ts       = parts.get("t", "")
+        test_sig = parts.get("te", "") or parts.get("li", "")
+        if not ts or not test_sig:
+            raise ValueError("Missing t or signature component")
+        to_sign  = f"{ts}.{body.decode()}"
+        expected = hmac.new(
+            wh_secret.encode(), to_sign.encode(), hashlib.sha256
+        ).hexdigest()
+        if not hmac.compare_digest(expected, test_sig):
+            logger.warning("⚠️ Webhook signature mismatch — possible spoofed request!")
+            raise HTTPException(status_code=400, detail="Invalid signature.")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.warning(f"⚠️ Webhook sig parse failed — rejecting: {e}")
+        raise HTTPException(status_code=400, detail="Malformed signature header.")
 
     try:
         event = await request.json()
