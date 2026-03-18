@@ -41,6 +41,10 @@ class _NglScreenState extends State<NglScreen> {
   double _progress   = 0.0;
   Timer? _progressTimer;
 
+  // ── Local Banner Ad (owned by THIS screen only) ───────────────────────────
+  BannerAd? _bannerAd;
+  bool      _bannerReady = false;
+
   @override
   void initState() {
     super.initState();
@@ -48,14 +52,60 @@ class _NglScreenState extends State<NglScreen> {
       final len = _messageCtrl.text.length;
       if (len != _charCount) setState(() => _charCount = len);
     });
+    // Listen for premium state changes
+    AdService.instance.addListener(_onAdServiceChanged);
+    // Load our own banner ad
+    _initBanner();
   }
 
   @override
   void dispose() {
+    AdService.instance.removeListener(_onAdServiceChanged);
+    _bannerAd?.dispose();
     _usernameCtrl.dispose();
     _messageCtrl.dispose();
     _progressTimer?.cancel();
     super.dispose();
+  }
+
+  // ── Ad Service listener ────────────────────────────────────────────────────
+
+  void _onAdServiceChanged() {
+    if (!mounted) return;
+    if (AdService.instance.adsRemoved && _bannerAd != null) {
+      _bannerAd?.dispose();
+      setState(() {
+        _bannerAd    = null;
+        _bannerReady = false;
+      });
+    }
+  }
+
+  // ── Banner init ────────────────────────────────────────────────────────────
+
+  void _initBanner() {
+    if (AdService.instance.adsRemoved) return;
+
+    _bannerAd?.dispose();
+    _bannerAd    = null;
+    _bannerReady = false;
+
+    _bannerAd = AdService.instance.createBannerAd(
+      onLoaded: () {
+        if (!mounted || AdService.instance.adsRemoved) {
+          _bannerAd?.dispose();
+          _bannerAd = null;
+          return;
+        }
+        setState(() => _bannerReady = true);
+      },
+      onFailed: () {
+        if (mounted) setState(() { _bannerAd = null; _bannerReady = false; });
+        Future.delayed(const Duration(seconds: 30), () {
+          if (mounted && !AdService.instance.adsRemoved) _initBanner();
+        });
+      },
+    )..load();
   }
 
   // ── Progress ───────────────────────────────────────────────────────────────
@@ -132,7 +182,7 @@ class _NglScreenState extends State<NglScreen> {
       });
       HapticFeedback.heavyImpact();
 
-      // ✅ Show interstitial ad after send completes
+      // Show interstitial ad after send completes
       AdService.instance.showInterstitial();
 
     } catch (e) {
@@ -165,24 +215,20 @@ class _NglScreenState extends State<NglScreen> {
   }
 
   // ── Banner Ad ──────────────────────────────────────────────────────────────
+  // Uses LOCAL _bannerAd — not a shared instance — so no "already in tree" crash.
 
   Widget _buildBannerAd() {
-    return Consumer<AdService>(
-      builder: (_, adService, __) {
-        if (adService.adsRemoved) return const SizedBox.shrink();
-        if (!adService.bannerReady || adService.bannerAd == null) {
-          return const SizedBox.shrink();
-        }
-        return SafeArea(
-          top: false,
-          child: Container(
-            alignment: Alignment.center,
-            width:  adService.bannerAd!.size.width.toDouble(),
-            height: adService.bannerAd!.size.height.toDouble(),
-            child:  AdWidget(ad: adService.bannerAd!),
-          ),
-        );
-      },
+    if (AdService.instance.adsRemoved || !_bannerReady || _bannerAd == null) {
+      return const SizedBox.shrink();
+    }
+    return SafeArea(
+      top: false,
+      child: Container(
+        alignment: Alignment.center,
+        width:  _bannerAd!.size.width.toDouble(),
+        height: _bannerAd!.size.height.toDouble(),
+        child:  AdWidget(ad: _bannerAd!),
+      ),
     );
   }
 
@@ -193,7 +239,7 @@ class _NglScreenState extends State<NglScreen> {
     final c = context.c;
     return Scaffold(
       backgroundColor: c.background,
-      bottomNavigationBar: _buildBannerAd(), // ✅ banner ad at bottom
+      bottomNavigationBar: _buildBannerAd(),
       appBar: _buildAppBar(c),
       body: SafeArea(
         child: SingleChildScrollView(

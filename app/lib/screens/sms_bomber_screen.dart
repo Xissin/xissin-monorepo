@@ -62,7 +62,7 @@ class _AttackRecord {
 
 const _kHistoryKey  = 'sms_bomb_history';
 const _kLastFireKey = 'sms_bomb_last_fire';
-const _kCooldown    = Duration(seconds: 10); // ✅ reduced from 1 minute to 10 seconds
+const _kCooldown    = Duration(seconds: 10);
 const _kMaxHistory  = 10;
 
 // ── Screen ────────────────────────────────────────────────────────────────────
@@ -88,17 +88,67 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
   Duration  _remaining = Duration.zero;
   bool get  _onCooldown => _remaining > Duration.zero;
 
+  // ── Local Banner Ad (owned by THIS screen only) ───────────────────────────
+  BannerAd? _bannerAd;
+  bool      _bannerReady = false;
+
   @override
   void initState() {
     super.initState();
     _loadPersistedData();
+    // Listen for premium state changes
+    AdService.instance.addListener(_onAdServiceChanged);
+    // Load our own banner ad
+    _initBanner();
   }
 
   @override
   void dispose() {
+    AdService.instance.removeListener(_onAdServiceChanged);
+    _bannerAd?.dispose();
     _phoneCtrl.dispose();
     _scrollCtrl.dispose();
     super.dispose();
+  }
+
+  // ── Ad Service listener ────────────────────────────────────────────────────
+
+  void _onAdServiceChanged() {
+    if (!mounted) return;
+    if (AdService.instance.adsRemoved && _bannerAd != null) {
+      _bannerAd?.dispose();
+      setState(() {
+        _bannerAd    = null;
+        _bannerReady = false;
+      });
+    }
+  }
+
+  // ── Banner init ────────────────────────────────────────────────────────────
+
+  void _initBanner() {
+    if (AdService.instance.adsRemoved) return;
+
+    _bannerAd?.dispose();
+    _bannerAd    = null;
+    _bannerReady = false;
+
+    _bannerAd = AdService.instance.createBannerAd(
+      onLoaded: () {
+        if (!mounted || AdService.instance.adsRemoved) {
+          _bannerAd?.dispose();
+          _bannerAd = null;
+          return;
+        }
+        setState(() => _bannerReady = true);
+      },
+      onFailed: () {
+        if (mounted) setState(() { _bannerAd = null; _bannerReady = false; });
+        Future.delayed(const Duration(seconds: 30), () {
+          if (mounted && !AdService.instance.adsRemoved) _initBanner();
+        });
+      },
+    )..load();
   }
 
   // ── Persistence ────────────────────────────────────────────────────────────
@@ -207,7 +257,7 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
 
       await _saveHistory();
 
-      // ✅ Show interstitial ad after successful attack
+      // Show interstitial ad after successful attack
       AdService.instance.showInterstitial();
 
     } on ApiException catch (e) {
@@ -241,24 +291,20 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
   }
 
   // ── Banner Ad ──────────────────────────────────────────────────────────────
+  // Uses LOCAL _bannerAd — not a shared instance — so no "already in tree" crash.
 
   Widget _buildBannerAd() {
-    return Consumer<AdService>(
-      builder: (_, adService, __) {
-        if (adService.adsRemoved) return const SizedBox.shrink();
-        if (!adService.bannerReady || adService.bannerAd == null) {
-          return const SizedBox.shrink();
-        }
-        return SafeArea(
-          top: false,
-          child: Container(
-            alignment: Alignment.center,
-            width:  adService.bannerAd!.size.width.toDouble(),
-            height: adService.bannerAd!.size.height.toDouble(),
-            child:  AdWidget(ad: adService.bannerAd!),
-          ),
-        );
-      },
+    if (AdService.instance.adsRemoved || !_bannerReady || _bannerAd == null) {
+      return const SizedBox.shrink();
+    }
+    return SafeArea(
+      top: false,
+      child: Container(
+        alignment: Alignment.center,
+        width:  _bannerAd!.size.width.toDouble(),
+        height: _bannerAd!.size.height.toDouble(),
+        child:  AdWidget(ad: _bannerAd!),
+      ),
     );
   }
 
@@ -270,7 +316,7 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
 
     return Scaffold(
       backgroundColor: c.background,
-      bottomNavigationBar: _buildBannerAd(), // ✅ banner ad at bottom
+      bottomNavigationBar: _buildBannerAd(),
       appBar: AppBar(
         backgroundColor: c.background,
         elevation: 0,

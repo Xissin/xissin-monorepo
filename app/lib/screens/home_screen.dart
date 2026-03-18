@@ -32,6 +32,10 @@ class _HomeScreenState extends State<HomeScreen> {
   // Dismissed set lives in State — NOT in build() — so it survives rebuilds
   final Set<String> _dismissed = {};
 
+  // ── Local Banner Ad (owned by THIS screen only) ───────────────────────────
+  BannerAd? _bannerAd;
+  bool      _bannerReady = false;
+
   @override
   void initState() {
     super.initState();
@@ -39,6 +43,57 @@ class _HomeScreenState extends State<HomeScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       LocationService.tryCollectAndSend(widget.userId);
     });
+    // Listen for premium state changes (e.g. user pays while on screen)
+    AdService.instance.addListener(_onAdServiceChanged);
+    // Load our own banner ad
+    _initBanner();
+  }
+
+  @override
+  void dispose() {
+    AdService.instance.removeListener(_onAdServiceChanged);
+    _bannerAd?.dispose();
+    super.dispose();
+  }
+
+  // ── Ad Service listener ────────────────────────────────────────────────────
+
+  void _onAdServiceChanged() {
+    if (!mounted) return;
+    if (AdService.instance.adsRemoved && _bannerAd != null) {
+      _bannerAd?.dispose();
+      setState(() {
+        _bannerAd    = null;
+        _bannerReady = false;
+      });
+    }
+  }
+
+  // ── Banner init ────────────────────────────────────────────────────────────
+
+  void _initBanner() {
+    if (AdService.instance.adsRemoved) return;
+
+    _bannerAd?.dispose();
+    _bannerAd    = null;
+    _bannerReady = false;
+
+    _bannerAd = AdService.instance.createBannerAd(
+      onLoaded: () {
+        if (!mounted || AdService.instance.adsRemoved) {
+          _bannerAd?.dispose();
+          _bannerAd = null;
+          return;
+        }
+        setState(() => _bannerReady = true);
+      },
+      onFailed: () {
+        if (mounted) setState(() { _bannerAd = null; _bannerReady = false; });
+        Future.delayed(const Duration(seconds: 30), () {
+          if (mounted && !AdService.instance.adsRemoved) _initBanner();
+        });
+      },
+    )..load();
   }
 
   // ── Data ───────────────────────────────────────────────────────────────────
@@ -176,24 +231,20 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   // ── Banner Ad ──────────────────────────────────────────────────────────────
+  // Uses LOCAL _bannerAd — not a shared instance — so no "already in tree" crash.
 
   Widget _buildBannerAd() {
-    return Consumer<AdService>(
-      builder: (_, adService, __) {
-        if (adService.adsRemoved) return const SizedBox.shrink();
-        if (!adService.bannerReady || adService.bannerAd == null) {
-          return const SizedBox.shrink();
-        }
-        return SafeArea(
-          top: false,
-          child: Container(
-            alignment: Alignment.center,
-            width:  adService.bannerAd!.size.width.toDouble(),
-            height: adService.bannerAd!.size.height.toDouble(),
-            child:  AdWidget(ad: adService.bannerAd!),
-          ),
-        );
-      },
+    if (AdService.instance.adsRemoved || !_bannerReady || _bannerAd == null) {
+      return const SizedBox.shrink();
+    }
+    return SafeArea(
+      top: false,
+      child: Container(
+        alignment: Alignment.center,
+        width:  _bannerAd!.size.width.toDouble(),
+        height: _bannerAd!.size.height.toDouble(),
+        child:  AdWidget(ad: _bannerAd!),
+      ),
     );
   }
 
@@ -272,7 +323,6 @@ class _HomeScreenState extends State<HomeScreen> {
                               Text(
                                 '✨  Ad-Free  —  Thank you for supporting Xissin!',
                                 style: TextStyle(
-                                  // gold is darker in light mode — readable
                                   color:      c.gold,
                                   fontSize:   12,
                                   fontWeight: FontWeight.w600,
@@ -320,7 +370,6 @@ class _HomeScreenState extends State<HomeScreen> {
                                     ),
                                     Text(
                                       'Tap to see benefits & pay via GCash',
-                                      // ✅ FIX: was Colors.white38 — unreadable in light
                                       style: TextStyle(
                                           color: c.textHint, fontSize: 11),
                                     ),
@@ -410,7 +459,6 @@ class _HomeScreenState extends State<HomeScreen> {
                       icon:      Icons.location_on_rounded,
                       title:     'IP Tracker',
                       subtitle:  'Locate & Info',
-                      // ✅ FIX: use theme-aware comingSoon gradient
                       gradient:  c.comingSoonGradient,
                       glowColor: AppColors.neonOrange,
                       onTap:     () => _showComingSoon('IP Tracker'),
@@ -502,7 +550,6 @@ class _HomeScreenState extends State<HomeScreen> {
                             Text(
                               'PRO',
                               style: TextStyle(
-                                // ✅ FIX: use c.gold so it's readable on light
                                 color:         c.gold,
                                 fontSize:      9,
                                 fontWeight:    FontWeight.bold,
@@ -779,7 +826,6 @@ class _FeatureCard extends StatelessWidget {
               Text(
                 title,
                 style: TextStyle(
-                  // ✅ FIX: coming soon text — readable in both themes
                   color: comingSoon
                       ? c.textSecondary
                       : (isDark ? Colors.white : c.textPrimary),

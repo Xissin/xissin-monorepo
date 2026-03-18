@@ -10,6 +10,12 @@ import 'payment_service.dart';
 // • Banner      : ca-app-pub-7516216593424837/7804365873
 // • Interstitial: ca-app-pub-7516216593424837/9918305586
 //
+// ⚠️  IMPORTANT — Banner Ad Architecture:
+//   Each screen creates its OWN BannerAd instance via [createBannerAd()].
+//   AdService intentionally does NOT hold a shared BannerAd because placing
+//   the same AdWidget in multiple screens simultaneously causes:
+//   "This AdWidget is already in the Widget tree" crash.
+//
 // Premium status is cached locally in SharedPreferences and verified
 // against the backend on every app start.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -18,29 +24,23 @@ class AdService extends ChangeNotifier {
   static final AdService instance = AdService._();
   AdService._();
 
-  // ── Ad Unit IDs ─────────────────────────────────────────────────────────────
-  static const String _bannerAdUnitId =
-      'ca-app-pub-7516216593424837/7804365873';
-  static const String _interstitialAdUnitId =
-      'ca-app-pub-7516216593424837/9918305586';
+  // ── Ad Unit IDs (public so screens can use them directly) ────────────────────
+  static const String bannerAdUnitId       = 'ca-app-pub-7516216593424837/7804365873';
+  static const String interstitialAdUnitId = 'ca-app-pub-7516216593424837/9918305586';
 
   static const String _prefKeyPremium = 'xissin_is_premium';
 
   // ── Internal state ───────────────────────────────────────────────────────────
-  BannerAd?       _bannerAd;
   InterstitialAd? _interstitialAd;
 
-  bool _bannerReady       = false;
   bool _interstitialReady = false;
   bool _initialized       = false;
-  bool _adsRemoved        = false;   // true = user paid, hide all ads
+  bool _adsRemoved        = false; // true = user paid, hide all ads
 
   // ── Public getters ───────────────────────────────────────────────────────────
-  bool       get adsRemoved    => _adsRemoved;
-  bool       get bannerReady   => _bannerReady && !_adsRemoved;
-  BannerAd?  get bannerAd      => _adsRemoved ? null : _bannerAd;
-  bool       get purchasing    => false;
-  String?    get purchaseError => null;
+  bool get adsRemoved => _adsRemoved;
+  bool get purchasing    => false;
+  String? get purchaseError => null;
 
   // ── Lifecycle ────────────────────────────────────────────────────────────────
 
@@ -56,7 +56,7 @@ class AdService extends ChangeNotifier {
       _verifyPremiumInBackground(userId);
     }
 
-    if (_adsRemoved) return; // Don't load ads if premium
+    if (_adsRemoved) return; // Don't init ads SDK if premium
 
     await MobileAds.instance.initialize();
 
@@ -68,11 +68,10 @@ class AdService extends ChangeNotifier {
       ),
     );
 
-    loadBanner();
     _loadInterstitial();
   }
 
-  // ── Premium state management ──────────────────────────────────────────────
+  // ── Premium state management ─────────────────────────────────────────────────
 
   Future<void> _loadCachedPremium() async {
     try {
@@ -100,13 +99,11 @@ class AdService extends ChangeNotifier {
           _adsRemoved = isPremium;
           await _saveCachedPremium(isPremium);
           if (isPremium) {
-            // User is premium — dispose ads immediately
-            _bannerAd?.dispose();
-            _bannerAd        = null;
-            _bannerReady     = false;
+            // User is premium — dispose interstitial immediately
             _interstitialAd?.dispose();
-            _interstitialAd  = null;
+            _interstitialAd    = null;
             _interstitialReady = false;
+            // Note: each screen disposes its own BannerAd via listener
           }
           notifyListeners();
         }
@@ -119,53 +116,41 @@ class AdService extends ChangeNotifier {
     _adsRemoved = true;
     await _saveCachedPremium(true);
 
-    _bannerAd?.dispose();
-    _bannerAd        = null;
-    _bannerReady     = false;
     _interstitialAd?.dispose();
-    _interstitialAd  = null;
+    _interstitialAd    = null;
     _interstitialReady = false;
+    // Note: each screen disposes its own BannerAd via its _onAdServiceChanged listener
 
     notifyListeners();
   }
 
-  // ── Banner ───────────────────────────────────────────────────────────────────
+  // ── Banner Factory ───────────────────────────────────────────────────────────
+  //
+  // Each screen calls createBannerAd() in initState() to get its OWN instance.
+  // The screen is responsible for calling .load() and .dispose() on it.
+  //
+  // Usage in a screen:
+  //   _bannerAd = AdService.instance.createBannerAd(
+  //     onLoaded:  () => setState(() => _bannerReady = true),
+  //     onFailed:  () => setState(() { _bannerAd = null; _bannerReady = false; }),
+  //   )..load();
 
-  void loadBanner() {
-    if (_adsRemoved) return;
-
-    _bannerAd?.dispose();
-    _bannerAd    = null;
-    _bannerReady = false;
-
-    _bannerAd = BannerAd(
-      adUnitId: _bannerAdUnitId,
+  BannerAd createBannerAd({
+    required VoidCallback onLoaded,
+    required VoidCallback onFailed,
+  }) {
+    return BannerAd(
+      adUnitId: bannerAdUnitId,
       size:     AdSize.banner,
       request:  const AdRequest(),
       listener: BannerAdListener(
-        onAdLoaded: (_) {
-          if (_adsRemoved) {
-            _bannerAd?.dispose();
-            _bannerAd = null;
-            return;
-          }
-          _bannerReady = true;
-          notifyListeners();
-        },
-        onAdFailedToLoad: (ad, error) {
-          ad.dispose();
-          _bannerAd    = null;
-          _bannerReady = false;
-          notifyListeners();
-          if (!_adsRemoved) {
-            Future.delayed(const Duration(seconds: 30), loadBanner);
-          }
-        },
-        onAdOpened:     (_) {},
-        onAdClosed:     (_) {},
-        onAdImpression: (_) {},
+        onAdLoaded:        (_) => onLoaded(),
+        onAdFailedToLoad:  (ad, _) { ad.dispose(); onFailed(); },
+        onAdOpened:        (_) {},
+        onAdClosed:        (_) {},
+        onAdImpression:    (_) {},
       ),
-    )..load();
+    );
   }
 
   // ── Interstitial ─────────────────────────────────────────────────────────────
@@ -174,7 +159,7 @@ class AdService extends ChangeNotifier {
     if (_adsRemoved) return;
 
     InterstitialAd.load(
-      adUnitId: _interstitialAdUnitId,
+      adUnitId: interstitialAdUnitId,
       request:  const AdRequest(),
       adLoadCallback: InterstitialAdLoadCallback(
         onAdLoaded: (ad) {
@@ -188,7 +173,7 @@ class AdService extends ChangeNotifier {
           _interstitialAd!.setImmersiveMode(true);
           _interstitialAd!.fullScreenContentCallback =
               FullScreenContentCallback(
-            onAdShowedFullScreenContent: (_) {},
+            onAdShowedFullScreenContent:    (_) {},
             onAdDismissedFullScreenContent: (ad) {
               ad.dispose();
               _interstitialAd    = null;
@@ -231,7 +216,6 @@ class AdService extends ChangeNotifier {
   // ── Dispose ──────────────────────────────────────────────────────────────────
   @override
   void dispose() {
-    _bannerAd?.dispose();
     _interstitialAd?.dispose();
     super.dispose();
   }
