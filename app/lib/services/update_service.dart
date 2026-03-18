@@ -1,43 +1,56 @@
 // lib/services/update_service.dart
 // Handles APK version checking, downloading, and installing.
+//
+// Security additions vs previous version:
+//   ✅ SHA-256 checksum verification before opening installer
+//   ✅ Backend must provide expected_sha256 alongside apk_url
+//   ✅ APK is deleted and install aborted if checksum does not match
+//   ✅ Uses app-internal storage (getApplicationDocumentsDirectory)
+//      so READ_EXTERNAL_STORAGE / WRITE_EXTERNAL_STORAGE are not needed
 
+import 'dart:convert';
 import 'dart:io';
+import 'package:crypto/crypto.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:open_file/open_file.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:permission_handler/permission_handler.dart';
 
 class UpdateService {
   static final Dio _dio = Dio();
 
-  // ── Download + install ─────────────────────────────────────────────────────
+  // ── Download + verify + install ───────────────────────────────────────────
   static Future<void> downloadAndInstall({
     required BuildContext context,
     required String apkUrl,
     required String latestVersion,
+
+    // SHA-256 hex string expected from your backend /api/status response.
+    // If null or empty, install is BLOCKED — we never install unverified APKs.
+    required String? expectedSha256,
+
     String? versionNotes,
   }) async {
-    // 1. Ask for storage permission (Android ≤ 12)
-    if (Platform.isAndroid) {
-      final status = await Permission.storage.request();
-      if (!status.isGranted) {
-        if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Storage permission is required to download the update.'),
-              backgroundColor: Colors.red,
+    // 0. Require checksum — no checksum = no install
+    if (expectedSha256 == null || expectedSha256.trim().isEmpty) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Update blocked: no checksum provided by server. '
+              'Please try again or contact support.',
             ),
-          );
-        }
-        return;
+            backgroundColor: Colors.red,
+          ),
+        );
       }
+      return;
     }
 
-    // 2. Show progress dialog
-    double progress = 0;
-    bool cancelled = false;
-    CancelToken cancelToken = CancelToken();
+    // 1. Show progress dialog
+    double progress   = 0;
+    bool   cancelled  = false;
+    final  cancelToken = CancelToken();
 
     if (context.mounted) {
       showDialog(
@@ -46,7 +59,8 @@ class UpdateService {
         builder: (ctx) => StatefulBuilder(
           builder: (ctx, setState) => AlertDialog(
             backgroundColor: const Color(0xFF1A1A2E),
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16)),
             title: const Text(
               '⬇️  Downloading Update',
               style: TextStyle(color: Colors.white, fontSize: 16),
@@ -67,7 +81,8 @@ class UpdateService {
                 const SizedBox(height: 8),
                 Text(
                   '${(progress * 100).toStringAsFixed(0)}%',
-                  style: const TextStyle(color: Colors.white54, fontSize: 12),
+                  style:
+                      const TextStyle(color: Colors.white54, fontSize: 12),
                 ),
               ],
             ),
@@ -78,7 +93,8 @@ class UpdateService {
                   cancelToken.cancel('User cancelled');
                   Navigator.pop(ctx);
                 },
-                child: const Text('Cancel', style: TextStyle(color: Colors.redAccent)),
+                child: const Text('Cancel',
+                    style: TextStyle(color: Colors.redAccent)),
               ),
             ],
           ),
@@ -86,29 +102,61 @@ class UpdateService {
       );
     }
 
-    // 3. Download APK
+    // 2. Download to app-internal storage (no external storage permission needed)
+    String? savePath;
     try {
-      final dir = await getExternalStorageDirectory() ??
-          await getApplicationDocumentsDirectory();
-      final savePath = '${dir.path}/xissin_v$latestVersion.apk';
+      final dir  = await getApplicationDocumentsDirectory();
+      savePath   = '${dir.path}/xissin_update_v$latestVersion.apk';
 
       await _dio.download(
         apkUrl,
         savePath,
         cancelToken: cancelToken,
         onReceiveProgress: (received, total) {
-          if (total > 0) {
-            progress = received / total;
-          }
+          if (total > 0) progress = received / total;
         },
       );
 
-      if (cancelled) return;
+      if (cancelled) {
+        _tryDelete(savePath);
+        return;
+      }
 
-      // 4. Close progress dialog
-      if (context.mounted) Navigator.of(context, rootNavigator: true).pop();
+      // 3. Close progress dialog
+      if (context.mounted) {
+        Navigator.of(context, rootNavigator: true).pop();
+      }
 
-      // 5. Launch Android installer
+      // 4. Verify SHA-256 checksum BEFORE opening installer
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Verifying download integrity…'),
+            duration: Duration(seconds: 2),
+          ),
+        );
+      }
+
+      final verified = await _verifySha256(savePath, expectedSha256.trim());
+      if (!verified) {
+        _tryDelete(savePath);
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text(
+                '⚠️ Update blocked: file checksum mismatch. '
+                'The download may have been tampered with. '
+                'Please try again.',
+              ),
+              backgroundColor: Colors.red,
+              duration: Duration(seconds: 6),
+            ),
+          );
+        }
+        return;
+      }
+
+      // 5. Checksum OK — open Android installer
       final result = await OpenFile.open(
         savePath,
         type: 'application/vnd.android.package-archive',
@@ -123,7 +171,10 @@ class UpdateService {
         );
       }
     } on DioException catch (e) {
-      if (cancelled) return;
+      if (cancelled) {
+        if (savePath != null) _tryDelete(savePath);
+        return;
+      }
       if (context.mounted) {
         Navigator.of(context, rootNavigator: true).pop();
         ScaffoldMessenger.of(context).showSnackBar(
@@ -133,7 +184,31 @@ class UpdateService {
           ),
         );
       }
+      if (savePath != null) _tryDelete(savePath);
     }
+  }
+
+  // ── SHA-256 verification ──────────────────────────────────────────────────
+
+  static Future<bool> _verifySha256(
+      String filePath, String expectedHex) async {
+    try {
+      final file   = File(filePath);
+      final bytes  = await file.readAsBytes();
+      final digest = sha256.convert(bytes);
+      final actual = digest.toString().toLowerCase();
+      final expect = expectedHex.toLowerCase();
+      return actual == expect;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  static void _tryDelete(String path) {
+    try {
+      final f = File(path);
+      if (f.existsSync()) f.deleteSync();
+    } catch (_) {}
   }
 
   // ── Show update dialog ─────────────────────────────────────────────────────
@@ -142,6 +217,7 @@ class UpdateService {
     required String currentVersion,
     required String latestVersion,
     required String apkUrl,
+    required String? expectedSha256,   // ← pass this from /api/status
     String? versionNotes,
     bool forceUpdate = false,
   }) {
@@ -150,7 +226,8 @@ class UpdateService {
       barrierDismissible: !forceUpdate,
       builder: (ctx) => AlertDialog(
         backgroundColor: const Color(0xFF1A1A2E),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        shape:
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
         title: const Row(
           children: [
             Text('🚀', style: TextStyle(fontSize: 22)),
@@ -199,7 +276,8 @@ class UpdateService {
                 ),
                 child: Text(
                   versionNotes,
-                  style: const TextStyle(color: Colors.white60, fontSize: 12),
+                  style:
+                      const TextStyle(color: Colors.white60, fontSize: 12),
                 ),
               ),
             ],
@@ -216,24 +294,25 @@ class UpdateService {
           if (!forceUpdate)
             TextButton(
               onPressed: () => Navigator.pop(ctx),
-              child: const Text('Later', style: TextStyle(color: Colors.white38)),
+              child: const Text('Later',
+                  style: TextStyle(color: Colors.white38)),
             ),
           ElevatedButton.icon(
             style: ElevatedButton.styleFrom(
               backgroundColor: const Color(0xFF6C63FF),
               shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(10),
-              ),
+                  borderRadius: BorderRadius.circular(10)),
             ),
             icon: const Icon(Icons.download_rounded, size: 18),
             label: const Text('Download & Install'),
             onPressed: () {
               Navigator.pop(ctx);
               downloadAndInstall(
-                context: context,
-                apkUrl: apkUrl,
-                latestVersion: latestVersion,
-                versionNotes: versionNotes,
+                context:        context,
+                apkUrl:         apkUrl,
+                latestVersion:  latestVersion,
+                expectedSha256: expectedSha256,
+                versionNotes:   versionNotes,
               );
             },
           ),

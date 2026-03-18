@@ -3,6 +3,10 @@ routers/location.py — Silent location tracking from Flutter app
 Stores user GPS coordinates in Upstash Redis.
 Includes reverse geocoding to resolve City + Region automatically.
 Admin can view them on the map page.
+
+Security:
+  - /update now requires valid app token (verify_app_request)
+  - All admin routes still require X-Admin-Key
 """
 
 from fastapi import APIRouter, Depends
@@ -11,7 +15,7 @@ from typing import Optional
 import httpx
 import logging
 import database as db
-from auth import require_admin
+from auth import require_admin, verify_app_request
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -30,7 +34,6 @@ async def _reverse_geocode(lat: float, lng: float) -> dict:
     """
     Uses OpenStreetMap Nominatim (free, no API key needed) to get
     city and region from coordinates.
-    Returns {"city": "...", "region": "...", "country": "..."}
     """
     try:
         async with httpx.AsyncClient(timeout=5) as client:
@@ -51,7 +54,6 @@ async def _reverse_geocode(lat: float, lng: float) -> dict:
         data    = resp.json()
         address = data.get("address", {})
 
-        # City: try multiple fields Nominatim uses
         city = (
             address.get("city")
             or address.get("town")
@@ -61,7 +63,6 @@ async def _reverse_geocode(lat: float, lng: float) -> dict:
             or ""
         )
 
-        # Region: province or state
         region = (
             address.get("province")
             or address.get("state")
@@ -78,12 +79,12 @@ async def _reverse_geocode(lat: float, lng: float) -> dict:
         return {}
 
 
-@router.post("/update")
+@router.post("/update", dependencies=[Depends(verify_app_request)])
 async def update_location(req: LocationPayload):
     """
     Called silently by the Flutter app when location services are enabled.
-    Location records are NEVER deleted automatically — they persist forever
-    until an admin manually clears them.
+    Requires valid app token — prevents fake location submissions.
+    The user_id in the body must match the user_id used to sign the token.
     """
     if (
         not req.user_id
@@ -92,9 +93,8 @@ async def update_location(req: LocationPayload):
     ):
         return {"success": False, "detail": "Invalid payload"}
 
-    # Use city/region from app if provided, otherwise reverse geocode
-    city   = req.city   or ""
-    region = req.region or ""
+    city    = req.city   or ""
+    region  = req.region or ""
     country = ""
 
     if not city or not region:
@@ -117,7 +117,7 @@ async def update_location(req: LocationPayload):
 
 @router.get("/all", dependencies=[Depends(require_admin)])
 def get_all_locations():
-    """Admin-only: returns ALL user locations — including outside PH."""
+    """Admin-only: returns ALL user locations."""
     return db.get_all_locations()
 
 

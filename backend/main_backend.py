@@ -187,15 +187,24 @@ def api_status():
         os.environ.get("MAINTENANCE_MSG",
                        "Xissin is under maintenance. We'll be back shortly!")
     )
-    min_ver = s.get("min_app_version",
-                    os.environ.get("MIN_APP_VERSION", "1.0.0"))
-    lat_ver = s.get("latest_app_version",
-                    os.environ.get("LATEST_APP_VERSION", "1.0.0"))
+    min_ver    = s.get("min_app_version",
+                       os.environ.get("MIN_APP_VERSION", "1.0.0"))
+    lat_ver    = s.get("latest_app_version",
+                       os.environ.get("LATEST_APP_VERSION", "1.0.0"))
+    apk_url    = s.get("apk_download_url",
+                       os.environ.get("LATEST_APK_URL", ""))
+    apk_sha256 = s.get("apk_sha256",
+                       os.environ.get("LATEST_APK_SHA256", ""))
+    apk_notes  = s.get("apk_version_notes",
+                       os.environ.get("LATEST_APK_NOTES", ""))
 
     return {
         "api_version":        "1.8.0",
         "min_app_version":    min_ver,
         "latest_app_version": lat_ver,
+        "apk_download_url":   apk_url,
+        "apk_sha256":         apk_sha256,
+        "apk_version_notes":  apk_notes,
         "maintenance":         maintenance,
         "maintenance_message": maintenance_msg if maintenance else None,
         "features": {

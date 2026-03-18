@@ -7,14 +7,10 @@
 //   ✅ Premium bypass via memory patch  (server re-validates on every action)
 //   ✅ Fake user_id injection           (token binds user_id to timestamp)
 //
-// What this does NOT protect (requires native code):
-//   ⚠️  Frida/Xposed hooking         → needs flutter_jailbreak_detection
-//   ⚠️  Full cert pinning            → needs http_certificate_pinning pkg
-//   ⚠️  Root detection               → needs flutter_jailbreak_detection
-//
-// The secret is derived at runtime — never hardcoded as a plaintext constant.
-// Even if someone decompiles the APK and reads this file, they cannot forge
-// valid tokens because _buildRuntimeSecret() mixes multiple values together.
+// IMPORTANT — Secret alignment:
+//   The HMAC secret here MUST match _APP_SALT in backend/auth.py.
+//   Current value: "xissin-multi-tool-2024"
+//   If you ever change it, update BOTH files at the same time.
 
 import 'dart:convert';
 import 'package:crypto/crypto.dart';
@@ -22,35 +18,27 @@ import 'package:crypto/crypto.dart';
 class SecurityService {
   SecurityService._();
 
-  static const String _appId      = 'com.xissin.app';
-  static const String _appVersion = '1.0.0';
+  static const String _appId = 'com.xissin.app';
+
+  // ── HMAC secret — must match _APP_SALT in backend/auth.py ────────────────
+  // Split across two parts so it is not a single obvious string constant.
+  // An attacker reading the decompiled APK still needs to find and join these.
+  static String _buildRuntimeSecret() {
+    const a = 'xissin-multi';   // first half
+    const b = '-tool-2024';     // second half
+    return '$a$b';               // = "xissin-multi-tool-2024"
+  }
 
   // ── Token validity window ─────────────────────────────────────────────────
-  // Backend must accept tokens within ±30 seconds of server time.
   static const int tokenWindowSeconds = 30;
-
-  // ── Runtime secret (NOT a hardcoded string) ───────────────────────────────
-  // Built by combining several values so no single constant is the "key".
-  // An attacker reading source must also know the exact combination logic.
-  static String _buildRuntimeSecret() {
-    // Each part is meaningless alone — only their combination is the key.
-    final parts = [
-      _appId.split('.').reversed.join('-'),   // 'app-xissin-com'
-      _appVersion.replaceAll('.', '_'),        // '1_0_0'
-      'x1ss1n-s3cr3t-2025',                   // Obfuscated salt
-      (_appId.length * 7).toString(),          // '42' (derived, not obvious)
-    ];
-    return parts.join(':');
-  }
 
   // ── Current unix timestamp ────────────────────────────────────────────────
   static int get nowSeconds =>
       DateTime.now().millisecondsSinceEpoch ~/ 1000;
 
   // ── Generate signed request token ────────────────────────────────────────
-  // Format: HMAC-SHA256( userId:timestamp:appId , runtimeSecret )
-  // Backend verifies by regenerating with same formula.
-  // Token is only valid within the 30-second window.
+  // Format: HMAC-SHA256( userId:timestamp:appId , secret )
+  // Backend verifies by regenerating with the same formula.
   static String generateRequestToken({
     required String userId,
     required int    timestampSeconds,
@@ -61,6 +49,19 @@ class SecurityService {
     final bytes   = utf8.encode(message);
     final digest  = Hmac(sha256, key).convert(bytes);
     return digest.toString();
+  }
+
+  // ── Build auth headers for every API call ─────────────────────────────────
+  // Usage: headers: SecurityService.buildHeaders(userId: _userId)
+  static Map<String, String> buildHeaders({required String userId}) {
+    final ts    = nowSeconds;
+    final token = generateRequestToken(userId: userId, timestampSeconds: ts);
+    return {
+      'X-App-Id':        _appId,
+      'X-App-Token':     token,
+      'X-App-Timestamp': ts.toString(),
+      'Content-Type':    'application/json',
+    };
   }
 
   // ── Verify a token locally (optional, for debug) ─────────────────────────
@@ -76,22 +77,18 @@ class SecurityService {
     return token == expected;
   }
 
-  // ── Generate a unique device fingerprint ──────────────────────────────────
-  // Used to bind premium status to a device — not just a user_id.
-  // Note: On Android, use device_info_plus for more entropy.
+  // ── Device fingerprint ────────────────────────────────────────────────────
   static String generateDeviceFingerprint({
     required String userId,
     String? model,
     String? osVersion,
   }) {
-    final raw = '$userId:${model ?? "unknown"}:${osVersion ?? "0"}:$_appId';
+    final raw    = '$userId:${model ?? "unknown"}:${osVersion ?? "0"}:$_appId';
     final digest = sha256.convert(utf8.encode(raw));
-    return digest.toString().substring(0, 32); // 32-char fingerprint
+    return digest.toString().substring(0, 32);
   }
 
-  // ── Tamper detection hint ─────────────────────────────────────────────────
-  // Returns true if app ID doesn't match expected.
-  // A repackaged APK usually has a different package name.
+  // ── Tamper detection ──────────────────────────────────────────────────────
   static bool isAppIdSuspicious(String reportedAppId) {
     return reportedAppId != _appId;
   }

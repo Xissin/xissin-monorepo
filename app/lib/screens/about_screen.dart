@@ -28,11 +28,32 @@ class _AboutScreenState extends State<AboutScreen> {
   String  _latestVersion   = '';
   String  _apkUrl          = '';
   String? _versionNotes;
+  String? _apkSha256;   // SHA-256 checksum from /api/status for APK verification
+
+  // ── Banner ad (owned by this screen) ──────────────────────────────────────
+  BannerAd? _bannerAd;
+  bool      _bannerReady = false;
 
   @override
   void initState() {
     super.initState();
     _loadVersion();
+    _initBanner();
+  }
+
+  void _initBanner() {
+    final adService = AdService.instance;
+    if (adService.adsRemoved) return;
+    _bannerAd = adService.createBannerAd(
+      onLoaded: () { if (mounted) setState(() => _bannerReady = true); },
+      onFailed: () { if (mounted) setState(() { _bannerAd = null; _bannerReady = false; }); },
+    )..load();
+  }
+
+  @override
+  void dispose() {
+    _bannerAd?.dispose();
+    super.dispose();
   }
 
   Future<void> _loadVersion() async {
@@ -62,6 +83,7 @@ class _AboutScreenState extends State<AboutScreen> {
       final latest      = data['latest_app_version'] as String? ?? '';
       final apkUrl      = data['apk_download_url']   as String? ?? '';
       final notes       = data['apk_version_notes']  as String?;
+      final sha256      = data['apk_sha256']          as String?;
 
       final hasUpdate = latest.isNotEmpty &&
           _version.isNotEmpty &&
@@ -76,6 +98,7 @@ class _AboutScreenState extends State<AboutScreen> {
           _latestVersion   = latest;
           _apkUrl          = apkUrl;
           _versionNotes    = notes;
+          _apkSha256       = sha256;
         });
       }
 
@@ -85,6 +108,7 @@ class _AboutScreenState extends State<AboutScreen> {
           currentVersion: _version,
           latestVersion:  latest,
           apkUrl:         apkUrl,
+          expectedSha256: sha256,
           versionNotes:   notes,
           forceUpdate:    false,
         );
@@ -170,22 +194,16 @@ class _AboutScreenState extends State<AboutScreen> {
   // ── Banner Ad ──────────────────────────────────────────────────────────────
 
   Widget _buildBannerAd() {
-    return Consumer<AdService>(
-      builder: (_, adService, __) {
-        if (adService.adsRemoved) return const SizedBox.shrink();
-        if (!adService.bannerReady || adService.bannerAd == null) {
-          return const SizedBox.shrink();
-        }
-        return SafeArea(
-          top: false,
-          child: Container(
-            alignment: Alignment.center,
-            width:  adService.bannerAd!.size.width.toDouble(),
-            height: adService.bannerAd!.size.height.toDouble(),
-            child:  AdWidget(ad: adService.bannerAd!),
-          ),
-        );
-      },
+    if (AdService.instance.adsRemoved) return const SizedBox.shrink();
+    if (!_bannerReady || _bannerAd == null) return const SizedBox.shrink();
+    return SafeArea(
+      top: false,
+      child: Container(
+        alignment: Alignment.center,
+        width:  _bannerAd!.size.width.toDouble(),
+        height: _bannerAd!.size.height.toDouble(),
+        child:  AdWidget(ad: _bannerAd!),
+      ),
     );
   }
 
@@ -414,6 +432,7 @@ class _AboutScreenState extends State<AboutScreen> {
                         currentVersion: _version,
                         latestVersion:  _latestVersion,
                         apkUrl:         _apkUrl,
+                        expectedSha256: _apkSha256,
                         versionNotes:   _versionNotes,
                         forceUpdate:    false,
                       )
