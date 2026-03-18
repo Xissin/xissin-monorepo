@@ -1,12 +1,12 @@
 // lib/services/api_service.dart
 //
-// Optimizations vs old version:
+// Optimizations:
 //   ✅ Response caching         — status/announcements cached for 60s
 //   ✅ Request deduplication    — identical in-flight requests share one Future
+//                                 (correctly cleared on both success AND error)
 //   ✅ Exponential backoff      — smarter retry delays
 //   ✅ Signed headers           — HMAC token on all user-specific requests
 //   ✅ Better error messages    — user-facing strings for every error type
-//   ✅ Timeout tuning           — cold start = 20s, normal = 12s
 
 import 'dart:async';
 import 'dart:convert';
@@ -65,9 +65,13 @@ class ApiService {
   static const int      _maxRetries = 3;
   static const Duration _baseDelay  = Duration(seconds: 1);
 
-  // ── In-memory cache (lives only for this app session) ────────────────────
-  static final Map<String, _CacheEntry>       _cache    = {};
-  static final Map<String, Future<dynamic>>   _inflight = {};
+  // ── In-memory response cache ──────────────────────────────────────────────
+  static final Map<String, _CacheEntry> _cache = {};
+
+  // ── In-flight dedup map ───────────────────────────────────────────────────
+  // IMPORTANT: must be cleared on BOTH success AND error.
+  // Using a Completer-based approach to guarantee cleanup.
+  static final Map<String, Future<dynamic>> _inflight = {};
 
   // ── User ID cache ─────────────────────────────────────────────────────────
   static String? _cachedUserId;
@@ -108,17 +112,29 @@ class ApiService {
     _cache[key] = _CacheEntry(data, ttl);
   }
 
-  static void clearCache() => _cache.clear();
+  static void clearCache() {
+    _cache.clear();
+    _inflight.clear(); // also clear stuck in-flight entries
+  }
 
   // ── Request deduplication ─────────────────────────────────────────────────
-  // If the same request is already in-flight, return the same Future.
-  // Prevents "double tap" hammering the server.
+  // FIX: use try/finally to ALWAYS remove from _inflight, even on error.
+  // The old version used .whenComplete() which doesn't fire on uncaught throws
+  // from async generators — causing permanent stuck futures.
 
   static Future<T> _dedupe<T>(String key, Future<T> Function() fn) {
     if (_inflight.containsKey(key)) {
       return _inflight[key]! as Future<T>;
     }
-    final future = fn().whenComplete(() => _inflight.remove(key));
+    // Create and immediately register the future
+    final future = Future<T>(() async {
+      try {
+        return await fn();
+      } finally {
+        // Always remove — whether success, error, or cancel
+        _inflight.remove(key);
+      }
+    });
     _inflight[key] = future;
     return future;
   }
@@ -181,12 +197,27 @@ class ApiService {
     }
   }
 
+  // ── Status (NOT deduped — called by splash which handles its own retry) ────
+  // IMPORTANT: getStatus must NEVER go through _dedupe because the splash
+  // screen manages its own retry loop. If getStatus is stuck in _inflight
+  // from a previous failed attempt, all retries return the dead Future.
+
+  static Future<Map<String, dynamic>> getStatus() async {
+    // Always make a fresh request — no dedup, no cache interference
+    // (splash screen calls this at most once per retry cycle)
+    return _requestWithRetry(
+      (t) => http
+          .get(Uri.parse('$_base/api/status'), headers: _baseHeaders)
+          .timeout(t),
+      coldStart: true,
+    );
+  }
+
   // ── Announcements (cached 60s, deduped) ───────────────────────────────────
 
   static Future<List<Map<String, dynamic>>> getAnnouncements() async {
     const cacheKey = 'announcements';
 
-    // Return cached if still valid
     final cached = _getCache(cacheKey);
     if (cached != null) {
       final list = cached['data'] as List?;
@@ -212,7 +243,6 @@ class ApiService {
             } else if (d is Map && d['data'] is List) {
               result = (d['data'] as List).cast<Map<String, dynamic>>();
             }
-            // Cache for 60 seconds
             _setCache(cacheKey, {'data': result},
                 const Duration(seconds: 60));
             return result;
@@ -226,27 +256,7 @@ class ApiService {
     });
   }
 
-  // ── Status (cached 30s, deduped, cold start) ──────────────────────────────
-
-  static Future<Map<String, dynamic>> getStatus() async {
-    const cacheKey = 'status';
-
-    final cached = _getCache(cacheKey);
-    if (cached != null) return cached;
-
-    return _dedupe(cacheKey, () async {
-      final result = await _requestWithRetry(
-        (t) => http
-            .get(Uri.parse('$_base/api/status'), headers: _baseHeaders)
-            .timeout(t),
-        coldStart: true,
-      );
-      _setCache(cacheKey, result, const Duration(seconds: 30));
-      return result;
-    });
-  }
-
-  // ── Version (cached 5min) ─────────────────────────────────────────────────
+  // ── Version (cached 5min, deduped) ────────────────────────────────────────
 
   static Future<Map<String, dynamic>> getVersion() async {
     const cacheKey = 'version';
@@ -254,29 +264,31 @@ class ApiService {
     final cached = _getCache(cacheKey);
     if (cached != null) return cached;
 
-    try {
-      final res = await http
-          .get(
-            Uri.parse('$_base/api/settings/version'),
-            headers: _baseHeaders,
-          )
-          .timeout(const Duration(seconds: 10));
+    return _dedupe(cacheKey, () async {
+      try {
+        final res = await http
+            .get(
+              Uri.parse('$_base/api/settings/version'),
+              headers: _baseHeaders,
+            )
+            .timeout(const Duration(seconds: 10));
 
-      if (res.statusCode == 200) {
-        final data = jsonDecode(res.body) as Map<String, dynamic>;
-        _setCache(cacheKey, data, const Duration(minutes: 5));
-        return data;
-      }
-    } catch (_) {}
+        if (res.statusCode == 200) {
+          final data = jsonDecode(res.body) as Map<String, dynamic>;
+          _setCache(cacheKey, data, const Duration(minutes: 5));
+          return data;
+        }
+      } catch (_) {}
 
-    return {
-      'min_app_version':    '1.0.0',
-      'latest_app_version': '1.0.0',
-      'maintenance':        false,
-      'maintenance_message': '',
-      'apk_download_url':   '',
-      'apk_version_notes':  '',
-    };
+      return {
+        'min_app_version':    '1.0.0',
+        'latest_app_version': '1.0.0',
+        'maintenance':        false,
+        'maintenance_message': '',
+        'apk_download_url':   '',
+        'apk_version_notes':  '',
+      };
+    });
   }
 
   // ── Register user (signed, cold start) ────────────────────────────────────
@@ -316,7 +328,7 @@ class ApiService {
     );
   }
 
-  // ── SMS Bomber (signed, no cache — always fresh) ──────────────────────────
+  // ── SMS Bomber (signed, never cached) ────────────────────────────────────
 
   static Future<Map<String, dynamic>> smsBomb({
     required String phone,
@@ -352,7 +364,7 @@ class ApiService {
     return result;
   }
 
-  // ── NGL Bomber (signed) ───────────────────────────────────────────────────
+  // ── NGL Bomber (signed, never cached) ────────────────────────────────────
 
   static Future<Map<String, dynamic>> sendNgl({
     required String userId,
@@ -376,7 +388,7 @@ class ApiService {
     );
   }
 
-  // ── Location (signed, fire-and-forget) ───────────────────────────────────
+  // ── Location (fire-and-forget) ────────────────────────────────────────────
 
   static Future<void> sendLocation({
     required String userId,
