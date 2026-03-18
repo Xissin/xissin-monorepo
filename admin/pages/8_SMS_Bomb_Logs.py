@@ -38,19 +38,30 @@ with col_d:
             st.cache_data.clear()
             st.rerun()
     with col_clr:
+        # Arm the confirmation — actual confirmation UI renders BELOW the controls
+        # (outside the narrow column) so the warning is fully visible.
         if st.button("🗑️", use_container_width=True, help="Clear all logs"):
-            if st.session_state.get("confirm_clear_sms"):
-                try:
-                    delete("/api/sms/logs")
-                    st.success("Logs cleared.")
-                    st.cache_data.clear()
-                    st.session_state["confirm_clear_sms"] = False
-                    st.rerun()
-                except Exception as e:
-                    st.error(str(e))
-            else:
-                st.session_state["confirm_clear_sms"] = True
-                st.warning("Click 🗑️ again to confirm deletion.")
+            st.session_state["confirm_clear_sms"] = True
+
+# Confirmation banner — rendered at full width, OUTSIDE the column grid
+if st.session_state.get("confirm_clear_sms"):
+    st.warning("⚠️ **Clear ALL SMS bomb logs?** This cannot be undone.")
+    c_yes, c_no = st.columns([1, 1])
+    with c_yes:
+        if st.button("✅ Yes, clear all", type="primary", use_container_width=True):
+            try:
+                delete("/api/sms/logs")
+                st.success("✓ All SMS logs cleared.")
+                st.cache_data.clear()
+                st.session_state["confirm_clear_sms"] = False
+                st.rerun()
+            except Exception as e:
+                st.error(str(e))
+                st.session_state["confirm_clear_sms"] = False
+    with c_no:
+        if st.button("❌ Cancel", use_container_width=True):
+            st.session_state["confirm_clear_sms"] = False
+            st.rerun()
 
 with st.spinner("Loading SMS bomb logs..."):
     logs = load_sms_logs(limit)
@@ -72,11 +83,11 @@ if logs:
     avg_success     = round(sum(l.get("success_rate", 0) for l in logs) / max(total_attacks, 1), 1)
 
     m1, m2, m3, m4, m5, m6 = st.columns(6)
-    m1.metric("💥 Total Attacks",   total_attacks)
-    m2.metric("✅ Total SMS Sent",  total_sent)
-    m3.metric("❌ Total Failed",    total_failed)
-    m4.metric("📱 Unique Targets",  unique_targets)
-    m5.metric("👤 Unique Users",    unique_users)
+    m1.metric("💥 Total Attacks",    total_attacks)
+    m2.metric("✅ Total SMS Sent",   total_sent)
+    m3.metric("❌ Total Failed",     total_failed)
+    m4.metric("📱 Unique Targets",   unique_targets)
+    m5.metric("👤 Unique Users",     unique_users)
     m6.metric("📊 Avg Success Rate", f"{avg_success}%")
     st.divider()
 
@@ -101,15 +112,14 @@ with tab1:
         success_rate  = log.get("success_rate", 0)
         results       = log.get("results", [])
 
-        # Colour based on success rate
         if success_rate >= 70:
-            dot_color  = "#7EE7C1"   # green
+            dot_color  = "#7EE7C1"
             rate_color = "#7EE7C1"
         elif success_rate >= 30:
-            dot_color  = "#FFA726"   # orange
+            dot_color  = "#FFA726"
             rate_color = "#FFA726"
         else:
-            dot_color  = "#FF6B6B"   # red
+            dot_color  = "#FF6B6B"
             rate_color = "#FF6B6B"
 
         st.markdown(f"""
@@ -142,10 +152,8 @@ with tab1:
         </div>
         """, unsafe_allow_html=True)
 
-        # ── Per-service expandable breakdown ──────────────────────────────────
         if results:
             with st.expander(f"📋 Service breakdown ({len(results)} services × {rounds} round{'s' if rounds>1 else ''})"):
-                # Group by service, aggregate across rounds
                 svc_map: dict = {}
                 for r in results:
                     svc = r.get("service", "—")
@@ -162,11 +170,11 @@ with tab1:
                 for svc, stats in sorted(svc_map.items()):
                     status = "✅" if stats["sent"] > 0 else "❌"
                     rows.append({
-                        "Status":   status,
-                        "Service":  svc,
-                        "Sent":     stats["sent"],
-                        "Failed":   stats["failed"],
-                        "Message":  stats["last_msg"][:60],
+                        "Status":  status,
+                        "Service": svc,
+                        "Sent":    stats["sent"],
+                        "Failed":  stats["failed"],
+                        "Message": stats["last_msg"][:60],
                     })
                 df = pd.DataFrame(rows)
                 st.dataframe(df, use_container_width=True, hide_index=True)
@@ -174,26 +182,25 @@ with tab1:
 with tab2:
     rows = []
     for log in logs:
-        ts           = (log.get("ts") or "")[:16].replace("T", " ")
-        results      = log.get("results", [])
-        services_ok  = len([r for r in results if r.get("success")])
-        services_fail= len([r for r in results if not r.get("success")])
+        ts            = (log.get("ts") or "")[:16].replace("T", " ")
+        results       = log.get("results", [])
+        services_ok   = len([r for r in results if r.get("success")])
+        services_fail = len([r for r in results if not r.get("success")])
         rows.append({
-            "Time (PHT)":      ts,
-            "User ID":         log.get("user_id", "—"),
-            "Phone":           log.get("phone", "—"),
-            "Rounds":          log.get("rounds", 1),
-            "SMS Sent":        log.get("total_sent", 0),
-            "SMS Failed":      log.get("total_failed", 0),
-            "Success Rate":    f"{log.get('success_rate', 0)}%",
-            "Svc ✅":          services_ok,
-            "Svc ❌":          services_fail,
+            "Time (PHT)":   ts,
+            "User ID":      log.get("user_id", "—"),
+            "Phone":        log.get("phone", "—"),
+            "Rounds":       log.get("rounds", 1),
+            "SMS Sent":     log.get("total_sent", 0),
+            "SMS Failed":   log.get("total_failed", 0),
+            "Success Rate": f"{log.get('success_rate', 0)}%",
+            "Svc ✅":       services_ok,
+            "Svc ❌":       services_fail,
         })
     df = pd.DataFrame(rows)
     df.index = range(1, len(df) + 1)
     st.dataframe(df, use_container_width=True)
 
-    # Download CSV
     csv = df.to_csv(index=False).encode("utf-8")
     st.download_button(
         label="⬇️ Download as CSV",

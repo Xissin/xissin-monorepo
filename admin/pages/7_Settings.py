@@ -2,12 +2,13 @@
 pages/7_Settings.py — Server control: maintenance, versioning, feature flags,
                        APK hosting, and Remove Ads product settings
 """
+import re  # ← moved to top-level (was buried inside a conditional block)
 
 import streamlit as st
 from utils.api import get, post
+from utils.theme import inject_theme, page_header, auth_guard
 
 st.set_page_config(page_title="Settings · Xissin Admin", page_icon="⚙️", layout="wide")
-from utils.theme import inject_theme, page_header, auth_guard
 inject_theme()
 auth_guard()
 
@@ -17,6 +18,21 @@ page_header("⚙️", "Server Control", "MAINTENANCE · FEATURES · VERSIONING �
 @st.cache_data(ttl=30, show_spinner=False)
 def load_settings():
     return get("/api/settings/")
+
+
+def _convert_drive_url(url: str) -> str:
+    """Convert a Google Drive share link to a direct download URL."""
+    if not url:
+        return url
+    if "uc?export=download" in url:
+        return url
+    m = re.search(r"/file/d/([a-zA-Z0-9_-]+)", url)
+    if not m:
+        m = re.search(r"[?&]id=([a-zA-Z0-9_-]+)", url)
+    if m:
+        return f"https://drive.google.com/uc?export=download&id={m.group(1)}"
+    return url
+
 
 col_refresh, _ = st.columns([1, 5])
 with col_refresh:
@@ -100,17 +116,7 @@ with col_right:
             placeholder="• Bug fixes\n• New feature added\n• Performance improvements",
         )
         if raw_apk_url:
-            import re
-            def _preview_convert(url):
-                if "uc?export=download" in url:
-                    return url
-                m = re.search(r"/file/d/([a-zA-Z0-9_-]+)", url)
-                if not m:
-                    m = re.search(r"[?&]id=([a-zA-Z0-9_-]+)", url)
-                if m:
-                    return f"https://drive.google.com/uc?export=download&id={m.group(1)}"
-                return url
-            converted = _preview_convert(raw_apk_url)
+            converted = _convert_drive_url(raw_apk_url)
             if converted != raw_apk_url:
                 st.success(f"✅ Will be saved as:\n`{converted}`")
             else:
@@ -131,7 +137,6 @@ ra_col1, ra_col2 = st.columns([1, 1])
 
 with ra_col1:
     with st.container(border=True):
-        # Price — stored in centavos, displayed/edited in PHP
         current_price_php = (s.get("remove_ads_price") or 9900) / 100
         price_php = st.number_input(
             "💰 Price (₱ PHP)",
@@ -153,13 +158,11 @@ with ra_col1:
             placeholder="Remove Ads — ₱99 Lifetime",
             help="Short label shown on the promo banner on the home screen.",
         )
-
         remove_ads_subtitle = st.text_input(
             "📝 Banner Subtitle",
             value=s.get("remove_ads_subtitle") or "Pay once via GCash · No ads forever",
             placeholder="Pay once via GCash · No ads forever",
         )
-
         remove_ads_description = st.text_area(
             "📄 Dialog Description",
             value=s.get("remove_ads_description") or "Enjoy Xissin completely ad-free — forever.",
@@ -176,7 +179,6 @@ with ra_col2:
             "Add as many as you want — one per line."
         )
 
-        # Load current benefits (list → newline-separated text)
         current_benefits = s.get("remove_ads_benefits") or [
             "No more banner ads",
             "No more interstitial ads",
@@ -204,7 +206,6 @@ with ra_col2:
             ),
         )
 
-        # Live preview
         parsed_benefits = [b.strip() for b in benefits_input.splitlines() if b.strip()]
         if parsed_benefits:
             st.markdown("**Preview:**")
@@ -219,16 +220,16 @@ with st.expander("💾 Current Saved Values", expanded=False):
     cur_price   = (s.get("remove_ads_price") or 9900) / 100
 
     rows = [
-        ("maintenance",           "🔴 ON" if s.get("maintenance") else "🟢 OFF"),
-        ("min_app_version",       s.get("min_app_version", "-")),
-        ("latest_app_version",    s.get("latest_app_version", "-")),
-        ("feature_sms",           "✅ enabled" if s.get("feature_sms", True) else "❌ disabled"),
-        ("feature_ngl",           "✅ enabled" if s.get("feature_ngl", True) else "❌ disabled"),
-        ("apk_download_url",      display_apk),
-        ("remove_ads_price",      f"₱{cur_price:.2f} ({s.get('remove_ads_price', 9900)} centavos)"),
-        ("remove_ads_label",      s.get("remove_ads_label", "-") or "-"),
-        ("remove_ads_description",s.get("remove_ads_description", "-") or "-"),
-        ("remove_ads_benefits",   f"{len(current_benefits)} item(s)"),
+        ("maintenance",            "🔴 ON" if s.get("maintenance") else "🟢 OFF"),
+        ("min_app_version",        s.get("min_app_version", "-")),
+        ("latest_app_version",     s.get("latest_app_version", "-")),
+        ("feature_sms",            "✅ enabled" if s.get("feature_sms", True) else "❌ disabled"),
+        ("feature_ngl",            "✅ enabled" if s.get("feature_ngl", True) else "❌ disabled"),
+        ("apk_download_url",       display_apk),
+        ("remove_ads_price",       f"₱{cur_price:.2f} ({s.get('remove_ads_price', 9900)} centavos)"),
+        ("remove_ads_label",       s.get("remove_ads_label", "-") or "-"),
+        ("remove_ads_description", s.get("remove_ads_description", "-") or "-"),
+        ("remove_ads_benefits",    f"{len(current_benefits)} item(s)"),
     ]
     for key, val in rows:
         st.markdown(
@@ -249,7 +250,7 @@ with col_save:
             payload = {
                 "maintenance":            maintenance,
                 "maintenance_message":    maint_msg.strip() or "Xissin is under maintenance.",
-                "min_app_version":        min_ver.strip()   or "1.0.0",
+                "min_app_version":        min_ver.strip()    or "1.0.0",
                 "latest_app_version":     latest_ver.strip() or "1.0.0",
                 "feature_sms":            feature_sms,
                 "feature_ngl":            feature_ngl,

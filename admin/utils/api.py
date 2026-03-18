@@ -2,6 +2,7 @@
 utils/api.py — Shared API helper for Xissin Streamlit Admin
 All HTTP calls to the Railway backend go through here.
 """
+from __future__ import annotations   # ← fixes dict | list on Python < 3.10
 
 import requests
 import streamlit as st

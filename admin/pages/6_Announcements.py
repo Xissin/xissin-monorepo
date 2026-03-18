@@ -4,15 +4,28 @@ pages/6_Announcements.py — Post, view and delete app announcements
 
 import streamlit as st
 from utils.api import get_public, post, delete
+from utils.theme import inject_theme, page_header, auth_guard
 
 st.set_page_config(page_title="Announcements · Xissin Admin", page_icon="📢", layout="wide")
-from utils.theme import inject_theme, page_header, auth_guard
 inject_theme()
-
 auth_guard()
 
 page_header("📢", "Announcements", "BROADCAST · POST · DELETE")
-pass
+
+# ── Shared colour/icon map (used in both columns) ──────────────────────────────
+COLOR_MAP = {
+    "info":    ("rgba(56,189,248,.07)",  "#38BDF8", "ℹ️"),
+    "warning": ("rgba(255,167,38,.07)",  "#FFA726", "⚠️"),
+    "success": ("rgba(126,231,193,.07)", "#7EE7C1", "✅"),
+    "error":   ("rgba(255,107,107,.07)", "#FF6B6B", "🔴"),
+}
+# Preview variant has slightly higher opacity
+PREVIEW_COLOR_MAP = {
+    "info":    ("rgba(56,189,248,.1)",  "#38BDF8"),
+    "warning": ("rgba(255,167,38,.1)",  "#FFA726"),
+    "success": ("rgba(126,231,193,.1)", "#7EE7C1"),
+    "error":   ("rgba(255,107,107,.1)", "#FF6B6B"),
+}
 
 # ── Fetch ──────────────────────────────────────────────────────────────────────
 @st.cache_data(ttl=15, show_spinner=False)
@@ -32,25 +45,18 @@ col_left, col_right = st.columns([1, 1])
 with col_left:
     st.markdown("### ✏️ Post Announcement")
     with st.container(border=True):
-        title   = st.text_input("Title", placeholder="e.g. Maintenance Notice")
-        message = st.text_area("Message", placeholder="Write your announcement here...", height=120)
+        title    = st.text_input("Title", placeholder="e.g. Maintenance Notice")
+        message  = st.text_area("Message", placeholder="Write your announcement here...", height=120)
         ann_type = st.selectbox("Type", ["info", "warning", "success", "error"])
 
-        TYPE_ICONS = {"info": "ℹ️", "warning": "⚠️", "success": "✅", "error": "🔴"}
         if title or message:
             st.markdown("**Preview:**")
-            icon = TYPE_ICONS.get(ann_type, "ℹ️")
-            COLOR_MAP = {
-                "info":    ("rgba(56,189,248,.1)",  "#38BDF8"),
-                "warning": ("rgba(255,167,38,.1)",  "#FFA726"),
-                "success": ("rgba(126,231,193,.1)", "#7EE7C1"),
-                "error":   ("rgba(255,107,107,.1)", "#FF6B6B"),
-            }
-            bg, col = COLOR_MAP[ann_type]
+            bg, col = PREVIEW_COLOR_MAP[ann_type]
+            _, icon_preview = COLOR_MAP[ann_type][1], COLOR_MAP[ann_type][2]
             st.markdown(f"""
             <div style='background:{bg}; border:1px solid {col}40; border-radius:12px;
                 padding:12px 14px; margin-top:8px'>
-                <div style='font-size:13px; font-weight:700; color:{col}'>{icon} {title or "Title"}</div>
+                <div style='font-size:13px; font-weight:700; color:{col}'>{icon_preview} {title or "Title"}</div>
                 <div style='font-size:12px; color:#7a8ab8; margin-top:4px'>
                     {message or "Message preview..."}
                 </div>
@@ -65,9 +71,9 @@ with col_left:
             else:
                 try:
                     post("/api/announcements", {
-                        "title": title.strip(),
+                        "title":   title.strip(),
                         "message": message.strip(),
-                        "type": ann_type,
+                        "type":    ann_type,
                     })
                     st.success("✓ Announcement posted!")
                     st.cache_data.clear()
@@ -82,16 +88,10 @@ with col_right:
     if not ann_list:
         st.info("No active announcements.")
     else:
-        COLOR_MAP = {
-            "info":    ("rgba(56,189,248,.07)",  "#38BDF8",  "ℹ️"),
-            "warning": ("rgba(255,167,38,.07)",  "#FFA726",  "⚠️"),
-            "success": ("rgba(126,231,193,.07)", "#7EE7C1",  "✅"),
-            "error":   ("rgba(255,107,107,.07)", "#FF6B6B",  "🔴"),
-        }
         for ann in ann_list:
             atype = ann.get("type", "info")
             bg, col, icon = COLOR_MAP.get(atype, COLOR_MAP["info"])
-            ts = (ann.get("created_at") or "")[:16].replace("T", " ")
+            ts     = (ann.get("created_at") or "")[:16].replace("T", " ")
             ann_id = ann.get("id", "")
 
             st.markdown(f"""
@@ -121,14 +121,33 @@ with col_right:
 
 st.divider()
 
-# ── Clear all ─────────────────────────────────────────────────────────────────
+# ── Clear all — with confirmation ──────────────────────────────────────────────
 st.markdown("### 🗑️ Clear All Announcements")
 st.warning("⚠️ This will delete ALL active announcements immediately.")
-if st.button("🗑️ Clear All", type="primary"):
-    try:
-        delete("/api/announcements")
-        st.success("✓ All announcements cleared.")
-        st.cache_data.clear()
+
+# Two-step confirmation: first click arms it, second click fires it
+if "confirm_clear_ann" not in st.session_state:
+    st.session_state["confirm_clear_ann"] = False
+
+if not st.session_state["confirm_clear_ann"]:
+    if st.button("🗑️ Clear All", type="primary"):
+        st.session_state["confirm_clear_ann"] = True
         st.rerun()
-    except Exception as e:
-        st.error(f"Error: {e}")
+else:
+    st.error("⚠️ **Are you sure?** This cannot be undone.")
+    col_yes, col_no = st.columns([1, 1])
+    with col_yes:
+        if st.button("✅ Yes, delete all", type="primary", use_container_width=True):
+            try:
+                delete("/api/announcements")
+                st.success("✓ All announcements cleared.")
+                st.cache_data.clear()
+                st.session_state["confirm_clear_ann"] = False
+                st.rerun()
+            except Exception as e:
+                st.error(f"Error: {e}")
+                st.session_state["confirm_clear_ann"] = False
+    with col_no:
+        if st.button("❌ Cancel", use_container_width=True):
+            st.session_state["confirm_clear_ann"] = False
+            st.rerun()
