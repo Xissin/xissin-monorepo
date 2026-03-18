@@ -4,6 +4,8 @@ import 'package:flutter_animate/flutter_animate.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../theme/app_theme.dart';
+import '../services/api_service.dart';
+import '../services/update_service.dart';
 
 class AboutScreen extends StatefulWidget {
   const AboutScreen({super.key});
@@ -15,6 +17,14 @@ class AboutScreen extends StatefulWidget {
 class _AboutScreenState extends State<AboutScreen> {
   String _version     = '';
   String _buildNumber = '';
+
+  // ── Update check state ─────────────────────────────────────────────────────
+  bool    _checkingUpdate  = false;
+  bool    _updateChecked   = false;
+  bool    _updateAvailable = false;
+  String  _latestVersion   = '';
+  String  _apkUrl          = '';
+  String? _versionNotes;
 
   @override
   void initState() {
@@ -30,6 +40,108 @@ class _AboutScreenState extends State<AboutScreen> {
         _buildNumber = info.buildNumber;
       });
     }
+  }
+
+  // ── Check for updates ──────────────────────────────────────────────────────
+  Future<void> _checkForUpdates() async {
+    if (_checkingUpdate) return;
+    HapticFeedback.mediumImpact();
+
+    setState(() {
+      _checkingUpdate  = true;
+      _updateChecked   = false;
+      _updateAvailable = false;
+    });
+
+    try {
+      final data = await ApiService.getVersion();
+
+      final latest      = data['latest_app_version'] as String? ?? '';
+      final apkUrl      = data['apk_download_url']   as String? ?? '';
+      final notes       = data['apk_version_notes']  as String?;
+
+      // Compare versions: available if latest > current
+      final hasUpdate = latest.isNotEmpty &&
+          _version.isNotEmpty &&
+          _isNewerVersion(latest, _version) &&
+          apkUrl.isNotEmpty;
+
+      if (mounted) {
+        setState(() {
+          _checkingUpdate  = false;
+          _updateChecked   = true;
+          _updateAvailable = hasUpdate;
+          _latestVersion   = latest;
+          _apkUrl          = apkUrl;
+          _versionNotes    = notes;
+        });
+      }
+
+      if (hasUpdate && mounted) {
+        UpdateService.showUpdateDialog(
+          context:        context,
+          currentVersion: _version,
+          latestVersion:  latest,
+          apkUrl:         apkUrl,
+          versionNotes:   notes,
+          forceUpdate:    false,
+        );
+      } else if (!hasUpdate && mounted) {
+        _showUpToDateSnack();
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() => _checkingUpdate = false);
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: const Text('Could not check for updates. Try again.',
+              style: TextStyle(color: Colors.white)),
+          backgroundColor: Colors.redAccent,
+          behavior:        SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(AppRadius.md)),
+          margin: const EdgeInsets.all(12),
+        ));
+      }
+    }
+  }
+
+  /// Returns true if [a] is strictly newer than [b].
+  /// Compares semver segments numerically (e.g. "1.2.0" > "1.1.9").
+  bool _isNewerVersion(String a, String b) {
+    try {
+      final pa = a.split('.').map(int.parse).toList();
+      final pb = b.split('.').map(int.parse).toList();
+      for (int i = 0; i < 3; i++) {
+        final va = i < pa.length ? pa[i] : 0;
+        final vb = i < pb.length ? pb[i] : 0;
+        if (va > vb) return true;
+        if (va < vb) return false;
+      }
+      return false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  void _showUpToDateSnack() {
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Row(children: [
+        const Icon(Icons.check_circle_rounded,
+            color: Color(0xFF7EE7C1), size: 18),
+        const SizedBox(width: 10),
+        Text(
+          'You\'re on the latest version (v$_version) 🎉',
+          style: const TextStyle(
+              color: Colors.white, fontWeight: FontWeight.w600),
+        ),
+      ]),
+      backgroundColor: const Color(0xFF1A2740),
+      behavior:        SnackBarBehavior.floating,
+      shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(AppRadius.md)),
+      margin:   const EdgeInsets.all(12),
+      duration: const Duration(seconds: 3),
+    ));
   }
 
   Future<void> _openUrl(String url) async {
@@ -57,7 +169,8 @@ class _AboutScreenState extends State<AboutScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final c = context.c;
+    final c    = context.c;
+    final year = DateTime.now().year;
 
     return Scaffold(
       backgroundColor: c.background,
@@ -89,11 +202,10 @@ class _AboutScreenState extends State<AboutScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
 
-            // ── Hero section ────────────────────────────────────────────────
+            // ── Hero section ─────────────────────────────────────────────────
             Center(
               child: Column(
                 children: [
-                  // App icon with glow
                   Container(
                     width:  110,
                     height: 110,
@@ -130,7 +242,6 @@ class _AboutScreenState extends State<AboutScreen> {
 
                   const SizedBox(height: 18),
 
-                  // App name
                   ShaderMask(
                     shaderCallback: (b) => LinearGradient(
                       colors: [c.primary, c.secondary],
@@ -138,9 +249,9 @@ class _AboutScreenState extends State<AboutScreen> {
                     child: const Text(
                       'Xissin',
                       style: TextStyle(
-                        color:      Colors.white,
-                        fontSize:   30,
-                        fontWeight: FontWeight.w900,
+                        color:         Colors.white,
+                        fontSize:      30,
+                        fontWeight:    FontWeight.w900,
                         letterSpacing: 1,
                       ),
                     ),
@@ -153,8 +264,7 @@ class _AboutScreenState extends State<AboutScreen> {
 
                   Text(
                     'Multi-Tool Suite',
-                    style: TextStyle(
-                        color: c.textSecondary, fontSize: 14),
+                    style: TextStyle(color: c.textSecondary, fontSize: 14),
                   )
                       .animate(delay: 150.ms)
                       .fadeIn(duration: 400.ms),
@@ -174,7 +284,8 @@ class _AboutScreenState extends State<AboutScreen> {
                         gradient: LinearGradient(
                           colors: [c.primary, c.secondary],
                         ),
-                        borderRadius: BorderRadius.circular(AppRadius.full),
+                        borderRadius:
+                            BorderRadius.circular(AppRadius.full),
                         boxShadow:
                             AppShadows.glow(c.primary, intensity: 0.25),
                       ),
@@ -183,9 +294,9 @@ class _AboutScreenState extends State<AboutScreen> {
                             ? 'Loading...'
                             : 'v$_version  •  Build $_buildNumber',
                         style: const TextStyle(
-                          color:      Colors.white,
-                          fontSize:   12,
-                          fontWeight: FontWeight.w600,
+                          color:         Colors.white,
+                          fontSize:      12,
+                          fontWeight:    FontWeight.w600,
                           letterSpacing: 0.3,
                         ),
                       ),
@@ -199,14 +310,19 @@ class _AboutScreenState extends State<AboutScreen> {
 
             const SizedBox(height: 36),
 
-            // ── Stats row ────────────────────────────────────────────────────
+            // ── Stats row ─────────────────────────────────────────────────────
             Row(
               children: [
                 _StatBox(label: 'Tools',    value: '5',  color: c.primary,   c: c),
                 const SizedBox(width: 12),
                 _StatBox(label: 'PH SMS',   value: '14', color: c.secondary, c: c),
                 const SizedBox(width: 12),
-                _StatBox(label: 'Platform', value: 'v${_version.isEmpty ? '?' : _version}', color: c.accent, c: c),
+                _StatBox(
+                  label: 'Platform',
+                  value: 'v${_version.isEmpty ? '?' : _version}',
+                  color: c.accent,
+                  c:     c,
+                ),
               ],
             )
                 .animate(delay: 250.ms)
@@ -215,59 +331,75 @@ class _AboutScreenState extends State<AboutScreen> {
 
             const SizedBox(height: 28),
 
-            // ── App info section ─────────────────────────────────────────────
+            // ── App Info section ──────────────────────────────────────────────
             _SectionLabel('App Info', c),
             const SizedBox(height: 12),
 
-            _infoCard(Icons.apps_rounded,      'App Name',   'Xissin Multi-Tool', c),
-            _infoCard(Icons.tag_rounded,       'Version',    _version.isEmpty ? 'Loading...' : 'v$_version', c),
-            _infoCard(Icons.build_rounded,     'Build',      _buildNumber.isEmpty ? 'Loading...' : _buildNumber, c),
+            _infoCard(Icons.apps_rounded,          'App Name', 'Xissin Multi-Tool', c),
+            _infoCard(Icons.tag_rounded,           'Version',  _version.isEmpty ? 'Loading...' : 'v$_version', c),
+            _infoCard(Icons.build_rounded,         'Build',    _buildNumber.isEmpty ? 'Loading...' : _buildNumber, c),
             _infoCard(Icons.phone_android_rounded, 'Platform', 'Android & iOS', c),
 
             const SizedBox(height: 24),
 
-            // ── Developer section ────────────────────────────────────────────
+            // ── Developer section ─────────────────────────────────────────────
             _SectionLabel('Developer', c),
             const SizedBox(height: 12),
 
-            _infoCard(Icons.person_outline_rounded, 'Developer', '@QuitNat', c,
-                onTap: () => _copyToClipboard('@QuitNat', 'Username')),
+            _infoCard(
+              Icons.person_outline_rounded,
+              'Developer',
+              '@QuitNat',
+              c,
+              onTap: () => _copyToClipboard('@QuitNat', 'Username'),
+            ),
 
             const SizedBox(height: 24),
 
-            // ── Social & links section ───────────────────────────────────────
+            // ── Community section ─────────────────────────────────────────────
             _SectionLabel('Community', c),
             const SizedBox(height: 12),
 
             _linkCard(
-              icon:    Icons.telegram,
+              icon:      Icons.telegram,
               iconColor: const Color(0xFF229ED9),
-              label:   'Telegram Channel',
-              value:   '@Xissin_0',
-              c:       c,
-              onTap:   () => _openUrl('https://t.me/Xissin_0'),
+              label:     'Telegram Channel',
+              value:     '@Xissin_0',
+              c:         c,
+              onTap:     () => _openUrl('https://t.me/Xissin_0'),
             ),
             _linkCard(
-              icon:     Icons.forum_rounded,
+              icon:      Icons.forum_rounded,
               iconColor: c.secondary,
-              label:    'Discussion Group',
-              value:    '@Xissin_1',
-              c:        c,
-              onTap:    () => _openUrl('https://t.me/Xissin_1'),
+              label:     'Discussion Group',
+              value:     '@Xissin_1',
+              c:         c,
+              onTap:     () => _openUrl('https://t.me/Xissin_1'),
             ),
-            _linkCard(
-              icon:     Icons.download_rounded,
-              iconColor: const Color(0xFF34A853),
-              label:    'Download / Updates',
-              value:    'Google Drive',
-              c:        c,
-              onTap:    () => _openUrl(
-                  'https://drive.google.com/file/d/1ONwQUQiD8IRGA2ganJpaZ5brALtcOWMF/view'),
+
+            // ── Check for Updates card (replaces Google Drive) ────────────────
+            _CheckUpdateCard(
+              c:               c,
+              checking:        _checkingUpdate,
+              checked:         _updateChecked,
+              updateAvailable: _updateAvailable,
+              latestVersion:   _latestVersion,
+              onCheck:         _checkForUpdates,
+              onDownload: _updateAvailable
+                  ? () => UpdateService.showUpdateDialog(
+                        context:        context,
+                        currentVersion: _version,
+                        latestVersion:  _latestVersion,
+                        apkUrl:         _apkUrl,
+                        versionNotes:   _versionNotes,
+                        forceUpdate:    false,
+                      )
+                  : null,
             ),
 
             const SizedBox(height: 28),
 
-            // ── Description ──────────────────────────────────────────────────
+            // ── Description ───────────────────────────────────────────────────
             Container(
               padding: const EdgeInsets.all(18),
               decoration: BoxDecoration(
@@ -279,14 +411,15 @@ class _AboutScreenState extends State<AboutScreen> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Row(children: [
-                    Icon(Icons.info_outline_rounded,
-                        size: 15, color: c.primary),
+                    Icon(Icons.info_outline_rounded, size: 15, color: c.primary),
                     const SizedBox(width: 6),
-                    Text('About Xissin',
-                        style: TextStyle(
-                            color:      c.textPrimary,
-                            fontWeight: FontWeight.bold,
-                            fontSize:   13)),
+                    Text(
+                      'About Xissin',
+                      style: TextStyle(
+                          color:      c.textPrimary,
+                          fontWeight: FontWeight.bold,
+                          fontSize:   13),
+                    ),
                   ]),
                   const SizedBox(height: 10),
                   Text(
@@ -305,7 +438,7 @@ class _AboutScreenState extends State<AboutScreen> {
 
             const SizedBox(height: 32),
 
-            // ── Footer ───────────────────────────────────────────────────────
+            // ── Footer ────────────────────────────────────────────────────────
             Center(
               child: Column(
                 children: [
@@ -323,7 +456,7 @@ class _AboutScreenState extends State<AboutScreen> {
                   ),
                   const SizedBox(height: 4),
                   Text(
-                    '© 2024 Xissin. All rights reserved.',
+                    '© $year Xissin. All rights reserved.',
                     style: TextStyle(
                         color:    c.textSecondary.withOpacity(0.5),
                         fontSize: 10),
@@ -341,7 +474,7 @@ class _AboutScreenState extends State<AboutScreen> {
     );
   }
 
-  // ── Builders ───────────────────────────────────────────────────────────────
+  // ── Builders ──────────────────────────────────────────────────────────────
 
   Widget _infoCard(
       IconData icon, String label, String value, XissinColors c,
@@ -361,8 +494,7 @@ class _AboutScreenState extends State<AboutScreen> {
             Icon(icon, color: c.primary, size: 18),
             const SizedBox(width: 12),
             Text(label,
-                style:
-                    TextStyle(color: c.textSecondary, fontSize: 13)),
+                style: TextStyle(color: c.textSecondary, fontSize: 13)),
             const Spacer(),
             Text(
               value,
@@ -374,8 +506,7 @@ class _AboutScreenState extends State<AboutScreen> {
             ),
             if (onTap != null) ...[
               const SizedBox(width: 6),
-              Icon(Icons.copy_rounded,
-                  size: 13, color: c.textSecondary),
+              Icon(Icons.copy_rounded, size: 13, color: c.textSecondary),
             ],
           ],
         ),
@@ -384,10 +515,10 @@ class _AboutScreenState extends State<AboutScreen> {
   }
 
   Widget _linkCard({
-    required IconData    icon,
-    required Color       iconColor,
-    required String      label,
-    required String      value,
+    required IconData     icon,
+    required Color        iconColor,
+    required String       label,
+    required String       value,
     required XissinColors c,
     required VoidCallback onTap,
   }) {
@@ -422,7 +553,7 @@ class _AboutScreenState extends State<AboutScreen> {
                 children: [
                   Text(label,
                       style: TextStyle(
-                          color:    c.textSecondary, fontSize: 11)),
+                          color: c.textSecondary, fontSize: 11)),
                   Text(value,
                       style: TextStyle(
                         color:      c.textPrimary,
@@ -434,6 +565,169 @@ class _AboutScreenState extends State<AboutScreen> {
             ),
             Icon(Icons.open_in_new_rounded,
                 size: 15, color: c.textSecondary),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ── Check Update Card ─────────────────────────────────────────────────────────
+
+class _CheckUpdateCard extends StatelessWidget {
+  final XissinColors  c;
+  final bool          checking;
+  final bool          checked;
+  final bool          updateAvailable;
+  final String        latestVersion;
+  final VoidCallback  onCheck;
+  final VoidCallback? onDownload;
+
+  const _CheckUpdateCard({
+    required this.c,
+    required this.checking,
+    required this.checked,
+    required this.updateAvailable,
+    required this.latestVersion,
+    required this.onCheck,
+    this.onDownload,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    // Colors depending on state
+    final Color iconBg;
+    final Color iconColor;
+    final String statusLabel;
+    final String statusValue;
+    final IconData statusIcon;
+
+    if (checking) {
+      iconBg      = Colors.white.withOpacity(0.06);
+      iconColor   = Colors.white54;
+      statusLabel = 'Checking for updates...';
+      statusValue = 'Please wait';
+      statusIcon  = Icons.sync_rounded;
+    } else if (checked && updateAvailable) {
+      iconBg      = const Color(0xFF6C63FF).withOpacity(0.15);
+      iconColor   = const Color(0xFF6C63FF);
+      statusLabel = 'Update Available!';
+      statusValue = 'v$latestVersion — Tap Download';
+      statusIcon  = Icons.system_update_rounded;
+    } else if (checked && !updateAvailable) {
+      iconBg      = const Color(0xFF7EE7C1).withOpacity(0.12);
+      iconColor   = const Color(0xFF7EE7C1);
+      statusLabel = 'App is up to date';
+      statusValue = 'No update needed';
+      statusIcon  = Icons.check_circle_outline_rounded;
+    } else {
+      iconBg      = const Color(0xFF6C63FF).withOpacity(0.12);
+      iconColor   = const Color(0xFF6C63FF);
+      statusLabel = 'Check for Updates';
+      statusValue = 'Tap to check';
+      statusIcon  = Icons.update_rounded;
+    }
+
+    return GestureDetector(
+      onTap: () {
+        HapticFeedback.mediumImpact();
+        if (updateAvailable && onDownload != null) {
+          onDownload!();
+        } else {
+          onCheck();
+        }
+      },
+      child: Container(
+        margin:  const EdgeInsets.only(bottom: 10),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        decoration: BoxDecoration(
+          color: updateAvailable
+              ? const Color(0xFF6C63FF).withOpacity(0.08)
+              : c.surface,
+          borderRadius: BorderRadius.circular(AppRadius.md),
+          border: Border.all(
+            color: updateAvailable
+                ? const Color(0xFF6C63FF).withOpacity(0.40)
+                : c.border,
+            width: 1,
+          ),
+        ),
+        child: Row(
+          children: [
+            // Icon container
+            Container(
+              width:  34,
+              height: 34,
+              decoration: BoxDecoration(
+                color:        iconBg,
+                borderRadius: BorderRadius.circular(AppRadius.sm),
+              ),
+              child: checking
+                  ? Padding(
+                      padding: const EdgeInsets.all(8),
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color:       iconColor,
+                      ),
+                    )
+                  : Icon(statusIcon, color: iconColor, size: 18),
+            ),
+
+            const SizedBox(width: 12),
+
+            // Labels
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    statusLabel,
+                    style: TextStyle(
+                      color:      updateAvailable
+                          ? const Color(0xFF6C63FF)
+                          : c.textSecondary,
+                      fontSize:   11,
+                      fontWeight: updateAvailable
+                          ? FontWeight.bold
+                          : FontWeight.normal,
+                    ),
+                  ),
+                  Text(
+                    statusValue,
+                    style: TextStyle(
+                      color:      c.textPrimary,
+                      fontSize:   13,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+            // Right action indicator
+            if (updateAvailable)
+              Container(
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 10, vertical: 5),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF6C63FF),
+                  borderRadius: BorderRadius.circular(AppRadius.sm),
+                ),
+                child: const Text(
+                  'Download',
+                  style: TextStyle(
+                    color:      Colors.white,
+                    fontSize:   11,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              )
+            else
+              Icon(
+                Icons.chevron_right_rounded,
+                size:  18,
+                color: c.textSecondary,
+              ),
           ],
         ),
       ),
@@ -509,8 +803,7 @@ class _StatBox extends StatelessWidget {
             const SizedBox(height: 4),
             Text(
               label,
-              style: TextStyle(
-                  color: c.textSecondary, fontSize: 11),
+              style: TextStyle(color: c.textSecondary, fontSize: 11),
             ),
           ],
         ),
