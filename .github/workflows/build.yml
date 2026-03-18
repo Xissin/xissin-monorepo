@@ -93,52 +93,21 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # ── 11. Notify Telegram on success ─────────────────────────────────────
-      - name: 📲 Notify Telegram
+      - name: Notify Telegram Success
         if: success()
-        env:
-          BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           TAG=${GITHUB_REF#refs/tags/}
           DATE=$(date +'%Y-%m-%d %H:%M UTC')
-          DOWNLOAD_URL="https://github.com/Xissin/xissin-monorepo/releases/tag/${TAG}"
-          TEXT="✅ Xissin ${TAG} is now LIVE!
-
-📦 Version: ${TAG}
-🕐 Built: ${DATE}
-
-📥 Download APK:
-${DOWNLOAD_URL}
-
-📢 Channel: @Xissin_0"
-          curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
-            -H "Content-Type: application/json" \
-            --data-raw "{
-              \"chat_id\": \"${CHAT_ID}\",
-              \"text\": $(echo "${TEXT}" | python3 -c \"import json,sys; print(json.dumps(sys.stdin.read()))\")
-            }"
+          URL="https://github.com/Xissin/xissin-monorepo/releases/tag/${TAG}"
+          MSG="Xissin ${TAG} is now LIVE!%0A%0AVersion: ${TAG}%0ABuilt: ${DATE}%0A%0ADownload APK:%0A${URL}%0A%0AChannel: @Xissin_0"
+          curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage"             -d "chat_id=${{ secrets.TELEGRAM_CHAT_ID }}"             -d "text=${MSG}"
 
       # ── 12. Notify Telegram on failure ─────────────────────────────────────
-      - name: ❌ Notify Telegram on Failure
+      - name: Notify Telegram Failure
         if: failure()
-        env:
-          BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           TAG=${GITHUB_REF#refs/tags/}
           DATE=$(date +'%Y-%m-%d %H:%M UTC')
-          LOGS_URL="https://github.com/Xissin/xissin-monorepo/actions"
-          TEXT="❌ Xissin ${TAG} Build FAILED!
-
-🕐 Time: ${DATE}
-
-🔍 Check the error logs:
-${LOGS_URL}
-
-Please fix the error and push the tag again."
-          curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
-            -H "Content-Type: application/json" \
-            --data-raw "{
-              \"chat_id\": \"${CHAT_ID}\",
-              \"text\": $(echo "${TEXT}" | python3 -c \"import json,sys; print(json.dumps(sys.stdin.read()))\")
-            }"
+          LOGS="https://github.com/Xissin/xissin-monorepo/actions"
+          MSG="Xissin ${TAG} Build FAILED!%0A%0ATime: ${DATE}%0A%0ACheck logs:%0A${LOGS}"
+          curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage"             -d "chat_id=${{ secrets.TELEGRAM_CHAT_ID }}"             -d "text=${MSG}"
