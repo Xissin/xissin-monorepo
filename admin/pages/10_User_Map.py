@@ -385,7 +385,7 @@ with tab_ph:
             m_ph = build_map(filtered_ph, [12.8797, 121.7740], zoom=6)
             st_folium(
                 m_ph, width=None, height=580,
-                returned_objects=[], use_container_width=True,
+                returned_objects=[], use_container_width=True, key="map_ph",
             )
         with info_col:
             st.markdown("### 📊 Legend")
@@ -432,7 +432,7 @@ with tab_world:
         )
         st_folium(
             m_world, width=None, height=580,
-            returned_objects=[], use_container_width=True,
+            returned_objects=[], use_container_width=True, key="map_world",
         )
 
 # ── Tab 3: Location Table ─────────────────────────────────────────────────────

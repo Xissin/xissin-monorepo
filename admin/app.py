@@ -140,7 +140,7 @@ def show_login():
         remember  = st.checkbox("🔒  Keep me logged in (survives page refresh)", value=True)
         login_btn = st.button("⚡  AUTHENTICATE", use_container_width=True, type="primary")
 
-        st.markdown("</div>", unsafe_allow_html=True)
+        pass  # card border closed above
 
         if login_btn:
             if not key_input.strip():
