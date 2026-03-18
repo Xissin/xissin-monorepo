@@ -29,9 +29,7 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   List<Map<String, dynamic>> _announcements = [];
 
-  // ── FIX: dismissed set must be State (not local in build) ─────────────────
-  // Old code: `final dismissed = <String>{};` was inside build() — it reset
-  // on every rebuild so dismissed banners would reappear. Now it's in State.
+  // Dismissed set lives in State — NOT in build() — so it survives rebuilds
   final Set<String> _dismissed = {};
 
   @override
@@ -43,7 +41,7 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
-  // ── Data fetching ──────────────────────────────────────────────────────────
+  // ── Data ───────────────────────────────────────────────────────────────────
 
   Future<void> _loadAnnouncements() async {
     try {
@@ -75,50 +73,51 @@ class _HomeScreenState extends State<HomeScreen> {
 
   void _showComingSoon(String name) {
     HapticFeedback.lightImpact();
+    final c = context.c;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         behavior:        SnackBarBehavior.floating,
-        backgroundColor: AppColors.surface,
+        backgroundColor: c.surface,
         shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(AppRadius.md)),
         margin:   const EdgeInsets.fromLTRB(16, 0, 16, 16),
         duration: const Duration(seconds: 2),
         content: Row(children: [
-          const Icon(Icons.construction_rounded,
-              color: AppColors.gold, size: 18),
+          Icon(Icons.construction_rounded, color: c.gold, size: 18),
           const SizedBox(width: 10),
           Text(
             '$name — Coming Soon!',
-            style: const TextStyle(
-                color: AppColors.textPrimary, fontWeight: FontWeight.w600),
+            style: TextStyle(
+                color: c.textPrimary, fontWeight: FontWeight.w600),
           ),
         ]),
       ),
     );
   }
 
-  // ── Remove Ads purchase flow ───────────────────────────────────────────────
+  // ── Remove Ads ─────────────────────────────────────────────────────────────
 
   Future<void> _onRemoveAdsTap() async {
     HapticFeedback.mediumImpact();
     final adService = AdService.instance;
+    final c = context.c;
 
     if (adService.adsRemoved) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           behavior:        SnackBarBehavior.floating,
-          backgroundColor: const Color(0xFF1A2740),
+          backgroundColor: c.surface,
           shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(AppRadius.md)),
           margin:   const EdgeInsets.fromLTRB(16, 0, 16, 16),
           duration: const Duration(seconds: 3),
-          content: const Row(children: [
-            Icon(Icons.star_rounded, color: Color(0xFFFFD700), size: 18),
-            SizedBox(width: 10),
+          content: Row(children: [
+            const Icon(Icons.star_rounded, color: Color(0xFFFFD700), size: 18),
+            const SizedBox(width: 10),
             Text(
               '✨ Ads already removed! Thank you!',
               style: TextStyle(
-                  color: Colors.white, fontWeight: FontWeight.w600),
+                  color: c.textPrimary, fontWeight: FontWeight.w600),
             ),
           ]),
         ),
@@ -137,19 +136,19 @@ class _HomeScreenState extends State<HomeScreen> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           behavior:        SnackBarBehavior.floating,
-          backgroundColor: const Color(0xFF1A2740),
+          backgroundColor: c.surface,
           shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(AppRadius.md)),
           margin:   const EdgeInsets.fromLTRB(16, 0, 16, 16),
           duration: const Duration(seconds: 4),
-          content: const Row(children: [
-            Icon(Icons.check_circle_rounded,
+          content: Row(children: [
+            const Icon(Icons.check_circle_rounded,
                 color: Color(0xFF7EE7C1), size: 18),
-            SizedBox(width: 10),
+            const SizedBox(width: 10),
             Text(
               '🎉 Ads removed! Enjoy Xissin!',
               style: TextStyle(
-                  color: Colors.white, fontWeight: FontWeight.w600),
+                  color: c.textPrimary, fontWeight: FontWeight.w600),
             ),
           ]),
         ),
@@ -157,7 +156,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  // ── Slide transition helper ────────────────────────────────────────────────
+  // ── Transition ─────────────────────────────────────────────────────────────
 
   Future<T?> _pushSlide<T>(Widget page) {
     return Navigator.push<T>(
@@ -176,7 +175,7 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  // ── Banner Ad ─────────────────────────────────────────────────────────────
+  // ── Banner Ad ──────────────────────────────────────────────────────────────
 
   Widget _buildBannerAd() {
     return Consumer<AdService>(
@@ -198,13 +197,12 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  // ── Build ──────────────────────────────────────────────────────────────────
+  // ── Build ───────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
     final c = context.c;
 
-    // ── FIX: use _dismissed from State, not a local var that resets ──────────
     final visible = _announcements
         .where((a) => !_dismissed.contains(a['id']?.toString()))
         .toList();
@@ -221,10 +219,9 @@ class _HomeScreenState extends State<HomeScreen> {
           child: CustomScrollView(
             physics: const AlwaysScrollableScrollPhysics(),
             slivers: [
-              // ── Header ─────────────────────────────────────────────────────
               SliverToBoxAdapter(child: _buildHeader(c)),
 
-              // ── Announcements ──────────────────────────────────────────────
+              // ── Announcements ─────────────────────────────────────────────
               if (visible.isNotEmpty)
                 SliverToBoxAdapter(
                   child: Padding(
@@ -246,38 +243,37 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ),
 
-              // ── Remove Ads banner ──────────────────────────────────────────
+              // ── Remove Ads / Premium banner ───────────────────────────────
               SliverToBoxAdapter(
                 child: Consumer<AdService>(
                   builder: (_, adService, __) {
                     if (adService.adsRemoved) {
+                      // Premium badge
                       return Padding(
                         padding: const EdgeInsets.fromLTRB(22, 16, 22, 0),
                         child: Container(
                           padding: const EdgeInsets.symmetric(
                               horizontal: 14, vertical: 8),
                           decoration: BoxDecoration(
-                            gradient: LinearGradient(
-                              colors: [
-                                const Color(0xFFFFD700).withOpacity(0.12),
-                                const Color(0xFFFF9F43).withOpacity(0.12),
-                              ],
-                            ),
+                            gradient: LinearGradient(colors: [
+                              const Color(0xFFFFD700).withOpacity(0.12),
+                              const Color(0xFFFF9F43).withOpacity(0.12),
+                            ]),
                             borderRadius: BorderRadius.circular(AppRadius.md),
                             border: Border.all(
-                                color:
-                                    const Color(0xFFFFD700).withOpacity(0.30)),
+                                color: const Color(0xFFFFD700).withOpacity(0.35)),
                           ),
-                          child: const Row(
+                          child: Row(
                             mainAxisAlignment: MainAxisAlignment.center,
                             children: [
-                              Icon(Icons.star_rounded,
+                              const Icon(Icons.star_rounded,
                                   color: Color(0xFFFFD700), size: 16),
-                              SizedBox(width: 8),
+                              const SizedBox(width: 8),
                               Text(
                                 '✨  Ad-Free  —  Thank you for supporting Xissin!',
                                 style: TextStyle(
-                                  color:      Color(0xFFFFD700),
+                                  // gold is darker in light mode — readable
+                                  color:      c.gold,
                                   fontSize:   12,
                                   fontWeight: FontWeight.w600,
                                 ),
@@ -288,6 +284,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       );
                     }
 
+                    // Remove Ads promo
                     return Padding(
                       padding: const EdgeInsets.fromLTRB(22, 16, 22, 0),
                       child: GestureDetector(
@@ -296,44 +293,42 @@ class _HomeScreenState extends State<HomeScreen> {
                           padding: const EdgeInsets.symmetric(
                               horizontal: 14, vertical: 10),
                           decoration: BoxDecoration(
-                            gradient: LinearGradient(
-                              colors: [
-                                const Color(0xFF6C63FF).withOpacity(0.15),
-                                const Color(0xFFFF6B9D).withOpacity(0.10),
-                              ],
-                            ),
+                            gradient: LinearGradient(colors: [
+                              c.primary.withOpacity(0.12),
+                              c.secondary.withOpacity(0.08),
+                            ]),
                             borderRadius: BorderRadius.circular(AppRadius.md),
                             border: Border.all(
-                                color:
-                                    const Color(0xFF6C63FF).withOpacity(0.35)),
+                                color: c.primary.withOpacity(0.35)),
                           ),
                           child: Row(
                             children: [
-                              const Icon(Icons.block_rounded,
-                                  color: Color(0xFF6C63FF), size: 18),
+                              Icon(Icons.block_rounded,
+                                  color: c.primary, size: 18),
                               const SizedBox(width: 10),
-                              const Expanded(
+                              Expanded(
                                 child: Column(
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
                                     Text(
                                       'Remove Ads',
                                       style: TextStyle(
-                                        color:      Color(0xFF6C63FF),
+                                        color:      c.primary,
                                         fontSize:   13,
                                         fontWeight: FontWeight.bold,
                                       ),
                                     ),
                                     Text(
                                       'Tap to see benefits & pay via GCash',
+                                      // ✅ FIX: was Colors.white38 — unreadable in light
                                       style: TextStyle(
-                                          color: Colors.white38, fontSize: 11),
+                                          color: c.textHint, fontSize: 11),
                                     ),
                                   ],
                                 ),
                               ),
-                              const Icon(Icons.chevron_right_rounded,
-                                  color: Color(0xFF6C63FF), size: 20),
+                              Icon(Icons.chevron_right_rounded,
+                                  color: c.primary, size: 20),
                             ],
                           ),
                         ),
@@ -343,7 +338,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               ),
 
-              // ── Section heading ────────────────────────────────────────────
+              // ── Section heading ───────────────────────────────────────────
               SliverToBoxAdapter(
                 child: Padding(
                   padding: const EdgeInsets.fromLTRB(22, 28, 22, 14),
@@ -379,7 +374,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               ),
 
-              // ── Tools grid ─────────────────────────────────────────────────
+              // ── Tools grid ────────────────────────────────────────────────
               SliverPadding(
                 padding: const EdgeInsets.fromLTRB(16, 0, 16, 32),
                 sliver: SliverGrid(
@@ -389,7 +384,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       title:     'SMS Bomber',
                       subtitle:  '14 PH Services',
                       gradient:  AppColors.smsGradient,
-                      glowColor: AppColors.primary,
+                      glowColor: c.primary,
                       onTap:     _goToSms,
                       index:     0,
                     ),
@@ -407,7 +402,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       title:     'About',
                       subtitle:  'App Info & Links',
                       gradient:  AppColors.aboutGradient,
-                      glowColor: AppColors.secondary,
+                      glowColor: c.secondary,
                       onTap:     _goToAbout,
                       index:     2,
                     ),
@@ -415,7 +410,8 @@ class _HomeScreenState extends State<HomeScreen> {
                       icon:      Icons.location_on_rounded,
                       title:     'IP Tracker',
                       subtitle:  'Locate & Info',
-                      gradient:  AppColors.comingSoon,
+                      // ✅ FIX: use theme-aware comingSoon gradient
+                      gradient:  c.comingSoonGradient,
                       glowColor: AppColors.neonOrange,
                       onTap:     () => _showComingSoon('IP Tracker'),
                       index:     3,
@@ -425,7 +421,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       icon:      Icons.phonelink_ring_rounded,
                       title:     'Phone Info',
                       subtitle:  'Number Lookup',
-                      gradient:  AppColors.comingSoon,
+                      gradient:  c.comingSoonGradient,
                       glowColor: AppColors.neonPink,
                       onTap:     () => _showComingSoon('Phone Info'),
                       index:     4,
@@ -442,8 +438,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               ),
 
-              // ── Footer ─────────────────────────────────────────────────────
-              SliverToBoxAdapter(child: _buildFooter(c)),
+              SliverToBoxAdapter(child: _buildFooter()),
               const SliverToBoxAdapter(child: SizedBox(height: 24)),
             ],
           ),
@@ -455,13 +450,12 @@ class _HomeScreenState extends State<HomeScreen> {
   // ── Header ─────────────────────────────────────────────────────────────────
 
   Widget _buildHeader(XissinColors c) {
-    // ── Optimization: use Selector to avoid rebuilding whole header ──────────
-    // Only rebuild when isDark or adsRemoved changes — not on every setState.
     return Padding(
       padding: const EdgeInsets.fromLTRB(22, 24, 22, 0),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
+          // Title + PRO badge
           Selector<AdService, bool>(
             selector: (_, s) => s.adsRemoved,
             builder: (_, adsRemoved, __) => Column(
@@ -485,7 +479,8 @@ class _HomeScreenState extends State<HomeScreen> {
                   children: [
                     Text(
                       'Multi-Tool Suite',
-                      style: TextStyle(color: c.textSecondary, fontSize: 12),
+                      style: TextStyle(
+                          color: c.textSecondary, fontSize: 12),
                     ),
                     if (adsRemoved) ...[
                       const SizedBox(width: 6),
@@ -496,19 +491,19 @@ class _HomeScreenState extends State<HomeScreen> {
                           color: const Color(0xFFFFD700).withOpacity(0.15),
                           borderRadius: BorderRadius.circular(6),
                           border: Border.all(
-                              color:
-                                  const Color(0xFFFFD700).withOpacity(0.40)),
+                              color: const Color(0xFFFFD700).withOpacity(0.40)),
                         ),
-                        child: const Row(
+                        child: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            Icon(Icons.star_rounded,
+                            const Icon(Icons.star_rounded,
                                 color: Color(0xFFFFD700), size: 9),
-                            SizedBox(width: 3),
+                            const SizedBox(width: 3),
                             Text(
                               'PRO',
                               style: TextStyle(
-                                color:         Color(0xFFFFD700),
+                                // ✅ FIX: use c.gold so it's readable on light
+                                color:         c.gold,
                                 fontSize:      9,
                                 fontWeight:    FontWeight.bold,
                                 letterSpacing: 0.5,
@@ -526,8 +521,11 @@ class _HomeScreenState extends State<HomeScreen> {
                 .fadeIn(duration: 500.ms)
                 .slideX(begin: -0.2, end: 0, duration: 500.ms),
           ),
+
+          // Action buttons
           Row(
             children: [
+              // Remove Ads button
               Selector<AdService, bool>(
                 selector: (_, s) => s.adsRemoved,
                 builder: (_, adsRemoved, __) => adsRemoved
@@ -537,17 +535,15 @@ class _HomeScreenState extends State<HomeScreen> {
                         child: Container(
                           width: 40, height: 40,
                           decoration: BoxDecoration(
-                            color: const Color(0xFF6C63FF).withOpacity(0.12),
-                            borderRadius:
-                                BorderRadius.circular(AppRadius.md),
+                            color: c.primary.withOpacity(0.12),
+                            borderRadius: BorderRadius.circular(AppRadius.md),
                             border: Border.all(
-                              color:
-                                  const Color(0xFF6C63FF).withOpacity(0.30),
+                              color: c.primary.withOpacity(0.30),
                               width: 1,
                             ),
                           ),
-                          child: const Icon(Icons.block_rounded,
-                              size: 18, color: Color(0xFF6C63FF)),
+                          child: Icon(Icons.block_rounded,
+                              size: 18, color: c.primary),
                         ),
                       )
                         .animate(delay: 50.ms)
@@ -563,6 +559,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   .scale(
                       begin: const Offset(0.8, 0.8), duration: 400.ms),
               const SizedBox(width: 8),
+              // Theme toggle
               Selector<ThemeService, bool>(
                 selector: (_, s) => s.isDark,
                 builder: (_, isDark, __) => HapticIconButton(
@@ -588,11 +585,7 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  // ── Footer ─────────────────────────────────────────────────────────────────
-
-  Widget _buildFooter(XissinColors c) {
-    return const SizedBox(height: 8);
-  }
+  Widget _buildFooter() => const SizedBox(height: 8);
 }
 
 // ── Telegram button ───────────────────────────────────────────────────────────
@@ -647,7 +640,7 @@ class _AnnouncementBanner extends StatelessWidget {
     switch (type) {
       case 'warning': return const Color(0xFFFFA726);
       case 'error':   return const Color(0xFFFF6B6B);
-      case 'success': return const Color(0xFF7EE7C1);
+      case 'success': return const Color(0xFF2ECC71);
       default:        return const Color(0xFF5B8CFF);
     }
   }
@@ -675,7 +668,7 @@ class _AnnouncementBanner extends StatelessWidget {
         borderRadius: BorderRadius.circular(AppRadius.lg),
         child: Container(
           decoration: BoxDecoration(
-            color:        c.surfaceAlt,
+            color:        c.surface,
             border:       Border.all(color: c.border, width: 1),
             borderRadius: BorderRadius.circular(AppRadius.lg),
           ),
@@ -765,7 +758,8 @@ class _FeatureCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final c = context.c;
+    final c      = context.c;
+    final isDark = context.isDark;
 
     return GlassNeumorphicCard(
       glowColor: comingSoon ? Colors.transparent : glowColor,
@@ -778,21 +772,25 @@ class _FeatureCard extends StatelessWidget {
             children: [
               GlassIconContainer(
                 icon:      icon,
-                gradient:  comingSoon ? [c.border, c.surfaceAlt] : gradient,
+                gradient:  gradient,
                 glowColor: comingSoon ? Colors.transparent : glowColor,
               ),
               const Spacer(),
               Text(
                 title,
                 style: TextStyle(
-                  color:      comingSoon ? c.textSecondary : c.textPrimary,
+                  // ✅ FIX: coming soon text — readable in both themes
+                  color: comingSoon
+                      ? c.textSecondary
+                      : (isDark ? Colors.white : c.textPrimary),
                   fontSize:   15,
                   fontWeight: FontWeight.bold,
                 ),
               ),
               const SizedBox(height: 3),
               Text(subtitle,
-                  style: TextStyle(color: c.textSecondary, fontSize: 12)),
+                  style: TextStyle(
+                      color: c.textSecondary, fontSize: 12)),
             ],
           ),
           if (comingSoon)
