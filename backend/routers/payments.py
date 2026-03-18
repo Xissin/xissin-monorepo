@@ -7,7 +7,7 @@ Security & reliability features:
   ✅ Rate limiting                 — max 3 payment attempts per user per hour
   ✅ Input validation              — rejects invalid/malicious user_id values
   ✅ Ownership check on /status   — user can only poll their own payment intent
-  ✅ Webhook HMAC verification    — blocks fake/spoofed webhook calls
+  ✅ Webhook HMAC verification    — FAILS CLOSED: rejects if secret or sig missing
   ✅ Idempotent premium granting  — safe to call set_premium multiple times
   ✅ Auto-cleanup on expiry/fail  — pending intent keys cleared automatically
 """
@@ -35,10 +35,7 @@ PAYMONGO_BASE           = "https://api.paymongo.com/v1"
 _DEFAULT_PRICE_CENTAVOS = 9900   # ₱99.00
 BACKEND_URL             = "https://xissin-app-backend-production.up.railway.app"
 
-# Max payment creation attempts per user per hour (prevents bot spam)
 _MAX_ATTEMPTS_PER_HOUR = 3
-
-# Regex: only allow safe user_id characters
 _USER_ID_RE = re.compile(r'^[a-zA-Z0-9_\-\.]{1,64}$')
 
 
@@ -74,7 +71,12 @@ def _auth_header() -> str:
 
 
 def _webhook_secret() -> str:
-    return os.environ.get("PAYMONGO_WEBHOOK_SECRET", "").strip()
+    """
+    Returns the webhook secret, or raises if not configured.
+    We do NOT allow empty webhook secrets in production.
+    """
+    secret = os.environ.get("PAYMONGO_WEBHOOK_SECRET", "").strip()
+    return secret
 
 
 # ── PayMongo HTTP helpers ─────────────────────────────────────────────────────
@@ -111,7 +113,7 @@ async def _paymongo_get(endpoint: str) -> dict:
     return resp.json()
 
 
-# ── Redis key helpers (short-lived, TTL-based) ────────────────────────────────
+# ── Redis key helpers ─────────────────────────────────────────────────────────
 
 def _rate_limit_key(user_id: str) -> str:
     return f"xissin:pay:rl:{user_id}"
@@ -121,10 +123,6 @@ def _pending_intent_key(user_id: str) -> str:
 
 
 def _check_and_increment_rate_limit(user_id: str):
-    """
-    Allows max 3 payment creations per user per hour.
-    Raises HTTP 429 if exceeded. Fails open (allows) if Redis is down.
-    """
     try:
         key   = _rate_limit_key(user_id)
         count = db.redis_get(key)
@@ -134,16 +132,14 @@ def _check_and_increment_rate_limit(user_id: str):
                 status_code=429,
                 detail="Too many payment attempts. Please wait before trying again."
             )
-        # Increment — TTL of 1 hour, only set on first call
         db.redis_incr(key, ttl_seconds=3600)
     except HTTPException:
         raise
     except Exception:
-        pass  # Fail open for UX — don't block payment if Redis is temporarily down
+        pass
 
 
 def _save_pending_intent(user_id: str, intent_id: str):
-    """Track user's active intent. 30-min TTL matches QRPh expiry."""
     try:
         db.redis_set(_pending_intent_key(user_id), intent_id, ttl_seconds=1800)
     except Exception:
@@ -230,28 +226,26 @@ async def create_payment(req: CreatePaymentRequest):
     Guards:
       1. Already premium → return immediately
       2. Active pending intent exists → reuse QR (no double charge)
-      3. Rate limit → 3 attempts/hour max
+      3. Rate limit → 3 attempts per hour
     """
     user_id = req.user_id
 
-    # Guard 1: Already premium
+    # Fast path — already premium
     if db.is_premium(user_id):
         return {"already_premium": True}
 
-    # Guard 2: Reuse existing active intent (prevents double-tap double-charge)
+    # Duplicate protection — reuse active QR
     existing_intent_id = _get_pending_intent(user_id)
     if existing_intent_id:
         try:
             data       = await _paymongo_get(f"/payment_intents/{existing_intent_id}")
             attributes = data["data"]["attributes"]
             status     = attributes.get("status", "")
-
-            if status == "awaiting_next_action":
-                # QR still valid — return it
+            if status in ("awaiting_payment_method", "processing"):
                 next_action = attributes.get("next_action") or {}
                 code_block  = next_action.get("code") or {}
                 qr_image    = code_block.get("image_url", "")
-                price       = attributes.get("amount", _DEFAULT_PRICE_CENTAVOS)
+                price       = _get_remove_ads_price()
                 logger.info(f"♻️ Reusing intent {existing_intent_id} for user={user_id}")
                 return {
                     "payment_intent_id": existing_intent_id,
@@ -261,45 +255,44 @@ async def create_payment(req: CreatePaymentRequest):
                     "reused":            True,
                 }
         except Exception:
-            pass
-        # Intent expired or error — clear it and make a new one
-        _clear_pending_intent(user_id)
+            _clear_pending_intent(user_id)
 
-    # Guard 3: Rate limit
+    # Rate limit check
     _check_and_increment_rate_limit(user_id)
 
     price = _get_remove_ads_price()
 
     # Step 1: Create Payment Intent
-    intent_data = await _paymongo_post("/payment_intents", {
-        "data": {
-            "attributes": {
-                "amount":                 price,
-                "currency":               "PHP",
-                "payment_method_allowed": ["qrph"],
-                "description":            "Xissin — Remove Ads Lifetime",
-                "metadata": {
-                    "user_id": user_id,
-                    "product": "remove_ads",
-                },
+    intent_data = await _paymongo_post(
+        "/payment_intents",
+        {
+            "data": {
+                "attributes": {
+                    "amount":                 price,
+                    "currency":               "PHP",
+                    "payment_method_allowed": ["qrph"],
+                    "capture_type":           "automatic",
+                    "metadata":               {"user_id": user_id},
+                    "description":            "Xissin — Remove Ads (Lifetime)",
+                }
             }
-        }
-    })
+        },
+    )
     intent_id  = intent_data["data"]["id"]
     client_key = intent_data["data"]["attributes"]["client_key"]
 
-    # Step 2: Create QRPh Payment Method
-    pm_data = await _paymongo_post("/payment_methods", {
-        "data": {
-            "attributes": {
-                "type": "qrph",
-                "billing": {
-                    "name":  "Xissin User",
-                    "email": f"user_{user_id}@xissin.app",
-                },
+    # Step 2: Create Payment Method (QRPh)
+    pm_data = await _paymongo_post(
+        "/payment_methods",
+        {
+            "data": {
+                "attributes": {
+                    "type":     "qrph",
+                    "metadata": {"user_id": user_id},
+                }
             }
-        }
-    })
+        },
+    )
     pm_id = pm_data["data"]["id"]
 
     # Step 3: Attach → get QR image
@@ -320,10 +313,8 @@ async def create_payment(req: CreatePaymentRequest):
     code_block  = next_action.get("code") or {}
     qr_image    = code_block.get("image_url", "")
 
-    # Save pending intent (30-min TTL) for duplicate protection
     _save_pending_intent(user_id, intent_id)
 
-    # Save pending payment record
     db.save_payment({
         "payment_intent_id": intent_id,
         "payment_method_id": pm_id,
@@ -355,7 +346,6 @@ async def check_payment_status(req: PaymentStatusRequest):
     """
     user_id = req.user_id
 
-    # Fast path — already premium
     if db.is_premium(user_id):
         _clear_pending_intent(user_id)
         return {"paid": True, "premium": True}
@@ -365,7 +355,6 @@ async def check_payment_status(req: PaymentStatusRequest):
         attributes = data["data"]["attributes"]
         status     = attributes.get("status", "")
 
-        # Security: verify this intent belongs to this user
         metadata       = attributes.get("metadata") or {}
         intent_user_id = str(metadata.get("user_id", ""))
         if intent_user_id and intent_user_id != user_id:
@@ -388,7 +377,6 @@ async def check_payment_status(req: PaymentStatusRequest):
             logger.info(f"✅ Confirmed via poll: user={user_id}")
             return {"paid": True, "premium": True}
 
-        # QR expired on PayMongo side
         if status == "awaiting_payment_method":
             _clear_pending_intent(user_id)
             return {
@@ -415,28 +403,50 @@ async def payment_webhook(
 ):
     """
     PayMongo calls this when payment.paid / payment.failed / qrph.expired fires.
-    Protected by HMAC-SHA256 signature verification.
+
+    SECURITY — FAILS CLOSED:
+      - If PAYMONGO_WEBHOOK_SECRET is not set → reject all webhook calls (500 config error)
+      - If paymongo-signature header is missing → reject (401)
+      - If HMAC signature does not match → reject (400)
+      - We never grant premium if we cannot verify the request origin.
     """
     body = await request.body()
 
-    # Verify HMAC signature — blocks fake/spoofed webhook calls
     wh_secret = _webhook_secret()
-    if wh_secret and paymongo_signature:
-        try:
-            parts    = dict(p.split("=", 1) for p in paymongo_signature.split(","))
-            ts       = parts.get("t", "")
-            test_sig = parts.get("te", "") or parts.get("li", "")
-            to_sign  = f"{ts}.{body.decode()}"
-            expected = hmac.new(
-                wh_secret.encode(), to_sign.encode(), hashlib.sha256
-            ).hexdigest()
-            if not hmac.compare_digest(expected, test_sig):
-                logger.warning("⚠️ Webhook signature mismatch — possible spoofed request!")
-                raise HTTPException(status_code=400, detail="Invalid signature")
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.warning(f"Webhook sig check error (non-fatal): {e}")
+
+    # Hard requirement: webhook secret must be configured
+    if not wh_secret:
+        logger.error(
+            "❌ PAYMONGO_WEBHOOK_SECRET is not set. "
+            "All webhook calls are being rejected. Set this env var in Railway."
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="Webhook not configured on server. Contact admin."
+        )
+
+    # Hard requirement: signature header must be present
+    if not paymongo_signature:
+        logger.warning("⚠️ Webhook received without paymongo-signature header — rejected.")
+        raise HTTPException(status_code=401, detail="Missing webhook signature")
+
+    # Verify HMAC signature
+    try:
+        parts    = dict(p.split("=", 1) for p in paymongo_signature.split(","))
+        ts       = parts.get("t", "")
+        test_sig = parts.get("te", "") or parts.get("li", "")
+        to_sign  = f"{ts}.{body.decode()}"
+        expected = hmac.new(
+            wh_secret.encode(), to_sign.encode(), hashlib.sha256
+        ).hexdigest()
+        if not hmac.compare_digest(expected, test_sig):
+            logger.warning("⚠️ Webhook signature mismatch — possible spoofed request!")
+            raise HTTPException(status_code=400, detail="Invalid signature")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.warning(f"⚠️ Webhook sig parse error — rejecting: {e}")
+        raise HTTPException(status_code=400, detail="Malformed signature header")
 
     try:
         event = await request.json()
@@ -454,7 +464,6 @@ async def payment_webhook(
     logger.info(f"📬 Webhook: type={event_type} user={user_id} id={resource_id}")
 
     if event_type == "payment.paid" and user_id:
-        # Validate user_id from metadata before granting premium
         if not _USER_ID_RE.match(user_id):
             logger.warning(f"⚠️ Webhook has invalid user_id in metadata: {user_id!r}")
             return {"received": True}

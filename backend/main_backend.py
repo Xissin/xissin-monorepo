@@ -42,6 +42,12 @@ try:
 except ImportError:
     _HAS_PAYMENTS = False
 
+try:
+    from routers import crash_report as crash_report_router
+    _HAS_CRASH_REPORT = True
+except ImportError:
+    _HAS_CRASH_REPORT = False
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s"
@@ -51,15 +57,13 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # ── Startup banner ─────────────────────────────────────────────────────
     port = int(os.environ.get("PORT", 8000))
     logger.info("=" * 55)
-    logger.info("🚀  XISSIN BACKEND  v1.7.0  —  STARTING UP")
+    logger.info("🚀  XISSIN BACKEND  v1.8.0  —  STARTING UP")
     logger.info("=" * 55)
     logger.info(f"🌐  Listening on  0.0.0.0:{port}")
     logger.info(f"🔧  Environment : {os.environ.get('ENVIRONMENT', 'production')}")
 
-    # ── DB / Redis init ────────────────────────────────────────────────────
     logger.info("🗄️   Connecting to Redis (Upstash)...")
     try:
         await init_db()
@@ -67,15 +71,15 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"❌  Redis connection FAILED: {e}")
 
-    # ── Loaded routers ─────────────────────────────────────────────────────
     logger.info("📦  Routers loaded:")
-    logger.info("    ✅  /api/users   — Users")
-    logger.info("    ✅  /api/sms     — SMS Bomber")
-    logger.info(f"    {'✅' if _HAS_NGL         else '❌'}  /api/ngl       — NGL Bomber")
-    logger.info(f"    {'✅' if _HAS_ANNOUNCEMENTS else '❌'}  /api/announcements")
-    logger.info(f"    {'✅' if _HAS_SETTINGS     else '❌'}  /api/settings")
-    logger.info(f"    {'✅' if _HAS_LOCATION     else '❌'}  /api/location  — User Map")
-    logger.info(f"    {'✅' if _HAS_PAYMENTS     else '❌'}  /api/payments  — Remove Ads")
+    logger.info("    ✅  /api/users        — Users")
+    logger.info("    ✅  /api/sms          — SMS Bomber")
+    logger.info(f"    {'✅' if _HAS_NGL              else '❌'}  /api/ngl         — NGL Bomber")
+    logger.info(f"    {'✅' if _HAS_ANNOUNCEMENTS    else '❌'}  /api/announcements")
+    logger.info(f"    {'✅' if _HAS_SETTINGS         else '❌'}  /api/settings")
+    logger.info(f"    {'✅' if _HAS_LOCATION         else '❌'}  /api/location    — User Map")
+    logger.info(f"    {'✅' if _HAS_PAYMENTS         else '❌'}  /api/payments    — Remove Ads")
+    logger.info(f"    {'✅' if _HAS_CRASH_REPORT     else '❌'}  /api/crash-report — Crash Reports")
 
     logger.info("=" * 55)
     logger.info("✅  Xissin Backend is ONLINE and ready!")
@@ -83,14 +87,13 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    # ── Shutdown ───────────────────────────────────────────────────────────
     logger.info("🛑  Xissin Backend shutting down gracefully.")
 
 
 app = FastAPI(
     title="Xissin App API",
     description="Backend API for the Xissin Multi-Tool Flutter App",
-    version="1.7.0",
+    version="1.8.0",
     lifespan=lifespan,
 )
 
@@ -105,9 +108,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── Request logger ─────────────────────────────────────────────────────────────
-# Logs ALL requests including /health and /api/status.
-# Health checks use a shorter format so they don't clutter the log.
+
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
     start    = time.time()
@@ -118,7 +119,6 @@ async def log_requests(request: Request, call_next):
         path      = request.url.path
 
         if path in ("/health", "/api/status"):
-            # Short heartbeat line — easy to spot but not noisy
             logger.info(f"💓  HEALTH {path} → {response.status_code} [{client_ip}]")
         else:
             logger.info(
@@ -131,7 +131,7 @@ async def log_requests(request: Request, call_next):
     return response
 
 
-# ── Routers ────────────────────────────────────────────────────────────────────
+# ── Routers ───────────────────────────────────────────────────────────────────
 app.include_router(users.router, prefix="/api/users", tags=["Users"])
 app.include_router(sms.router,   prefix="/api/sms",   tags=["SMS Bomber"])
 
@@ -155,14 +155,18 @@ if _HAS_PAYMENTS:
     app.include_router(payments_router.router,
                        prefix="/api/payments", tags=["Payments"])
 
+if _HAS_CRASH_REPORT:
+    app.include_router(crash_report_router.router,
+                       prefix="/api", tags=["Crash Reports"])
 
-# ── Base routes ────────────────────────────────────────────────────────────────
+
+# ── Base routes ───────────────────────────────────────────────────────────────
 @app.get("/")
 def root():
     return {
         "status":  "online",
         "app":     "Xissin Multi-Tool API",
-        "version": "1.7.0",
+        "version": "1.8.0",
     }
 
 @app.get("/health")
@@ -189,7 +193,7 @@ def api_status():
                     os.environ.get("LATEST_APP_VERSION", "1.0.0"))
 
     return {
-        "api_version":        "1.7.0",
+        "api_version":        "1.8.0",
         "min_app_version":    min_ver,
         "latest_app_version": lat_ver,
         "maintenance":         maintenance,

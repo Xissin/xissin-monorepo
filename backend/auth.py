@@ -5,16 +5,17 @@ Two protection layers:
   1. App requests  → HMAC-SHA256 signed token  (X-App-Token header)
   2. Admin requests → Secret admin key          (X-Admin-Key header)
 
-SECURITY NOTES for public GitHub repo:
-  - ADMIN_KEY is read from Railway environment variable only — never hardcoded
+SECURITY NOTES:
+  - ADMIN_SECRET_KEY must be set in Railway env vars — no fallback, no default
+  - Backend will REFUSE to start if ADMIN_SECRET_KEY is missing (see _admin_key())
   - App HMAC secret (_APP_SALT) is a low-sensitivity salt, not a master secret
-  - Timestamps are validated within ±30 seconds to prevent replay attacks
-  - All secrets must be set in Railway environment variables
+  - Timestamps validated within ±30 seconds to prevent replay attacks
 """
 
 import hashlib
 import hmac
 import os
+import sys
 import time
 import logging
 
@@ -36,16 +37,28 @@ _SKIP_PATHS     = {    # these endpoints never require auth
     "/api/payments/webhook",
     "/api/payments/success",
     "/api/payments/failed",
+    "/api/crash-report",          # crash reporter hits this before auth is set up
 }
 
 
 def _admin_key() -> str:
-    """Read admin key from Railway env var — never hardcode this."""
+    """
+    Read admin key from Railway env var ONLY.
+    NO fallback key. NO default value.
+    If missing, log a fatal error and exit — do not run with an empty/default key.
+    """
     key = os.environ.get("ADMIN_SECRET_KEY", "").strip()
     if not key:
-        # Fallback for local dev only — set this in your .env file
-        key = os.environ.get("ADMIN_KEY", "xissin-dev-key").strip()
+        logger.critical(
+            "FATAL: ADMIN_SECRET_KEY environment variable is not set. "
+            "Set it in Railway before deploying. Refusing to start."
+        )
+        sys.exit(1)
     return key
+
+
+# Eagerly load at import time so the server refuses to start if key is missing.
+_ADMIN_KEY_VALUE: str = _admin_key()
 
 
 # ── App request verification (HMAC) ──────────────────────────────────────────
@@ -76,10 +89,10 @@ def _verify_app_token(user_id: str, timestamp_str: str, token: str) -> bool:
 
 
 async def verify_app_request(
-    request:        Request,
-    x_app_token:    Optional[str] = Header(None, alias="X-App-Token"),
-    x_app_timestamp:Optional[str] = Header(None, alias="X-App-Timestamp"),
-    x_app_id:       Optional[str] = Header(None, alias="X-App-Id"),
+    request:         Request,
+    x_app_token:     Optional[str] = Header(None, alias="X-App-Token"),
+    x_app_timestamp: Optional[str] = Header(None, alias="X-App-Timestamp"),
+    x_app_id:        Optional[str] = Header(None, alias="X-App-Id"),
 ):
     """
     FastAPI dependency — verifies signed app requests.
@@ -87,25 +100,20 @@ async def verify_app_request(
     """
     path = request.url.path
 
-    # Public endpoints — no auth needed
     if path in _SKIP_PATHS:
         return
 
-    # Require app ID header
     if x_app_id != _APP_ID:
         raise HTTPException(status_code=401, detail="Invalid app ID")
 
-    # Require token + timestamp
     if not x_app_token or not x_app_timestamp:
         raise HTTPException(status_code=401, detail="Missing authentication headers")
 
-    # Extract user_id from request body or path
     user_id = "anonymous"
     try:
         body = await request.json()
         user_id = str(body.get("user_id", "anonymous"))
     except Exception:
-        # Some requests have user_id in path params
         user_id = request.path_params.get("user_id", "anonymous")
 
     if not _verify_app_token(user_id, x_app_timestamp, x_app_token):
@@ -124,17 +132,15 @@ async def require_admin(
     """
     FastAPI dependency — protects all admin-only endpoints.
     Admin key is set via ADMIN_SECRET_KEY Railway environment variable.
+    Server will not start if this variable is unset.
     """
-    expected = _admin_key()
-
     if not x_admin_key:
         raise HTTPException(
             status_code=401,
             detail="Admin key required",
         )
 
-    # Constant-time comparison prevents timing attacks
-    if not hmac.compare_digest(expected.encode(), x_admin_key.encode()):
+    if not hmac.compare_digest(_ADMIN_KEY_VALUE.encode(), x_admin_key.encode()):
         logger.warning(f"Failed admin auth attempt with key: {x_admin_key[:8]}...")
         raise HTTPException(
             status_code=403,

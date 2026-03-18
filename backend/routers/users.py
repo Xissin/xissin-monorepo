@@ -1,34 +1,43 @@
 """
 routers/users.py — User management endpoints
+
+Security:
+  - /register now requires valid X-App-Token (same as all other app routes)
+  - All admin routes still require X-Admin-Key
+  - Public routes (/check, /stats) are read-only and safe
 """
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Request
 from pydantic import BaseModel
 from typing import Optional
 
 import database as db
-from auth import require_admin
+from auth import require_admin, verify_app_request
 
 router = APIRouter()
+
 
 class BanRequest(BaseModel):
     user_id: str
     reason: Optional[str] = None
 
+
 class RegisterRequest(BaseModel):
     user_id:        str
     username:       Optional[str]  = None
     device_info:    Optional[str]  = None   # legacy plain-text field (kept for compat)
-    device_details: Optional[dict] = None   # ← NEW: rich structured device info from app
+    device_details: Optional[dict] = None   # rich structured device info from app
+
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
-@router.post("/register")
+@router.post("/register", dependencies=[Depends(verify_app_request)])
 def register_user(req: RegisterRequest):
     """
     Called every time the user opens the app.
     - Creates the user record on first launch.
     - Updates device info + last_seen on every subsequent launch.
+    - Requires valid HMAC app token (X-App-Token header).
     """
     from datetime import datetime
     from zoneinfo import ZoneInfo
@@ -37,7 +46,6 @@ def register_user(req: RegisterRequest):
     existing = db.get_user(req.user_id)
 
     if not existing:
-        # ── First launch ──
         db.save_user(req.user_id, {
             "user_id":        req.user_id,
             "username":       req.username or "",
@@ -55,7 +63,6 @@ def register_user(req: RegisterRequest):
             "username": req.username,
         })
     else:
-        # ── Returning launch — refresh device info + last_seen ──
         existing["last_seen"] = now
         if req.device_details:
             existing["device_details"] = req.device_details
@@ -65,7 +72,6 @@ def register_user(req: RegisterRequest):
             existing["username"] = req.username
         db.save_user(req.user_id, existing)
 
-    # Always upsert device_info store for the admin Device Info page
     if req.device_details:
         db.save_device_info(req.user_id, {
             **req.device_details,
@@ -116,8 +122,6 @@ def get_user_device(user_id: str):
     return info
 
 
-# ── Stats endpoint ────────────────────────────────────────────────────────────
-
 @router.get("/stats/{user_id}")
 def get_user_stats(user_id: str):
     """App: get SMS usage stats for a user."""
@@ -129,8 +133,6 @@ def get_user_stats(user_id: str):
         "history":   history,
     }
 
-
-# ── Standard user routes ──────────────────────────────────────────────────────
 
 @router.get("/{user_id}", dependencies=[Depends(require_admin)])
 def get_user(user_id: str):

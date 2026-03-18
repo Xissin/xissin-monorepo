@@ -5,41 +5,70 @@ import 'package:http/http.dart' as http;
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 
+// ─────────────────────────────────────────────────────────────────────────────
+// CrashReporter — Routes crash reports through YOUR backend, not directly
+// to Telegram. This keeps the bot token OFF the device completely.
+//
+// Backend endpoint: POST /api/crash-report
+// The backend forwards to Telegram using its own env var.
+// ─────────────────────────────────────────────────────────────────────────────
+
 class CrashReporter {
-  static const String _botToken =
-      '8282381783:AAHs_2v8UGgNM48y1EulMhovNUkTw4ntpjY';
-  static const String _chatId = '1910648163';
-  static const String _telegramApi =
-      'https://api.telegram.org/bot$_botToken/sendMessage';
+  static const String _backendBase =
+      'https://xissin-app-backend-production.up.railway.app';
+  static const String _endpoint = '$_backendBase/api/crash-report';
 
-  // ── Send to Telegram ──────────────────────────────────────────────────────
+  // ── Send to backend ───────────────────────────────────────────────────────
 
-  static Future<void> _send(String message) async {
+  static Future<void> _send({
+    required String type,
+    required String error,
+    required String stack,
+    required String device,
+    required String version,
+    required String timestamp,
+  }) async {
     try {
       await http
           .post(
-            Uri.parse(_telegramApi),
+            Uri.parse(_endpoint),
             headers: {'Content-Type': 'application/json'},
-            body:
-                '{"chat_id":"$_chatId","text":${_escapeJson(message)},"parse_mode":"HTML"}',
+            body: _buildJson(
+              type: type,
+              error: error,
+              stack: stack,
+              device: device,
+              version: version,
+              timestamp: timestamp,
+            ),
           )
           .timeout(const Duration(seconds: 10));
     } catch (_) {
-      // Silently fail — don't crash the crash reporter
+      // Silently fail — never crash the crash reporter
     }
   }
 
-  static String _escapeJson(String text) {
-    final escaped = text
+  static String _buildJson({
+    required String type,
+    required String error,
+    required String stack,
+    required String device,
+    required String version,
+    required String timestamp,
+  }) {
+    String esc(String s) => s
         .replaceAll('\\', '\\\\')
         .replaceAll('"', '\\"')
         .replaceAll('\n', '\\n')
         .replaceAll('\r', '\\r')
         .replaceAll('\t', '\\t');
-    return '"$escaped"';
+
+    return '{"type":"${esc(type)}","error":"${esc(error)}",'
+        '"stack":"${esc(stack)}","device":"${esc(device)}",'
+        '"version":"${esc(version)}","timestamp":"${esc(timestamp)}"}';
   }
 
-  // ── Get Device Info ───────────────────────────────────────────────────────
+  // ── Device / version helpers ──────────────────────────────────────────────
 
   static Future<String> _getDeviceInfo() async {
     try {
@@ -55,8 +84,6 @@ class CrashReporter {
     return 'Unknown Device';
   }
 
-  // ── Get App Version ───────────────────────────────────────────────────────
-
   static Future<String> _getAppVersion() async {
     try {
       final info = await PackageInfo.fromPlatform();
@@ -65,7 +92,16 @@ class CrashReporter {
     return 'Unknown Version';
   }
 
-  // ── Format & Send Crash ───────────────────────────────────────────────────
+  static String _nowTimestamp() {
+    final now = DateTime.now();
+    return '${now.year}-${now.month.toString().padLeft(2, '0')}-'
+        '${now.day.toString().padLeft(2, '0')} '
+        '${now.hour.toString().padLeft(2, '0')}:'
+        '${now.minute.toString().padLeft(2, '0')}:'
+        '${now.second.toString().padLeft(2, '0')}';
+  }
+
+  // ── Public API ────────────────────────────────────────────────────────────
 
   static Future<void> reportCrash({
     required Object error,
@@ -74,63 +110,40 @@ class CrashReporter {
   }) async {
     final device = await _getDeviceInfo();
     final version = await _getAppVersion();
-    final now = DateTime.now();
-    final timestamp =
-        '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')} '
-        '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}:${now.second.toString().padLeft(2, '0')}';
 
-    // Trim stack trace to avoid Telegram message limit
+    // Trim stack trace to keep payload small
     final stackStr = stack.toString();
     final trimmedStack = stackStr.length > 800
         ? '${stackStr.substring(0, 800)}\n... (trimmed)'
         : stackStr;
 
-    final message = '''
-🚨 <b>XISSIN CRASH REPORT</b>
-
-🔴 <b>Type:</b> $type
-📦 <b>Version:</b> $version
-📱 <b>Device:</b> $device
-🕐 <b>Time:</b> $timestamp
-
-❌ <b>Error:</b>
-<code>$error</code>
-
-📋 <b>Stack Trace:</b>
-<code>$trimmedStack</code>
-''';
-
-    await _send(message);
+    await _send(
+      type: type,
+      error: error.toString(),
+      stack: trimmedStack,
+      device: device,
+      version: version,
+      timestamp: _nowTimestamp(),
+    );
   }
-
-  // ── Report Non-Fatal Warning ──────────────────────────────────────────────
 
   static Future<void> reportWarning(String message) async {
     final version = await _getAppVersion();
     final device = await _getDeviceInfo();
-    final now = DateTime.now();
-    final timestamp =
-        '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')} '
-        '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
 
-    final msg = '''
-⚠️ <b>XISSIN WARNING</b>
-
-📦 <b>Version:</b> $version
-📱 <b>Device:</b> $device
-🕐 <b>Time:</b> $timestamp
-
-💬 <b>Message:</b>
-<code>$message</code>
-''';
-
-    await _send(msg);
+    await _send(
+      type: 'WARNING',
+      error: message,
+      stack: '',
+      device: device,
+      version: version,
+      timestamp: _nowTimestamp(),
+    );
   }
 
   // ── Initialize — Call this in main() ─────────────────────────────────────
 
   static void initialize() {
-    // Catch Flutter framework errors
     FlutterError.onError = (FlutterErrorDetails details) {
       FlutterError.presentError(details);
       reportCrash(
@@ -140,7 +153,6 @@ class CrashReporter {
       );
     };
 
-    // Catch errors outside Flutter framework
     PlatformDispatcher.instance.onError = (error, stack) {
       reportCrash(
         error: error,
