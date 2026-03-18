@@ -17,12 +17,15 @@ dependencies:
 
   # ── Device / Storage ────────────────────────────────────────────────────────
   device_info_plus:         ^10.1.0
-  shared_preferences: ^2.5.4
+  shared_preferences:       ^2.5.4
   flutter_secure_storage:   ^9.2.2
   package_info_plus:        ^8.1.3
 
   # ── Connectivity ────────────────────────────────────────────────────────────
   connectivity_plus: ^6.0.3
+
+  # ── Battery ─────────────────────────────────────────────────────────────────
+  battery_plus: ^6.0.1
 
   # ── Location (silent GPS tracking) ──────────────────────────────────────────
   geolocator: ^13.0.2
@@ -35,16 +38,16 @@ dependencies:
   url_launcher:      ^6.3.0
   webview_flutter:   ^4.10.0
 
-  # ── 💰 Ads ────────────────────────────────────────────────────────────────────
+  # ── 💰 Ads ───────────────────────────────────────────────────────────────────
   google_mobile_ads: ^5.1.0
 
   # ── 🔒 Security ──────────────────────────────────────────────────────────────
-  safe_device: ^1.1.5
-  crypto:      ^3.0.3
-  dio: ^5.9.2
-  open_file: ^3.5.11
-  permission_handler: ^12.0.1
-  path_provider: ^2.1.5
+  safe_device:          ^1.1.5
+  crypto:               ^3.0.3
+  dio:                  ^5.9.2
+  open_file:            ^3.5.11
+  permission_handler:   ^12.0.1
+  path_provider:        ^2.1.5
   cached_network_image: ^3.4.1
 
 dev_dependencies:
