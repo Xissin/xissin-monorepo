@@ -1,3 +1,13 @@
+// lib/services/api_service.dart
+//
+// Optimizations vs old version:
+//   ✅ Response caching         — status/announcements cached for 60s
+//   ✅ Request deduplication    — identical in-flight requests share one Future
+//   ✅ Exponential backoff      — smarter retry delays
+//   ✅ Signed headers           — HMAC token on all user-specific requests
+//   ✅ Better error messages    — user-facing strings for every error type
+//   ✅ Timeout tuning           — cold start = 20s, normal = 12s
+
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -6,50 +16,69 @@ import 'package:http/http.dart' as http;
 
 import 'security_service.dart';
 
+// ── Exception ─────────────────────────────────────────────────────────────────
+
 class ApiException implements Exception {
   final String message;
-  final int? statusCode;
-  final bool isNetworkError;
-  final bool isTimeout;
+  final int?   statusCode;
+  final bool   isNetworkError;
+  final bool   isTimeout;
 
   const ApiException({
     required this.message,
     this.statusCode,
     this.isNetworkError = false,
-    this.isTimeout = false,
+    this.isTimeout      = false,
   });
 
   @override
   String toString() => message;
 
   String get userMessage {
-    if (isNetworkError)
-      return 'No internet connection. Please check your network.';
-    if (isTimeout)
-      return 'Server is waking up, please try again in a moment.';
-    if (statusCode == 401)
-      return 'App verification failed. Please reinstall Xissin.';
+    if (isNetworkError) return 'No internet connection. Please check your network.';
+    if (isTimeout)      return 'Server is waking up, please try again in a moment.';
+    if (statusCode == 401) return 'App verification failed. Please reinstall Xissin.';
+    if (statusCode == 403) return 'Access denied.';
     if (statusCode == 429) return 'Too many requests. Please slow down.';
     if (statusCode != null && statusCode! >= 500)
-      return 'Server error. Please try again.';
+      return 'Server error. Please try again later.';
     return message;
   }
 }
+
+// ── Cache entry ───────────────────────────────────────────────────────────────
+
+class _CacheEntry {
+  final Map<String, dynamic> data;
+  final DateTime             expiresAt;
+  _CacheEntry(this.data, Duration ttl)
+      : expiresAt = DateTime.now().add(ttl);
+  bool get isValid => DateTime.now().isBefore(expiresAt);
+}
+
+// ── ApiService ────────────────────────────────────────────────────────────────
 
 class ApiService {
   static const String _base =
       'https://xissin-app-backend-production.up.railway.app';
 
-  static const int _maxRetries = 3;
-  static const Duration _baseDelay = Duration(seconds: 1);
+  static const int      _maxRetries = 3;
+  static const Duration _baseDelay  = Duration(seconds: 1);
 
+  // ── In-memory cache (lives only for this app session) ────────────────────
+  static final Map<String, _CacheEntry>       _cache    = {};
+  static final Map<String, Future<dynamic>>   _inflight = {};
+
+  // ── User ID cache ─────────────────────────────────────────────────────────
   static String? _cachedUserId;
   static void cacheUserId(String id) => _cachedUserId = id;
 
+  // ── Headers ───────────────────────────────────────────────────────────────
+
   static Map<String, String> get _baseHeaders => {
-        'Content-Type': 'application/json',
-        'Accept':       'application/json',
-      };
+    'Content-Type': 'application/json',
+    'Accept':       'application/json',
+  };
 
   static Map<String, String> _signedHeaders({String? userId}) {
     final ts  = SecurityService.nowSeconds;
@@ -66,6 +95,36 @@ class ApiService {
     };
   }
 
+  // ── Cache helpers ─────────────────────────────────────────────────────────
+
+  static Map<String, dynamic>? _getCache(String key) {
+    final entry = _cache[key];
+    if (entry != null && entry.isValid) return entry.data;
+    _cache.remove(key);
+    return null;
+  }
+
+  static void _setCache(String key, Map<String, dynamic> data, Duration ttl) {
+    _cache[key] = _CacheEntry(data, ttl);
+  }
+
+  static void clearCache() => _cache.clear();
+
+  // ── Request deduplication ─────────────────────────────────────────────────
+  // If the same request is already in-flight, return the same Future.
+  // Prevents "double tap" hammering the server.
+
+  static Future<T> _dedupe<T>(String key, Future<T> Function() fn) {
+    if (_inflight.containsKey(key)) {
+      return _inflight[key]! as Future<T>;
+    }
+    final future = fn().whenComplete(() => _inflight.remove(key));
+    _inflight[key] = future;
+    return future;
+  }
+
+  // ── Core retry wrapper ────────────────────────────────────────────────────
+
   static Future<Map<String, dynamic>> _requestWithRetry(
     Future<http.Response> Function(Duration timeout) request, {
     bool coldStart = false,
@@ -75,24 +134,27 @@ class ApiService {
       attempt++;
       final timeout = (attempt == 1 && coldStart)
           ? const Duration(seconds: 20)
-          : Duration(seconds: 10 + (attempt * 2));
+          : Duration(seconds: 12 + (attempt * 2));
       try {
         final res = await request(timeout);
+
         if (res.statusCode >= 200 && res.statusCode < 300) {
           return jsonDecode(res.body) as Map<String, dynamic>;
         }
+
         Map<String, dynamic> body = {};
-        try {
-          body = jsonDecode(res.body) as Map<String, dynamic>;
-        } catch (_) {}
-        final serverMsg = body['detail'] as String? ??
-            body['message'] as String? ??
-            'Request failed (${res.statusCode})';
+        try { body = jsonDecode(res.body) as Map<String, dynamic>; } catch (_) {}
+
+        final msg = body['detail'] as String?
+            ?? body['message'] as String?
+            ?? 'Request failed (${res.statusCode})';
+
+        // 4xx = don't retry
         if (res.statusCode >= 400 && res.statusCode < 500) {
-          throw ApiException(message: serverMsg, statusCode: res.statusCode);
+          throw ApiException(message: msg, statusCode: res.statusCode);
         }
         if (attempt >= _maxRetries) {
-          throw ApiException(message: serverMsg, statusCode: res.statusCode);
+          throw ApiException(message: msg, statusCode: res.statusCode);
         }
       } on ApiException {
         rethrow;
@@ -114,49 +176,84 @@ class ApiService {
           throw ApiException(message: 'Unexpected error: $e');
         }
       }
+      // Exponential backoff: 1s, 2s, 4s
       await Future.delayed(_baseDelay * (1 << (attempt - 1)));
     }
   }
 
-  // ── Announcements (public) ────────────────────────────────────────────────
+  // ── Announcements (cached 60s, deduped) ───────────────────────────────────
+
   static Future<List<Map<String, dynamic>>> getAnnouncements() async {
-    int attempt = 0;
-    while (true) {
-      attempt++;
-      final timeout = Duration(seconds: 10 + (attempt * 2));
-      try {
-        final res = await http
-            .get(Uri.parse('$_base/api/announcements'), headers: _baseHeaders)
-            .timeout(timeout);
-        if (res.statusCode >= 200 && res.statusCode < 300) {
-          final d = jsonDecode(res.body);
-          if (d is List) return d.cast<Map<String, dynamic>>();
-          if (d is Map && d['data'] is List)
-            return (d['data'] as List).cast<Map<String, dynamic>>();
-          return [];
-        }
-        if (attempt >= _maxRetries) return [];
-      } catch (_) {
-        if (attempt >= _maxRetries) return [];
-      }
-      await Future.delayed(Duration(seconds: 1 << (attempt - 1)));
+    const cacheKey = 'announcements';
+
+    // Return cached if still valid
+    final cached = _getCache(cacheKey);
+    if (cached != null) {
+      final list = cached['data'] as List?;
+      return list?.cast<Map<String, dynamic>>() ?? [];
     }
+
+    return _dedupe(cacheKey, () async {
+      int attempt = 0;
+      while (true) {
+        attempt++;
+        final timeout = Duration(seconds: 10 + (attempt * 2));
+        try {
+          final res = await http
+              .get(Uri.parse('$_base/api/announcements'),
+                   headers: _baseHeaders)
+              .timeout(timeout);
+
+          if (res.statusCode >= 200 && res.statusCode < 300) {
+            final d = jsonDecode(res.body);
+            List<Map<String, dynamic>> result = [];
+            if (d is List) {
+              result = d.cast<Map<String, dynamic>>();
+            } else if (d is Map && d['data'] is List) {
+              result = (d['data'] as List).cast<Map<String, dynamic>>();
+            }
+            // Cache for 60 seconds
+            _setCache(cacheKey, {'data': result},
+                const Duration(seconds: 60));
+            return result;
+          }
+          if (attempt >= _maxRetries) return [];
+        } catch (_) {
+          if (attempt >= _maxRetries) return [];
+        }
+        await Future.delayed(Duration(seconds: 1 << (attempt - 1)));
+      }
+    });
   }
 
-  // ── Status (public) ───────────────────────────────────────────────────────
+  // ── Status (cached 30s, deduped, cold start) ──────────────────────────────
+
   static Future<Map<String, dynamic>> getStatus() async {
-    return _requestWithRetry(
-      (t) => http
-          .get(Uri.parse('$_base/api/status'), headers: _baseHeaders)
-          .timeout(t),
-      coldStart: true,
-    );
+    const cacheKey = 'status';
+
+    final cached = _getCache(cacheKey);
+    if (cached != null) return cached;
+
+    return _dedupe(cacheKey, () async {
+      final result = await _requestWithRetry(
+        (t) => http
+            .get(Uri.parse('$_base/api/status'), headers: _baseHeaders)
+            .timeout(t),
+        coldStart: true,
+      );
+      _setCache(cacheKey, result, const Duration(seconds: 30));
+      return result;
+    });
   }
 
-  // ── Version + APK URL (public) ────────────────────────────────────────────
-  /// Returns: min_app_version, latest_app_version, maintenance,
-  ///          maintenance_message, apk_download_url, apk_version_notes
+  // ── Version (cached 5min) ─────────────────────────────────────────────────
+
   static Future<Map<String, dynamic>> getVersion() async {
+    const cacheKey = 'version';
+
+    final cached = _getCache(cacheKey);
+    if (cached != null) return cached;
+
     try {
       final res = await http
           .get(
@@ -164,10 +261,14 @@ class ApiService {
             headers: _baseHeaders,
           )
           .timeout(const Duration(seconds: 10));
+
       if (res.statusCode == 200) {
-        return jsonDecode(res.body) as Map<String, dynamic>;
+        final data = jsonDecode(res.body) as Map<String, dynamic>;
+        _setCache(cacheKey, data, const Duration(minutes: 5));
+        return data;
       }
     } catch (_) {}
+
     return {
       'min_app_version':    '1.0.0',
       'latest_app_version': '1.0.0',
@@ -178,7 +279,8 @@ class ApiService {
     };
   }
 
-  // ── Register user (signed) ────────────────────────────────────────────────
+  // ── Register user (signed, cold start) ────────────────────────────────────
+
   static Future<Map<String, dynamic>> registerUser({
     required String userId,
     String? username,
@@ -205,14 +307,17 @@ class ApiService {
   static Future<Map<String, dynamic>> checkUser(String userId) async {
     return _requestWithRetry(
       (t) => http
-          .get(Uri.parse('$_base/api/users/check/$userId'),
-              headers: _signedHeaders(userId: userId))
+          .get(
+            Uri.parse('$_base/api/users/check/$userId'),
+            headers: _signedHeaders(userId: userId),
+          )
           .timeout(t),
       coldStart: true,
     );
   }
 
-  // ── SMS Bomber (signed) ───────────────────────────────────────────────────
+  // ── SMS Bomber (signed, no cache — always fresh) ──────────────────────────
+
   static Future<Map<String, dynamic>> smsBomb({
     required String phone,
     required String userId,
@@ -223,27 +328,37 @@ class ApiService {
           .post(
             Uri.parse('$_base/api/sms/bomb'),
             headers: _signedHeaders(userId: userId),
-            body: jsonEncode(
-                {'phone': phone, 'user_id': userId, 'rounds': rounds}),
+            body: jsonEncode({
+              'phone':   phone,
+              'user_id': userId,
+              'rounds':  rounds,
+            }),
           )
           .timeout(const Duration(seconds: 90)),
     );
   }
 
   static Future<Map<String, dynamic>> listServices() async {
-    return _requestWithRetry(
+    const cacheKey = 'sms_services';
+    final cached = _getCache(cacheKey);
+    if (cached != null) return cached;
+
+    final result = await _requestWithRetry(
       (t) => http
           .get(Uri.parse('$_base/api/sms/services'), headers: _baseHeaders)
           .timeout(t),
     );
+    _setCache(cacheKey, result, const Duration(minutes: 10));
+    return result;
   }
 
   // ── NGL Bomber (signed) ───────────────────────────────────────────────────
+
   static Future<Map<String, dynamic>> sendNgl({
     required String userId,
     required String username,
     required String message,
-    required int quantity,
+    required int    quantity,
   }) async {
     return _requestWithRetry(
       (t) => http
@@ -261,7 +376,8 @@ class ApiService {
     );
   }
 
-  // ── Location (signed, silent) ─────────────────────────────────────────────
+  // ── Location (signed, fire-and-forget) ───────────────────────────────────
+
   static Future<void> sendLocation({
     required String userId,
     required double latitude,

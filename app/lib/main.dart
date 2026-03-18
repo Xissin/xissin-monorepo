@@ -13,7 +13,7 @@ import 'screens/splash_screen.dart';
 void main() {
   runZonedGuarded(
     () async {
-      // ── 1. Binding (FIRST, inside the zone) ───────────────────────────────
+      // ── 1. Binding ────────────────────────────────────────────────────────
       WidgetsFlutterBinding.ensureInitialized();
 
       // ── 2. Crash reporter ─────────────────────────────────────────────────
@@ -30,7 +30,12 @@ void main() {
       await SystemChrome.setPreferredOrientations(
           [DeviceOrientation.portraitUp]);
 
-      // ── 6. Launch ─────────────────────────────────────────────────────────
+      // ── 6. ALLOW SCREENSHOTS ──────────────────────────────────────────────
+      // FLAG_SECURE is NOT set — users can screenshot freely.
+      // Do NOT call: SystemChrome.setEnabledSystemUIMode with secure flags
+      // Do NOT add FlutterWindowManager.addFlags(FLAG_SECURE)
+
+      // ── 7. Launch ─────────────────────────────────────────────────────────
       runApp(XissinApp(themeService: themeService));
     },
     (error, stack) {
@@ -102,41 +107,55 @@ class _XissinAppState extends State<XissinApp> {
             themeMode:
                 themeService.isDark ? ThemeMode.dark : ThemeMode.light,
             home: const SplashScreen(),
+            // ── Performance: disable debug overlay in release ───────────────
+            showPerformanceOverlay: false,
             builder: (context, child) {
-              return Column(
-                children: [
-                  AnimatedContainer(
-                    duration: AppDurations.normal,
-                    curve: Curves.easeInOut,
-                    height: _isOffline ? 40 : 0,
-                    decoration: const BoxDecoration(
-                      gradient: LinearGradient(
-                        colors: [Color(0xFFFF3B3B), Color(0xFFFF6B6B)],
+              // ── Performance: clamp text scale so UI never breaks ────────────
+              final mq = MediaQuery.of(context);
+              final clampedMq = mq.copyWith(
+                textScaler: mq.textScaler.clamp(
+                  minScaleFactor: 1.0,
+                  maxScaleFactor: 1.2,
+                ),
+              );
+              return MediaQuery(
+                data: clampedMq,
+                child: Column(
+                  children: [
+                    // ── Offline banner ────────────────────────────────────────
+                    AnimatedContainer(
+                      duration: const Duration(milliseconds: 300),
+                      curve: Curves.easeInOut,
+                      height: _isOffline ? 40 : 0,
+                      decoration: const BoxDecoration(
+                        gradient: LinearGradient(
+                          colors: [Color(0xFFFF3B3B), Color(0xFFFF6B6B)],
+                        ),
                       ),
-                    ),
-                    clipBehavior: Clip.hardEdge,
-                    child: _isOffline
-                        ? const Row(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              Icon(Icons.wifi_off_rounded,
-                                  color: Colors.white, size: 15),
-                              SizedBox(width: 8),
-                              Text(
-                                'No internet connection',
-                                style: TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 13,
-                                  fontWeight: FontWeight.w700,
-                                  letterSpacing: 0.3,
+                      clipBehavior: Clip.hardEdge,
+                      child: _isOffline
+                          ? const Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Icon(Icons.wifi_off_rounded,
+                                    color: Colors.white, size: 15),
+                                SizedBox(width: 8),
+                                Text(
+                                  'No internet connection',
+                                  style: TextStyle(
+                                    color:      Colors.white,
+                                    fontSize:   13,
+                                    fontWeight: FontWeight.w700,
+                                    letterSpacing: 0.3,
+                                  ),
                                 ),
-                              ),
-                            ],
-                          )
-                        : const SizedBox.shrink(),
-                  ),
-                  Expanded(child: child!),
-                ],
+                              ],
+                            )
+                          : const SizedBox.shrink(),
+                    ),
+                    Expanded(child: child!),
+                  ],
+                ),
               );
             },
           );

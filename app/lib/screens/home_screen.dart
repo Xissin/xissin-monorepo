@@ -29,6 +29,11 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   List<Map<String, dynamic>> _announcements = [];
 
+  // ── FIX: dismissed set must be State (not local in build) ─────────────────
+  // Old code: `final dismissed = <String>{};` was inside build() — it reset
+  // on every rebuild so dismissed banners would reappear. Now it's in State.
+  final Set<String> _dismissed = {};
+
   @override
   void initState() {
     super.initState();
@@ -98,7 +103,6 @@ class _HomeScreenState extends State<HomeScreen> {
     HapticFeedback.mediumImpact();
     final adService = AdService.instance;
 
-    // Already premium — show status
     if (adService.adsRemoved) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -122,7 +126,6 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
 
-    // Show purchase dialog
     final purchased = await PaymentService.showRemoveAdsDialog(
       context: context,
       userId:  widget.userId,
@@ -130,7 +133,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
     if (purchased == true && mounted) {
       await adService.onPurchaseComplete(widget.userId);
-      setState(() {}); // Refresh UI to show premium badge
+      if (mounted) setState(() {});
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           behavior:        SnackBarBehavior.floating,
@@ -154,13 +157,13 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  // ── Slide page transition helper ───────────────────────────────────────────
+  // ── Slide transition helper ────────────────────────────────────────────────
 
   Future<T?> _pushSlide<T>(Widget page) {
     return Navigator.push<T>(
       context,
       PageRouteBuilder(
-        transitionDuration: const Duration(milliseconds: 400),
+        transitionDuration: const Duration(milliseconds: 350),
         pageBuilder:        (_, __, ___) => page,
         transitionsBuilder: (_, anim, __, child) => SlideTransition(
           position: Tween<Offset>(
@@ -173,12 +176,11 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  // ── Banner Ad widget ───────────────────────────────────────────────────────
+  // ── Banner Ad ─────────────────────────────────────────────────────────────
 
   Widget _buildBannerAd() {
     return Consumer<AdService>(
       builder: (_, adService, __) {
-        // Hide banner if user is premium
         if (adService.adsRemoved) return const SizedBox.shrink();
         if (!adService.bannerReady || adService.bannerAd == null) {
           return const SizedBox.shrink();
@@ -202,9 +204,9 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget build(BuildContext context) {
     final c = context.c;
 
-    final dismissed = <String>{};
-    final visible   = _announcements
-        .where((a) => !dismissed.contains(a['id']?.toString()))
+    // ── FIX: use _dismissed from State, not a local var that resets ──────────
+    final visible = _announcements
+        .where((a) => !_dismissed.contains(a['id']?.toString()))
         .toList();
 
     return Scaffold(
@@ -233,7 +235,9 @@ class _HomeScreenState extends State<HomeScreen> {
                         (i) => _AnnouncementBanner(
                           announcement: visible[i],
                           onDismiss: () => setState(
-                              () => dismissed.add(visible[i]['id']?.toString() ?? '')),
+                            () => _dismissed.add(
+                                visible[i]['id']?.toString() ?? ''),
+                          ),
                           c:     c,
                           index: i,
                         ),
@@ -242,12 +246,11 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ),
 
-              // ── Remove Ads banner (shown only to non-premium users) ────────
+              // ── Remove Ads banner ──────────────────────────────────────────
               SliverToBoxAdapter(
                 child: Consumer<AdService>(
                   builder: (_, adService, __) {
                     if (adService.adsRemoved) {
-                      // Premium badge
                       return Padding(
                         padding: const EdgeInsets.fromLTRB(22, 16, 22, 0),
                         child: Container(
@@ -262,7 +265,8 @@ class _HomeScreenState extends State<HomeScreen> {
                             ),
                             borderRadius: BorderRadius.circular(AppRadius.md),
                             border: Border.all(
-                                color: const Color(0xFFFFD700).withOpacity(0.30)),
+                                color:
+                                    const Color(0xFFFFD700).withOpacity(0.30)),
                           ),
                           child: const Row(
                             mainAxisAlignment: MainAxisAlignment.center,
@@ -284,7 +288,6 @@ class _HomeScreenState extends State<HomeScreen> {
                       );
                     }
 
-                    // Remove Ads promo banner
                     return Padding(
                       padding: const EdgeInsets.fromLTRB(22, 16, 22, 0),
                       child: GestureDetector(
@@ -301,20 +304,21 @@ class _HomeScreenState extends State<HomeScreen> {
                             ),
                             borderRadius: BorderRadius.circular(AppRadius.md),
                             border: Border.all(
-                                color: const Color(0xFF6C63FF).withOpacity(0.35)),
+                                color:
+                                    const Color(0xFF6C63FF).withOpacity(0.35)),
                           ),
                           child: Row(
                             children: [
                               const Icon(Icons.block_rounded,
                                   color: Color(0xFF6C63FF), size: 18),
                               const SizedBox(width: 10),
-                              Expanded(
+                              const Expanded(
                                 child: Column(
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
                                     Text(
                                       'Remove Ads',
-                                      style: const TextStyle(
+                                      style: TextStyle(
                                         color:      Color(0xFF6C63FF),
                                         fontSize:   13,
                                         fontWeight: FontWeight.bold,
@@ -322,7 +326,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                     ),
                                     Text(
                                       'Tap to see benefits & pay via GCash',
-                                      style: const TextStyle(
+                                      style: TextStyle(
                                           color: Colors.white38, fontSize: 11),
                                     ),
                                   ],
@@ -448,102 +452,110 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  // ── Header widget ──────────────────────────────────────────────────────────
+  // ── Header ─────────────────────────────────────────────────────────────────
 
   Widget _buildHeader(XissinColors c) {
-    final themeService = context.watch<ThemeService>();
-    final adService    = context.watch<AdService>();
-
+    // ── Optimization: use Selector to avoid rebuilding whole header ──────────
+    // Only rebuild when isDark or adsRemoved changes — not on every setState.
     return Padding(
       padding: const EdgeInsets.fromLTRB(22, 24, 22, 0),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              ShaderMask(
-                shaderCallback: (b) => LinearGradient(
-                  colors: [c.primary, c.secondary],
-                ).createShader(b),
-                child: const Text(
-                  'XISSIN',
-                  style: TextStyle(
-                    color:         Colors.white,
-                    fontSize:      28,
-                    fontWeight:    FontWeight.w900,
-                    letterSpacing: 4,
+          Selector<AdService, bool>(
+            selector: (_, s) => s.adsRemoved,
+            builder: (_, adsRemoved, __) => Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                ShaderMask(
+                  shaderCallback: (b) => LinearGradient(
+                    colors: [c.primary, c.secondary],
+                  ).createShader(b),
+                  child: const Text(
+                    'XISSIN',
+                    style: TextStyle(
+                      color:         Colors.white,
+                      fontSize:      28,
+                      fontWeight:    FontWeight.w900,
+                      letterSpacing: 4,
+                    ),
                   ),
                 ),
-              ),
-              Row(
-                children: [
-                  Text(
-                    'Multi-Tool Suite',
-                    style: TextStyle(color: c.textSecondary, fontSize: 12),
-                  ),
-                  // Premium badge next to subtitle
-                  if (adService.adsRemoved) ...[
-                    const SizedBox(width: 6),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 6, vertical: 2),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFFFD700).withOpacity(0.15),
-                        borderRadius: BorderRadius.circular(6),
-                        border: Border.all(
-                            color: const Color(0xFFFFD700).withOpacity(0.40)),
-                      ),
-                      child: const Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(Icons.star_rounded,
-                              color: Color(0xFFFFD700), size: 9),
-                          SizedBox(width: 3),
-                          Text(
-                            'PRO',
-                            style: TextStyle(
-                              color:         Color(0xFFFFD700),
-                              fontSize:      9,
-                              fontWeight:    FontWeight.bold,
-                              letterSpacing: 0.5,
-                            ),
-                          ),
-                        ],
-                      ),
+                Row(
+                  children: [
+                    Text(
+                      'Multi-Tool Suite',
+                      style: TextStyle(color: c.textSecondary, fontSize: 12),
                     ),
+                    if (adsRemoved) ...[
+                      const SizedBox(width: 6),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 6, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFFFD700).withOpacity(0.15),
+                          borderRadius: BorderRadius.circular(6),
+                          border: Border.all(
+                              color:
+                                  const Color(0xFFFFD700).withOpacity(0.40)),
+                        ),
+                        child: const Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.star_rounded,
+                                color: Color(0xFFFFD700), size: 9),
+                            SizedBox(width: 3),
+                            Text(
+                              'PRO',
+                              style: TextStyle(
+                                color:         Color(0xFFFFD700),
+                                fontSize:      9,
+                                fontWeight:    FontWeight.bold,
+                                letterSpacing: 0.5,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
                   ],
-                ],
-              ),
-            ],
-          )
-              .animate()
-              .fadeIn(duration: 500.ms)
-              .slideX(begin: -0.2, end: 0, duration: 500.ms),
+                ),
+              ],
+            )
+                .animate()
+                .fadeIn(duration: 500.ms)
+                .slideX(begin: -0.2, end: 0, duration: 500.ms),
+          ),
           Row(
             children: [
-              // Remove Ads icon button in header (for non-premium users)
-              if (!adService.adsRemoved)
-                GestureDetector(
-                  onTap: _onRemoveAdsTap,
-                  child: Container(
-                    width: 40, height: 40,
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF6C63FF).withOpacity(0.12),
-                      borderRadius: BorderRadius.circular(AppRadius.md),
-                      border: Border.all(
-                        color: const Color(0xFF6C63FF).withOpacity(0.30),
-                        width: 1,
-                      ),
-                    ),
-                    child: const Icon(Icons.block_rounded,
-                        size: 18, color: Color(0xFF6C63FF)),
-                  ),
-                )
-                    .animate(delay: 50.ms)
-                    .fadeIn(duration: 500.ms)
-                    .scale(
-                        begin: const Offset(0.8, 0.8), duration: 400.ms),
+              Selector<AdService, bool>(
+                selector: (_, s) => s.adsRemoved,
+                builder: (_, adsRemoved, __) => adsRemoved
+                    ? const SizedBox.shrink()
+                    : GestureDetector(
+                        onTap: _onRemoveAdsTap,
+                        child: Container(
+                          width: 40, height: 40,
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF6C63FF).withOpacity(0.12),
+                            borderRadius:
+                                BorderRadius.circular(AppRadius.md),
+                            border: Border.all(
+                              color:
+                                  const Color(0xFF6C63FF).withOpacity(0.30),
+                              width: 1,
+                            ),
+                          ),
+                          child: const Icon(Icons.block_rounded,
+                              size: 18, color: Color(0xFF6C63FF)),
+                        ),
+                      )
+                        .animate(delay: 50.ms)
+                        .fadeIn(duration: 500.ms)
+                        .scale(
+                            begin: const Offset(0.8, 0.8),
+                            duration: 400.ms),
+              ),
               const SizedBox(width: 8),
               _TelegramButton(c: c)
                   .animate(delay: 100.ms)
@@ -551,20 +563,24 @@ class _HomeScreenState extends State<HomeScreen> {
                   .scale(
                       begin: const Offset(0.8, 0.8), duration: 400.ms),
               const SizedBox(width: 8),
-              HapticIconButton(
-                icon: themeService.isDark
-                    ? Icons.light_mode_rounded
-                    : Icons.dark_mode_rounded,
-                onPressed: () {
-                  HapticFeedback.selectionClick();
-                  themeService.toggle();
-                },
-                color:           c.textSecondary,
-                backgroundColor: c.surface,
+              Selector<ThemeService, bool>(
+                selector: (_, s) => s.isDark,
+                builder: (_, isDark, __) => HapticIconButton(
+                  icon: isDark
+                      ? Icons.light_mode_rounded
+                      : Icons.dark_mode_rounded,
+                  onPressed: () {
+                    HapticFeedback.selectionClick();
+                    context.read<ThemeService>().toggle();
+                  },
+                  color:           c.textSecondary,
+                  backgroundColor: c.surface,
+                ),
               )
                   .animate(delay: 150.ms)
                   .fadeIn(duration: 500.ms)
-                  .scale(begin: const Offset(0.8, 0.8), duration: 400.ms),
+                  .scale(
+                      begin: const Offset(0.8, 0.8), duration: 400.ms),
             ],
           ),
         ],
@@ -579,7 +595,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 }
 
-// ── Telegram quick-link button ───────────────────────────────────────────────
+// ── Telegram button ───────────────────────────────────────────────────────────
 
 class _TelegramButton extends StatelessWidget {
   final XissinColors c;
@@ -605,13 +621,14 @@ class _TelegramButton extends StatelessWidget {
             width: 1,
           ),
         ),
-        child: const Icon(Icons.telegram, size: 20, color: Color(0xFF229ED9)),
+        child: const Icon(Icons.telegram, size: 20,
+            color: Color(0xFF229ED9)),
       ),
     );
   }
 }
 
-// ── Announcement banner ──────────────────────────────────────────────────────
+// ── Announcement banner ───────────────────────────────────────────────────────
 
 class _AnnouncementBanner extends StatelessWidget {
   final Map<String, dynamic> announcement;
