@@ -1,11 +1,12 @@
 @echo off
 setlocal enabledelayedexpansion
-title Xissin App Updater v2.0
+title Xissin App Updater v2.1
 color 0A
 
 :: ============================================================
-::  XISSIN APP UPDATER v2.0
+::  XISSIN APP UPDATER v2.1
 ::  Full release flow — pubspec → GitHub → Drive → Admin Panel
+::  v2.1: Auto-computes APK SHA-256 checksum for security
 :: ============================================================
 
 set "PUBSPEC=C:\Users\Nathaniel\Desktop\xissin-monorepo\app\pubspec.yaml"
@@ -13,6 +14,7 @@ set "REPO=C:\Users\Nathaniel\Desktop\xissin-monorepo"
 set "ADMIN_URL=https://xissin-panel.streamlit.app"
 set "ACTIONS_URL=https://github.com/Xissin/xissin-monorepo/actions"
 set "RELEASES_URL=https://github.com/Xissin/xissin-monorepo/releases"
+set "APK_DOWNLOAD_DIR=D:\Download"
 
 :: ── Read current version from pubspec.yaml ──────────────────
 for /f "tokens=2 delims=: " %%a in ('findstr /i "^version:" "%PUBSPEC%"') do (
@@ -27,7 +29,7 @@ for /f "tokens=1,2 delims=+" %%a in ("!CURRENT_VERSION_FULL!") do (
 cls
 echo.
 echo  +====================================================+
-echo  ^|          XISSIN APP UPDATER v2.0                  ^|
+echo  ^|          XISSIN APP UPDATER v2.1                  ^|
 echo  +====================================================+
 echo.
 echo  Current App Version : v!CURRENT_VERSION!
@@ -40,11 +42,13 @@ echo  [1] Update pubspec.yaml version
 echo  [2] Write commit message + push to GitHub
 echo  [3] Create version tag  (triggers APK build)
 echo  [4] Wait for build -- download APK from GitHub
+echo  [4b] AUTO-COMPUTE SHA-256 checksum  ^<-- NEW
 echo  [5] Upload APK to Google Drive -- copy link
 echo  [6] Update Admin Panel
 echo       - latest_app_version
 echo       - min_app_version  (force update, optional)
 echo       - APK Download URL (paste Drive link)
+echo       - APK SHA-256      (auto-filled for you)
 echo       - Version Notes    (shown in update dialog)
 echo  ====================================================
 echo.
@@ -222,7 +226,9 @@ echo  +----------------------------------------------------+
 echo  ^|  1. Wait for the build to finish (usually 5-10min)^|
 echo  ^|  2. Go to your GitHub Releases page               ^|
 echo  ^|  3. Find release v!NEW_VERSION!                   ^|
-echo  ^|  4. Download the APK file                         ^|
+echo  ^|  4. Download the APK file to:                     ^|
+echo  ^|     D:\Download\                                  ^|
+echo  ^|  5. Name it:  xissin_v!NEW_VERSION!.apk           ^|
 echo  +----------------------------------------------------+
 echo.
 echo  Opening GitHub Releases page...
@@ -230,8 +236,8 @@ start "" "!RELEASES_URL!"
 echo.
 
 :STEP4_WAIT
-set /p "DONE4=  Have you downloaded the APK from GitHub? (Y/N): "
-if /i "!DONE4!" equ "Y" goto STEP5
+set /p "DONE4=  Have you downloaded the APK to D:\Download\? (Y/N): "
+if /i "!DONE4!" equ "Y" goto STEP4_HASH
 if /i "!DONE4!" equ "N" (
     echo.
     echo  Take your time -- wait for the build to finish.
@@ -242,6 +248,71 @@ if /i "!DONE4!" equ "N" (
 )
 echo  Please type Y or N only.
 goto STEP4_WAIT
+
+:: ── Step 4b: Auto-compute SHA-256 ────────────────────────────
+:STEP4_HASH
+cls
+echo.
+echo  +====================================================+
+echo  ^|   STEP 4b -- Computing APK SHA-256 Checksum       ^|
+echo  +====================================================+
+echo.
+
+:: Try the expected filename first
+set "APK_PATH=!APK_DOWNLOAD_DIR!\xissin_v!NEW_VERSION!.apk"
+set "APK_FOUND=0"
+
+if exist "!APK_PATH!" (
+    set "APK_FOUND=1"
+) else (
+    :: Ask user to point to the APK if not found at expected path
+    echo  Could not find: !APK_PATH!
+    echo.
+    echo  Please enter the full path to your downloaded APK.
+    echo  Example: D:\Download\app-release.apk
+    echo.
+    set /p "APK_PATH=  APK file path: "
+    if exist "!APK_PATH!" (
+        set "APK_FOUND=1"
+    ) else (
+        echo.
+        echo  ERROR: File not found at that path.
+        echo  Please download the APK first then press any key to retry.
+        pause
+        goto STEP4_HASH
+    )
+)
+
+echo.
+echo  Computing SHA-256 for:
+echo  !APK_PATH!
+echo.
+echo  Please wait...
+echo.
+
+:: Use PowerShell to get SHA-256 hash and capture it cleanly
+for /f "usebackq delims=" %%H in (`powershell -NoProfile -Command "(Get-FileHash '!APK_PATH!' -Algorithm SHA256).Hash.ToLower()"`) do (
+    set "APK_SHA256=%%H"
+)
+
+if "!APK_SHA256!"=="" (
+    echo  ERROR: Could not compute hash. Make sure the file is not corrupted.
+    pause
+    goto STEP4_HASH
+)
+
+echo  +----------------------------------------------------+
+echo  ^|  SHA-256 CHECKSUM:                                ^|
+echo  ^|  !APK_SHA256!  ^|
+echo  +----------------------------------------------------+
+echo.
+echo  [OK] Checksum computed! Copy it to the Admin Panel in Step 6.
+echo.
+echo  (This has also been saved to clipboard for you)
+echo !APK_SHA256! | clip
+echo.
+pause
+goto STEP5
 
 :: ============================================================
 :STEP5
@@ -303,7 +374,7 @@ echo  +====================================================+
 echo  ^|   STEP 6 of 6 -- Update Admin Panel               ^|
 echo  +====================================================+
 echo.
-echo  You need to update 4 things in the Admin Panel.
+echo  You need to update 5 things in the Admin Panel.
 echo  Open Settings page now.
 echo.
 echo  Opening Admin Panel...
@@ -315,7 +386,6 @@ echo  --------------------------------------------------
 echo  [6A] LATEST APP VERSION
 echo  --------------------------------------------------
 echo  Set "Latest App Version" to: !NEW_VERSION!
-echo  This shows the update notification to users.
 echo  --------------------------------------------------
 echo.
 :STEP6A
@@ -398,11 +468,37 @@ if /i "!DONE6C!" equ "N" (
 echo  Please type Y or N only.
 goto STEP6C_CONFIRM
 
-:: ── 6D: Version Notes ───────────────────────────────────────
+:: ── 6D: APK SHA-256 Checksum ─────────────────────────────────
 :STEP6D
 echo.
 echo  --------------------------------------------------
-echo  [6D] VERSION NOTES  (shown in update dialog)
+echo  [6D] APK SHA-256 CHECKSUM  ^<-- NEW
+echo  --------------------------------------------------
+echo  Paste this into the "APK SHA-256 Checksum" field:
+echo.
+echo  !APK_SHA256!
+echo.
+echo  (It was also copied to your clipboard in Step 4b)
+echo  Ctrl+V to paste it directly.
+echo  --------------------------------------------------
+echo.
+:STEP6D_CONFIRM
+set /p "DONE6D=  Done pasting the SHA-256 into Admin Panel? (Y/N): "
+if /i "!DONE6D!" equ "Y" goto STEP6E
+if /i "!DONE6D!" equ "N" (
+    echo.
+    echo  Please paste it before continuing.
+    start "" "!ADMIN_URL!"
+    goto STEP6D_CONFIRM
+)
+echo  Please type Y or N only.
+goto STEP6D_CONFIRM
+
+:: ── 6E: Version Notes ───────────────────────────────────────
+:STEP6E
+echo.
+echo  --------------------------------------------------
+echo  [6E] VERSION NOTES  (shown in update dialog)
 echo  --------------------------------------------------
 echo  Fill in the "Version Notes" field in Admin Panel.
 echo  Write what changed in this version. Examples:
@@ -415,40 +511,40 @@ echo.
 echo  Opening Admin Panel...
 start "" "!ADMIN_URL!"
 echo.
-:STEP6D_CONFIRM
-set /p "DONE6D=  Done filling in Version Notes? (Y/N): "
-if /i "!DONE6D!" equ "Y" goto STEP6E
-if /i "!DONE6D!" equ "N" (
-    echo.
-    echo  Please fill it in before continuing.
-    start "" "!ADMIN_URL!"
-    goto STEP6D_CONFIRM
-)
-echo  Please type Y or N only.
-goto STEP6D_CONFIRM
-
-:: ── 6E: Save Settings ───────────────────────────────────────
-:STEP6E
-echo.
-echo  --------------------------------------------------
-echo  [6E] SAVE SETTINGS
-echo  --------------------------------------------------
-echo  Click the "Save Settings" button in Admin Panel!
-echo  Do NOT forget this step or none of the changes
-echo  will be applied to the live app.
-echo  --------------------------------------------------
-echo.
 :STEP6E_CONFIRM
-set /p "DONE6E=  Have you clicked SAVE SETTINGS? (Y/N): "
-if /i "!DONE6E!" equ "Y" goto DONE
+set /p "DONE6E=  Done filling in Version Notes? (Y/N): "
+if /i "!DONE6E!" equ "Y" goto STEP6F
 if /i "!DONE6E!" equ "N" (
     echo.
-    echo  Please save before continuing!
+    echo  Please fill it in before continuing.
     start "" "!ADMIN_URL!"
     goto STEP6E_CONFIRM
 )
 echo  Please type Y or N only.
 goto STEP6E_CONFIRM
+
+:: ── 6F: Save Settings ───────────────────────────────────────
+:STEP6F
+echo.
+echo  --------------------------------------------------
+echo  [6F] SAVE SETTINGS
+echo  --------------------------------------------------
+echo  Click the "Save All Settings" button in Admin Panel!
+echo  Do NOT forget this step or none of the changes
+echo  will be applied to the live app.
+echo  --------------------------------------------------
+echo.
+:STEP6F_CONFIRM
+set /p "DONE6F=  Have you clicked SAVE ALL SETTINGS? (Y/N): "
+if /i "!DONE6F!" equ "Y" goto DONE
+if /i "!DONE6F!" equ "N" (
+    echo.
+    echo  Please save before continuing!
+    start "" "!ADMIN_URL!"
+    goto STEP6F_CONFIRM
+)
+echo  Please type Y or N only.
+goto STEP6F_CONFIRM
 
 :: ============================================================
 :DONE
@@ -463,9 +559,9 @@ echo.
 echo  [1] pubspec.yaml   --^> v!NEW_VERSION!+!NEW_BUILD!
 echo  [2] Git            --^> Committed and pushed
 echo  [3] GitHub Tag     --^> v!NEW_VERSION! created
-echo  [4] APK            --^> Downloaded from GitHub
+echo  [4] APK            --^> Downloaded + SHA-256 computed
 echo  [5] Google Drive   --^> APK uploaded, link saved
-echo  [6] Admin Panel    --^> All 4 fields updated + saved
+echo  [6] Admin Panel    --^> All 5 fields updated + saved
 echo       latest_app_version   = !NEW_VERSION!
 if /i "!FORCE!" equ "Y" (
 echo       min_app_version      = !NEW_VERSION!  [FORCE UPDATE ON]
@@ -473,13 +569,14 @@ echo       min_app_version      = !NEW_VERSION!  [FORCE UPDATE ON]
 echo       min_app_version      = unchanged      [soft update]
 )
 echo       apk_download_url     = Drive link set
+echo       apk_sha256           = !APK_SHA256!
 echo       apk_version_notes    = filled in
 echo.
 echo  ====================================================
 echo.
 echo  Users will now see the update dialog when they
-echo  open the app. They can tap "Download and Install"
-echo  to get v!NEW_VERSION! directly from Google Drive.
+echo  open the app. The app will verify the APK checksum
+echo  before installing to prevent tampering.
 echo.
 echo  ====================================================
 echo.

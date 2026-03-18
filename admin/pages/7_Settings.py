@@ -115,6 +115,17 @@ with col_right:
             height=80,
             placeholder="• Bug fixes\n• New feature added\n• Performance improvements",
         )
+        apk_sha256 = st.text_input(
+            "APK SHA-256 Checksum",
+            value=s.get("apk_sha256", ""),
+            placeholder="e.g. a3f1c9e2b847d605...",
+            help="SHA-256 hash of the APK file. The app checks this before installing to prevent tampering.",
+        )
+        if apk_sha256:
+            if len(apk_sha256.strip()) == 64 and all(c in "0123456789abcdefABCDEF" for c in apk_sha256.strip()):
+                st.success("✅ Valid SHA-256 hash (64 hex characters)")
+            else:
+                st.error("❌ Invalid hash — must be exactly 64 hex characters")
         if raw_apk_url:
             converted = _convert_drive_url(raw_apk_url)
             if converted != raw_apk_url:
@@ -226,6 +237,7 @@ with st.expander("💾 Current Saved Values", expanded=False):
         ("feature_sms",            "✅ enabled" if s.get("feature_sms", True) else "❌ disabled"),
         ("feature_ngl",            "✅ enabled" if s.get("feature_ngl", True) else "❌ disabled"),
         ("apk_download_url",       display_apk),
+        ("apk_sha256",             (s.get("apk_sha256", "") or "-")[:20] + ("…" if len(s.get("apk_sha256",""))>20 else "")),
         ("remove_ads_price",       f"₱{cur_price:.2f} ({s.get('remove_ads_price', 9900)} centavos)"),
         ("remove_ads_label",       s.get("remove_ads_label", "-") or "-"),
         ("remove_ads_description", s.get("remove_ads_description", "-") or "-"),
@@ -256,6 +268,7 @@ with col_save:
                 "feature_ngl":            feature_ngl,
                 "apk_download_url":       raw_apk_url.strip(),
                 "apk_version_notes":      apk_version_notes.strip(),
+                "apk_sha256":             apk_sha256.strip(),
                 # ── Remove Ads ──────────────────────────────────────────────
                 "remove_ads_price":       price_centavos,
                 "remove_ads_label":       remove_ads_label.strip(),
