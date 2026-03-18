@@ -51,10 +51,40 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("🚀 Xissin App Backend starting up...")
-    await init_db()
+    # ── Startup banner ─────────────────────────────────────────────────────
+    port = int(os.environ.get("PORT", 8000))
+    logger.info("=" * 55)
+    logger.info("🚀  XISSIN BACKEND  v1.7.0  —  STARTING UP")
+    logger.info("=" * 55)
+    logger.info(f"🌐  Listening on  0.0.0.0:{port}")
+    logger.info(f"🔧  Environment : {os.environ.get('ENVIRONMENT', 'production')}")
+
+    # ── DB / Redis init ────────────────────────────────────────────────────
+    logger.info("🗄️   Connecting to Redis (Upstash)...")
+    try:
+        await init_db()
+        logger.info("✅  Redis connected successfully")
+    except Exception as e:
+        logger.error(f"❌  Redis connection FAILED: {e}")
+
+    # ── Loaded routers ─────────────────────────────────────────────────────
+    logger.info("📦  Routers loaded:")
+    logger.info("    ✅  /api/users   — Users")
+    logger.info("    ✅  /api/sms     — SMS Bomber")
+    logger.info(f"    {'✅' if _HAS_NGL         else '❌'}  /api/ngl       — NGL Bomber")
+    logger.info(f"    {'✅' if _HAS_ANNOUNCEMENTS else '❌'}  /api/announcements")
+    logger.info(f"    {'✅' if _HAS_SETTINGS     else '❌'}  /api/settings")
+    logger.info(f"    {'✅' if _HAS_LOCATION     else '❌'}  /api/location  — User Map")
+    logger.info(f"    {'✅' if _HAS_PAYMENTS     else '❌'}  /api/payments  — Remove Ads")
+
+    logger.info("=" * 55)
+    logger.info("✅  Xissin Backend is ONLINE and ready!")
+    logger.info("=" * 55)
+
     yield
-    logger.info("🛑 Xissin App Backend shutting down.")
+
+    # ── Shutdown ───────────────────────────────────────────────────────────
+    logger.info("🛑  Xissin Backend shutting down gracefully.")
 
 
 app = FastAPI(
@@ -75,16 +105,24 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ── Request logger ─────────────────────────────────────────────────────────────
+# Logs ALL requests including /health and /api/status.
+# Health checks use a shorter format so they don't clutter the log.
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
-    start = time.time()
+    start    = time.time()
     response = await call_next(request)
     try:
         duration  = round(time.time() - start, 3)
         client_ip = request.client.host if request.client else "unknown"
-        if request.url.path not in ("/health", "/api/status"):
+        path      = request.url.path
+
+        if path in ("/health", "/api/status"):
+            # Short heartbeat line — easy to spot but not noisy
+            logger.info(f"💓  HEALTH {path} → {response.status_code} [{client_ip}]")
+        else:
             logger.info(
-                f"{request.method} {request.url.path} "
+                f"{request.method} {path} "
                 f"→ {response.status_code} "
                 f"({duration}s) [{client_ip}]"
             )
@@ -171,4 +209,4 @@ def api_status():
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
-    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)
+    uvicorn.run("main_backend:app", host="0.0.0.0", port=port, reload=False)
