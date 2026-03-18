@@ -40,8 +40,8 @@ RK_SMS_HISTORY   = "xissin:app:sms_history"
 RK_SMS_LOGS      = "xissin:app:sms_logs"
 RK_DEVICE_INFO   = "xissin:app:device_info"
 RK_LOCATIONS     = "xissin:app:locations"
-RK_PREMIUM       = "xissin:app:premium"        # NEW — premium users
-RK_PAYMENTS      = "xissin:app:payments"       # NEW — payment records
+RK_PREMIUM       = "xissin:app:premium"
+RK_PAYMENTS      = "xissin:app:payments"
 
 DEFAULT_SETTINGS = {
     "maintenance":         False,
@@ -56,7 +56,7 @@ MAX_ANNOUNCEMENTS    = 10
 MAX_HISTORY_PER_USER = 20
 MAX_LOGS             = 500
 MAX_SMS_LOGS         = 1000
-MAX_PAYMENTS         = 1000   # NEW
+MAX_PAYMENTS         = 1000
 
 _cache: dict      = {}
 _cache_lock       = threading.Lock()
@@ -202,8 +202,8 @@ async def init_db():
     raw_sms_logs = await _redis_get_async(RK_SMS_LOGS)  or []
     raw_devices  = await _redis_get_async(RK_DEVICE_INFO) or {}
     raw_locs     = await _redis_get_async(RK_LOCATIONS) or {}
-    raw_premium  = await _redis_get_async(RK_PREMIUM)  or {}   # NEW
-    raw_payments = await _redis_get_async(RK_PAYMENTS) or []   # NEW
+    raw_premium  = await _redis_get_async(RK_PREMIUM)  or {}
+    raw_payments = await _redis_get_async(RK_PAYMENTS) or []
 
     banned_set = set(raw_banned) if isinstance(raw_banned, list) else set()
 
@@ -222,8 +222,8 @@ async def init_db():
             "sms_logs":      raw_sms_logs if isinstance(raw_sms_logs, list) else [],
             "device_info":   raw_devices  if isinstance(raw_devices, dict) else {},
             "locations":     raw_locs     if isinstance(raw_locs, dict)    else {},
-            "premium":       raw_premium  if isinstance(raw_premium, dict) else {},   # NEW
-            "payments":      raw_payments if isinstance(raw_payments, list) else [],  # NEW
+            "premium":       raw_premium  if isinstance(raw_premium, dict) else {},
+            "payments":      raw_payments if isinstance(raw_payments, list) else [],
         }
 
     logger.info(
@@ -450,12 +450,10 @@ def save_server_settings(data: dict):
 # ── Premium Users (Remove Ads) ────────────────────────────────────────────────
 
 def is_premium(user_id: str) -> bool:
-    """Returns True if user has purchased Remove Ads."""
     with _cache_lock:
         record = _cache.get("premium", {}).get(str(user_id))
     if not record:
         return False
-    # Check if it's a lifetime purchase (no expiry) or still active
     expiry = record.get("expires_at")
     if expiry is None:
         return True  # lifetime
@@ -465,17 +463,13 @@ def is_premium(user_id: str) -> bool:
         return True
 
 def set_premium(user_id: str, payment_id: str, amount: int = 9900):
-    """
-    Marks a user as premium (lifetime — no expiry).
-    amount is in centavos (9900 = ₱99.00).
-    """
     uid = str(user_id)
     record = {
         "user_id":    uid,
         "payment_id": payment_id,
         "amount":     amount,
         "paid_at":    ph_now().isoformat(),
-        "expires_at": None,   # None = lifetime
+        "expires_at": None,
         "type":       "remove_ads",
     }
     with _cache_lock:
@@ -491,7 +485,6 @@ def set_premium(user_id: str, payment_id: str, amount: int = 9900):
     logger.info(f"⭐ Premium granted: user={uid} payment={payment_id}")
 
 def revoke_premium(user_id: str):
-    """Admin: manually revoke a user's premium status."""
     uid = str(user_id)
     with _cache_lock:
         _cache.get("premium", {}).pop(uid, None)
@@ -511,13 +504,8 @@ def get_all_premium() -> dict:
 # ── Payment Records ───────────────────────────────────────────────────────────
 
 def save_payment(record: dict):
-    """
-    Saves a payment record (pending or paid).
-    record must include: payment_intent_id, user_id, status, amount, created_at
-    """
     with _cache_lock:
         payments = _cache.setdefault("payments", [])
-        # Update existing record if same payment_intent_id
         pid = record.get("payment_intent_id") or record.get("source_id")
         existing = next(
             (i for i, p in enumerate(payments)
@@ -546,3 +534,125 @@ def get_payment_by_id(payment_intent_id: str) -> dict | None:
 def get_all_payments(limit: int = 200) -> list:
     with _cache_lock:
         return list(reversed(_cache.get("payments", [])))[:limit]
+
+
+# ── Raw Redis helpers with TTL (for rate limiting & pending intent tracking) ──
+# These go DIRECTLY to Upstash REST without touching the in-memory cache.
+# Used by payments.py for short-lived keys that should auto-expire.
+
+def redis_get(key: str) -> str | None:
+    """
+    Get a raw string value from Redis (not JSON-decoded).
+    Returns None if key doesn't exist.
+    """
+    loop   = _get_bg_loop()
+    future = asyncio.run_coroutine_threadsafe(_redis_raw_get(key), loop)
+    try:
+        return future.result(timeout=10)
+    except Exception:
+        return None
+
+
+def redis_set(key: str, value: str, ttl_seconds: int = 0) -> bool:
+    """
+    Set a raw string value in Redis with optional TTL (seconds).
+    ttl_seconds=0 means no expiry.
+    """
+    loop   = _get_bg_loop()
+    future = asyncio.run_coroutine_threadsafe(
+        _redis_raw_set(key, value, ttl_seconds), loop
+    )
+    try:
+        return future.result(timeout=10)
+    except Exception:
+        return False
+
+
+def redis_incr(key: str, ttl_seconds: int = 0) -> int:
+    """
+    Atomically increment a Redis counter.
+    Sets TTL only if the key is NEW (first increment).
+    Returns the new value, or 0 on error.
+    """
+    loop   = _get_bg_loop()
+    future = asyncio.run_coroutine_threadsafe(
+        _redis_raw_incr(key, ttl_seconds), loop
+    )
+    try:
+        return future.result(timeout=10)
+    except Exception:
+        return 0
+
+
+def redis_delete(key: str) -> bool:
+    """Delete a raw Redis key."""
+    return _redis_delete(key)
+
+
+# ── Async implementations for raw Redis helpers ───────────────────────────────
+
+async def _redis_raw_get(key: str) -> str | None:
+    """GET key → returns raw string result (not JSON parsed)."""
+    try:
+        async with httpx.AsyncClient(timeout=_timeout()) as client:
+            resp = await client.get(
+                f"{_url()}/get/{key}",
+                headers={"Authorization": f"Bearer {_token()}"},
+            )
+        if resp.status_code != 200:
+            return None
+        result = resp.json().get("result")
+        return str(result) if result is not None else None
+    except Exception as e:
+        logger.warning(f"redis_raw_get({key}) error: {e}")
+        return None
+
+
+async def _redis_raw_set(key: str, value: str, ttl_seconds: int = 0) -> bool:
+    """
+    SET key value [EX ttl_seconds]
+    Uses Upstash pipeline-style URL: /set/key/value/EX/ttl
+    """
+    try:
+        if ttl_seconds > 0:
+            url = f"{_url()}/set/{key}/{value}/EX/{ttl_seconds}"
+        else:
+            url = f"{_url()}/set/{key}/{value}"
+        async with httpx.AsyncClient(timeout=_timeout()) as client:
+            resp = await client.get(
+                url,
+                headers={"Authorization": f"Bearer {_token()}"},
+            )
+        return resp.status_code == 200 and resp.json().get("result") == "OK"
+    except Exception as e:
+        logger.warning(f"redis_raw_set({key}) error: {e}")
+        return False
+
+
+async def _redis_raw_incr(key: str, ttl_seconds: int = 0) -> int:
+    """
+    INCR key then SET expiry if key is brand new (value == 1).
+    Returns the new integer value.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=_timeout()) as client:
+            # INCR
+            resp = await client.get(
+                f"{_url()}/incr/{key}",
+                headers={"Authorization": f"Bearer {_token()}"},
+            )
+        if resp.status_code != 200:
+            return 0
+        new_val = int(resp.json().get("result", 0))
+
+        # Set TTL only on first increment to avoid resetting expiry on every call
+        if new_val == 1 and ttl_seconds > 0:
+            async with httpx.AsyncClient(timeout=_timeout()) as client:
+                await client.get(
+                    f"{_url()}/expire/{key}/{ttl_seconds}",
+                    headers={"Authorization": f"Bearer {_token()}"},
+                )
+        return new_val
+    except Exception as e:
+        logger.warning(f"redis_raw_incr({key}) error: {e}")
+        return 0
