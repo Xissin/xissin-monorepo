@@ -105,7 +105,17 @@ if /i "!CONFIRM!" neq "Y" goto STEP1
 set "OLD_VER_FULL=!CURRENT_VERSION!+!CURRENT_BUILD!"
 set "NEW_VER_FULL=!NEW_VERSION!+!NEW_BUILD!"
 
-powershell -Command "(Get-Content '%PUBSPEC%') -replace [regex]::Escape('!OLD_VER_FULL!'), '!NEW_VER_FULL!' | Set-Content '%PUBSPEC%'"
+:: Verify we actually have a build number before replacing
+if "!CURRENT_BUILD!"=="" (
+    echo.
+    echo  ERROR: Could not read build number from pubspec.yaml
+    echo  Check that your pubspec.yaml has: version: X.X.X+BUILD
+    echo.
+    pause
+    goto STEP1
+)
+
+powershell -Command "(Get-Content '!PUBSPEC!') -replace [regex]::Escape('!OLD_VER_FULL!'), '!NEW_VER_FULL!' | Set-Content '!PUBSPEC!'"
 
 echo.
 echo  [OK] pubspec.yaml updated to v!NEW_VERSION!+!NEW_BUILD!
@@ -291,7 +301,7 @@ echo  Please wait...
 echo.
 
 :: Use PowerShell to get SHA-256 hash and capture it cleanly
-for /f "usebackq delims=" %%H in (`powershell -NoProfile -Command "(Get-FileHash '"!APK_PATH!"' -Algorithm SHA256).Hash.ToLower()"`) do (
+for /f "usebackq delims=" %%H in (`powershell -NoProfile -Command "(Get-FileHash [char]34+'!APK_PATH!'+[char]34 -Algorithm SHA256).Hash.ToLower()"`) do (
     set "APK_SHA256=%%H"
 )
 
