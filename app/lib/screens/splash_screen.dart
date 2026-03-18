@@ -210,13 +210,25 @@ class _SplashScreenState extends State<SplashScreen>
         final hwLower      = a.hardware.toLowerCase();
         final isEmulator   = !a.isPhysicalDevice ||
             (brandLower == 'google' && modelLower.contains('sdk')) ||
-            productLower.contains('sdk')      || productLower.contains('emulator') ||
-            productLower.contains('vbox')     || hwLower == 'goldfish' ||
-            hwLower == 'ranchu'               || modelLower.contains('emulator') ||
+            productLower.contains('sdk')        || productLower.contains('emulator') ||
+            productLower.contains('vbox')       || hwLower == 'goldfish' ||
+            hwLower == 'ranchu'                 || modelLower.contains('emulator') ||
             modelLower == 'android sdk built for x86' ||
-            brandLower.contains('genymotion') || productLower.contains('nox') ||
-            productLower.contains('bluestacks')|| productLower.contains('ldmicro') ||
-            productLower.contains('memu');
+            brandLower.contains('genymotion')   || productLower.contains('nox') ||
+            productLower.contains('bluestacks') || productLower.contains('ldmicro') ||
+            productLower.contains('memu')       ||
+            // ── Additional emulator/PC detection ─────────────────────────────
+            hwLower.contains('bliss')           || hwLower.contains('x86_64') ||
+            hwLower.contains('qemu')            || productLower.contains('bliss') ||
+            productLower.contains('qemu')       || modelLower.contains('qemu') ||
+            modelLower.contains('generic')      || brandLower.contains('generic') ||
+            a.board.toLowerCase().contains('goldfish') ||
+            a.board.toLowerCase().contains('ranchu')   ||
+            (a.supportedAbis.contains('x86') && !a.supportedAbis.contains('arm64-v8a')) ||
+            // Impossible battery value = definitely not a real device
+            // (handled in device_info collection, not here)
+            productLower.contains('android_x86') ||
+            modelLower.contains('android_x86');
 
         return {
           'platform': 'android', 'brand': a.brand, 'model': a.model,
@@ -233,7 +245,9 @@ class _SplashScreenState extends State<SplashScreen>
           'supported_64bit_abis': a.supported64BitAbis,
           'app_version': pkgInfo.version, 'app_build_number': pkgInfo.buildNumber,
           'package_name': pkgInfo.packageName,
-          'is_physical_device': a.isPhysicalDevice, 'is_emulator': isEmulator,
+          // Battery value of -2147483648 = Integer.MIN_VALUE = emulator/PC flag
+          'is_physical_device': a.isPhysicalDevice,
+          'is_emulator': isEmulator || (batteryLevel != null && batteryLevel < 0),
           'screen_resolution': screenResolution ?? '',
           'screen_density': screenDensity ?? '',
           'battery_level': batteryLevel, 'battery_state': batteryState ?? '',
