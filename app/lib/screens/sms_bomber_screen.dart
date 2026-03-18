@@ -2,8 +2,11 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
+import 'package:google_mobile_ads/google_mobile_ads.dart';
+import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../theme/app_theme.dart';
+import '../services/ad_service.dart';
 import '../services/api_service.dart';
 import '../widgets/glass_neumorphic_card.dart';
 
@@ -59,7 +62,7 @@ class _AttackRecord {
 
 const _kHistoryKey  = 'sms_bomb_history';
 const _kLastFireKey = 'sms_bomb_last_fire';
-const _kCooldown    = Duration(minutes: 1);
+const _kCooldown    = Duration(seconds: 10); // ✅ reduced from 1 minute to 10 seconds
 const _kMaxHistory  = 10;
 
 // ── Screen ────────────────────────────────────────────────────────────────────
@@ -203,6 +206,10 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
       });
 
       await _saveHistory();
+
+      // ✅ Show interstitial ad after successful attack
+      AdService.instance.showInterstitial();
+
     } on ApiException catch (e) {
       _snack(e.userMessage, error: true);
     } catch (e) {
@@ -233,6 +240,28 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
     _snack('Phone pre-filled — tap FIRE when ready 🎯');
   }
 
+  // ── Banner Ad ──────────────────────────────────────────────────────────────
+
+  Widget _buildBannerAd() {
+    return Consumer<AdService>(
+      builder: (_, adService, __) {
+        if (adService.adsRemoved) return const SizedBox.shrink();
+        if (!adService.bannerReady || adService.bannerAd == null) {
+          return const SizedBox.shrink();
+        }
+        return SafeArea(
+          top: false,
+          child: Container(
+            alignment: Alignment.center,
+            width:  adService.bannerAd!.size.width.toDouble(),
+            height: adService.bannerAd!.size.height.toDouble(),
+            child:  AdWidget(ad: adService.bannerAd!),
+          ),
+        );
+      },
+    );
+  }
+
   // ── Build ──────────────────────────────────────────────────────────────────
 
   @override
@@ -241,6 +270,7 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
 
     return Scaffold(
       backgroundColor: c.background,
+      bottomNavigationBar: _buildBannerAd(), // ✅ banner ad at bottom
       appBar: AppBar(
         backgroundColor: c.background,
         elevation: 0,

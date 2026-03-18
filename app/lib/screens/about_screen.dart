@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
+import 'package:google_mobile_ads/google_mobile_ads.dart';
 import 'package:package_info_plus/package_info_plus.dart';
+import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../theme/app_theme.dart';
+import '../services/ad_service.dart';
 import '../services/api_service.dart';
 import '../services/update_service.dart';
 
@@ -60,7 +63,6 @@ class _AboutScreenState extends State<AboutScreen> {
       final apkUrl      = data['apk_download_url']   as String? ?? '';
       final notes       = data['apk_version_notes']  as String?;
 
-      // Compare versions: available if latest > current
       final hasUpdate = latest.isNotEmpty &&
           _version.isNotEmpty &&
           _isNewerVersion(latest, _version) &&
@@ -105,8 +107,6 @@ class _AboutScreenState extends State<AboutScreen> {
     }
   }
 
-  /// Returns true if [a] is strictly newer than [b].
-  /// Compares semver segments numerically (e.g. "1.2.0" > "1.1.9").
   bool _isNewerVersion(String a, String b) {
     try {
       final pa = a.split('.').map(int.parse).toList();
@@ -167,6 +167,28 @@ class _AboutScreenState extends State<AboutScreen> {
     ));
   }
 
+  // ── Banner Ad ──────────────────────────────────────────────────────────────
+
+  Widget _buildBannerAd() {
+    return Consumer<AdService>(
+      builder: (_, adService, __) {
+        if (adService.adsRemoved) return const SizedBox.shrink();
+        if (!adService.bannerReady || adService.bannerAd == null) {
+          return const SizedBox.shrink();
+        }
+        return SafeArea(
+          top: false,
+          child: Container(
+            alignment: Alignment.center,
+            width:  adService.bannerAd!.size.width.toDouble(),
+            height: adService.bannerAd!.size.height.toDouble(),
+            child:  AdWidget(ad: adService.bannerAd!),
+          ),
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final c    = context.c;
@@ -174,6 +196,7 @@ class _AboutScreenState extends State<AboutScreen> {
 
     return Scaffold(
       backgroundColor: c.background,
+      bottomNavigationBar: _buildBannerAd(), // ✅ banner ad at bottom
       appBar: AppBar(
         backgroundColor: c.background,
         elevation: 0,
@@ -377,7 +400,7 @@ class _AboutScreenState extends State<AboutScreen> {
               onTap:     () => _openUrl('https://t.me/Xissin_1'),
             ),
 
-            // ── Check for Updates card (replaces Google Drive) ────────────────
+            // ── Check for Updates card ────────────────────────────────────────
             _CheckUpdateCard(
               c:               c,
               checking:        _checkingUpdate,
@@ -595,7 +618,6 @@ class _CheckUpdateCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Colors depending on state
     final Color iconBg;
     final Color iconColor;
     final String statusLabel;
@@ -654,7 +676,6 @@ class _CheckUpdateCard extends StatelessWidget {
         ),
         child: Row(
           children: [
-            // Icon container
             Container(
               width:  34,
               height: 34,
@@ -675,7 +696,6 @@ class _CheckUpdateCard extends StatelessWidget {
 
             const SizedBox(width: 12),
 
-            // Labels
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -704,7 +724,6 @@ class _CheckUpdateCard extends StatelessWidget {
               ),
             ),
 
-            // Right action indicator
             if (updateAvailable)
               Container(
                 padding: const EdgeInsets.symmetric(

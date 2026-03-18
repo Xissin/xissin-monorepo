@@ -2,7 +2,10 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
+import 'package:google_mobile_ads/google_mobile_ads.dart';
+import 'package:provider/provider.dart';
 import '../theme/app_theme.dart';
+import '../services/ad_service.dart';
 import '../services/api_service.dart';
 import '../widgets/glass_neumorphic_card.dart';
 import '../widgets/haptic_button.dart';
@@ -128,6 +131,10 @@ class _NglScreenState extends State<NglScreen> {
         _resultMsg = result['message'] as String? ?? '';
       });
       HapticFeedback.heavyImpact();
+
+      // ✅ Show interstitial ad after send completes
+      AdService.instance.showInterstitial();
+
     } catch (e) {
       _stopProgress(false);
       if (!mounted) return;
@@ -157,6 +164,28 @@ class _NglScreenState extends State<NglScreen> {
     _messageCtrl.clear();
   }
 
+  // ── Banner Ad ──────────────────────────────────────────────────────────────
+
+  Widget _buildBannerAd() {
+    return Consumer<AdService>(
+      builder: (_, adService, __) {
+        if (adService.adsRemoved) return const SizedBox.shrink();
+        if (!adService.bannerReady || adService.bannerAd == null) {
+          return const SizedBox.shrink();
+        }
+        return SafeArea(
+          top: false,
+          child: Container(
+            alignment: Alignment.center,
+            width:  adService.bannerAd!.size.width.toDouble(),
+            height: adService.bannerAd!.size.height.toDouble(),
+            child:  AdWidget(ad: adService.bannerAd!),
+          ),
+        );
+      },
+    );
+  }
+
   // ── Build ──────────────────────────────────────────────────────────────────
 
   @override
@@ -164,6 +193,7 @@ class _NglScreenState extends State<NglScreen> {
     final c = context.c;
     return Scaffold(
       backgroundColor: c.background,
+      bottomNavigationBar: _buildBannerAd(), // ✅ banner ad at bottom
       appBar: _buildAppBar(c),
       body: SafeArea(
         child: SingleChildScrollView(
@@ -298,7 +328,7 @@ class _NglScreenState extends State<NglScreen> {
       maxLines: 4,
       maxLength:  300,
       buildCounter: (_, {required currentLength, required isFocused, maxLength}) =>
-          const SizedBox.shrink(), // hide default counter (we show our own)
+          const SizedBox.shrink(),
       decoration: _inputDecoration(c).copyWith(
         hintText: 'Enter your anonymous message...',
         alignLabelWithHint: true,
@@ -336,7 +366,6 @@ class _NglScreenState extends State<NglScreen> {
             onChanged: (v) => setState(() => _quantity = v.toInt()),
           ),
         ),
-        // Tick marks
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 12),
           child: Row(
@@ -400,7 +429,6 @@ class _NglScreenState extends State<NglScreen> {
       children: [
         const SizedBox(height: 32),
 
-        // Icon circle with double glow
         Container(
           width:  96,
           height: 96,
@@ -427,7 +455,6 @@ class _NglScreenState extends State<NglScreen> {
 
         const SizedBox(height: 24),
 
-        // Title
         Text(
           _resultOk ? '🎉  Done!' : '❌  Failed',
           style: TextStyle(
@@ -438,7 +465,6 @@ class _NglScreenState extends State<NglScreen> {
 
         const SizedBox(height: 10),
 
-        // Message
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 24),
           child: Text(
@@ -451,7 +477,6 @@ class _NglScreenState extends State<NglScreen> {
 
         const SizedBox(height: 28),
 
-        // Stats
         if (_resultOk) ...[
           Row(
             mainAxisAlignment: MainAxisAlignment.center,
@@ -464,7 +489,6 @@ class _NglScreenState extends State<NglScreen> {
           const SizedBox(height: 32),
         ],
 
-        // Send again button
         SizedBox(
           width:  double.infinity,
           height: 52,
@@ -535,7 +559,6 @@ class _QuantityLabel extends StatelessWidget {
       );
 }
 
-// Character counter with color ring
 class _CharCounter extends StatelessWidget {
   final int count;
   final int max;
@@ -606,7 +629,6 @@ class _InfoBanner extends StatelessWidget {
   }
 }
 
-// Gradient progress bar
 class _GradientProgressBar extends StatelessWidget {
   final double progress;
   final XissinColors c;
@@ -658,7 +680,6 @@ class _GradientProgressBar extends StatelessWidget {
   }
 }
 
-// Tips card
 class _TipsCard extends StatelessWidget {
   final XissinColors c;
   const _TipsCard({required this.c});
@@ -700,7 +721,7 @@ class _TipsCard extends StatelessWidget {
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('• ', style: TextStyle(color: _kPink, fontSize: 13)),
+            const Text('• ', style: TextStyle(color: _kPink, fontSize: 13)),
             Expanded(
               child: Text(text,
                   style: TextStyle(
