@@ -1,5 +1,6 @@
 // lib/services/payment_service.dart
 // Handles Remove Ads purchase via PayMongo QRPh (scan-to-pay)
+// Price, label and benefits are fetched dynamically from the backend.
 
 import 'dart:async';
 import 'dart:convert';
@@ -10,6 +11,27 @@ import 'package:cached_network_image/cached_network_image.dart';
 class PaymentService {
   static const String _base =
       'https://xissin-app-backend-production.up.railway.app';
+
+  // ── Fetch Remove Ads product info from backend ────────────────────────────
+  static Future<Map<String, dynamic>> getRemoveAdsInfo() async {
+    try {
+      final res = await http
+          .get(Uri.parse('$_base/api/payments/remove-ads-info'))
+          .timeout(const Duration(seconds: 10));
+      if (res.statusCode == 200) {
+        return jsonDecode(res.body) as Map<String, dynamic>;
+      }
+    } catch (_) {}
+    // Fallback defaults
+    return {
+      'price':       9900,
+      'price_php':   99.0,
+      'label':       'Remove Ads — ₱99 Lifetime',
+      'subtitle':    'Pay once via GCash · No ads forever',
+      'description': 'Enjoy Xissin completely ad-free — forever.',
+      'benefits':    ['No more banner ads', 'No more interstitial ads', 'One-time payment — lifetime', 'Pay via GCash / QRPh QR code'],
+    };
+  }
 
   // ── Check if user is premium ──────────────────────────────────────────────
   static Future<bool> isPremium(String userId) async {
@@ -77,7 +99,7 @@ class PaymentService {
   }
 }
 
-// ── Remove Ads Bottom Sheet Dialog ───────────────────────────────────────────
+// ── Remove Ads Dialog ─────────────────────────────────────────────────────────
 
 class _RemoveAdsDialog extends StatefulWidget {
   final String userId;
@@ -90,13 +112,27 @@ class _RemoveAdsDialog extends StatefulWidget {
 class _RemoveAdsDialogState extends State<_RemoveAdsDialog> {
   _Step _step = _Step.intro;
 
+  // Product info (loaded from backend)
+  double         _pricePHP    = 99.0;
+  int            _priceCents  = 9900;
+  String         _label       = 'Remove Ads';
+  String         _description = 'Enjoy Xissin completely ad-free — forever.';
+  List<String>   _benefits    = [];
+  bool           _infoLoaded  = false;
+
   String? _sourceId;
   String? _qrImageUrl;
   String? _errorMessage;
-  bool    _isLoading   = false;
+  bool    _isLoading    = false;
   Timer?  _pollTimer;
-  int     _pollSeconds = 0;
-  static const int _pollTimeout = 300; // 5 minutes
+  int     _pollSeconds  = 0;
+  static const int _pollTimeout = 300;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadInfo();
+  }
 
   @override
   void dispose() {
@@ -104,15 +140,25 @@ class _RemoveAdsDialogState extends State<_RemoveAdsDialog> {
     super.dispose();
   }
 
+  Future<void> _loadInfo() async {
+    final info = await PaymentService.getRemoveAdsInfo();
+    if (!mounted) return;
+    setState(() {
+      _priceCents  = (info['price']     as num?)?.toInt()    ?? 9900;
+      _pricePHP    = (info['price_php'] as num?)?.toDouble() ?? 99.0;
+      _label       = info['label']       as String? ?? 'Remove Ads';
+      _description = info['description'] as String? ?? 'Enjoy Xissin completely ad-free — forever.';
+      final raw = info['benefits'];
+      _benefits    = raw is List ? raw.map((e) => e.toString()).toList() : [];
+      _infoLoaded  = true;
+    });
+  }
+
   // ── Start payment ─────────────────────────────────────────────────────────
   Future<void> _startPayment() async {
-    setState(() {
-      _isLoading    = true;
-      _errorMessage = null;
-    });
+    setState(() { _isLoading = true; _errorMessage = null; });
 
     final data = await PaymentService.createPayment(widget.userId);
-
     if (!mounted) return;
 
     if (data == null) {
@@ -129,36 +175,25 @@ class _RemoveAdsDialogState extends State<_RemoveAdsDialog> {
     }
 
     setState(() {
-      _isLoading   = false;
-      _sourceId    = data['source_id'] as String?;
-      _qrImageUrl  = data['qr_image_url'] as String?;
-      _step        = _Step.qr;
+      _isLoading  = false;
+      _sourceId   = data['source_id']    as String?;
+      _qrImageUrl = data['qr_image_url'] as String?;
+      _step       = _Step.qr;
     });
 
     _startPolling();
   }
 
-  // ── Poll every 5 seconds ──────────────────────────────────────────────────
   void _startPolling() {
     _pollTimer = Timer.periodic(const Duration(seconds: 5), (_) async {
       _pollSeconds += 5;
-
       if (_pollSeconds >= _pollTimeout) {
         _pollTimer?.cancel();
-        if (mounted) {
-          setState(() {
-            _step         = _Step.intro;
-            _errorMessage = 'Payment timed out. Please try again.';
-          });
-        }
+        if (mounted) setState(() { _step = _Step.intro; _errorMessage = 'Payment timed out. Please try again.'; });
         return;
       }
-
       final paid = await PaymentService.checkPaymentStatus(
-        sourceId: _sourceId!,
-        userId:   widget.userId,
-      );
-
+          sourceId: _sourceId!, userId: widget.userId);
       if (paid && mounted) {
         _pollTimer?.cancel();
         setState(() => _step = _Step.success);
@@ -186,17 +221,16 @@ class _RemoveAdsDialogState extends State<_RemoveAdsDialog> {
 
   Widget _buildStep() {
     switch (_step) {
-      case _Step.intro:
-        return _buildIntro();
-      case _Step.qr:
-        return _buildQrStep();
-      case _Step.success:
-        return _buildSuccess();
+      case _Step.intro:   return _buildIntro();
+      case _Step.qr:      return _buildQrStep();
+      case _Step.success: return _buildSuccess();
     }
   }
 
-  // ── Step 1: Intro / purchase prompt ──────────────────────────────────────
+  // ── Step 1: Intro ─────────────────────────────────────────────────────────
   Widget _buildIntro() {
+    final priceLabel = '₱${_pricePHP % 1 == 0 ? _pricePHP.toInt() : _pricePHP.toStringAsFixed(2)}';
+
     return Column(
       key: const ValueKey('intro'),
       mainAxisSize: MainAxisSize.min,
@@ -206,48 +240,58 @@ class _RemoveAdsDialogState extends State<_RemoveAdsDialog> {
           width: 64, height: 64,
           decoration: BoxDecoration(
             gradient: const LinearGradient(
-              colors: [Color(0xFF6C63FF), Color(0xFFFF6B9D)],
-            ),
+                colors: [Color(0xFF6C63FF), Color(0xFFFF6B9D)]),
             borderRadius: BorderRadius.circular(20),
           ),
           child: const Icon(Icons.block_rounded, color: Colors.white, size: 32),
         ),
         const SizedBox(height: 16),
 
-        const Text(
-          'Remove Ads',
-          style: TextStyle(
-            color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold,
-          ),
+        Text(
+          _label,
+          textAlign: TextAlign.center,
+          style: const TextStyle(
+              color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold),
         ),
         const SizedBox(height: 8),
-        const Text(
-          'Enjoy Xissin completely ad-free — forever.',
+        Text(
+          _description,
           textAlign: TextAlign.center,
-          style: TextStyle(color: Colors.white60, fontSize: 13),
+          style: const TextStyle(color: Colors.white60, fontSize: 13),
         ),
         const SizedBox(height: 20),
 
-        // Benefits
-        _BenefitRow(icon: Icons.block,        text: 'No more banner ads'),
-        _BenefitRow(icon: Icons.skip_next,    text: 'No more interstitial ads'),
-        _BenefitRow(icon: Icons.all_inclusive, text: 'One-time payment — lifetime'),
-        _BenefitRow(icon: Icons.qr_code,      text: 'Pay via GCash / QRPh QR code'),
+        // Benefits list — dynamic from backend
+        if (!_infoLoaded)
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 8),
+            child: SizedBox(
+              width: 20, height: 20,
+              child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF6C63FF)),
+            ),
+          )
+        else ...[
+          for (final benefit in _benefits)
+            _BenefitRow(icon: _iconForBenefit(benefit), text: benefit),
+        ],
 
         const SizedBox(height: 20),
 
-        // Price badge
+        // Price badge — dynamic
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
           decoration: BoxDecoration(
             color: const Color(0xFF6C63FF).withOpacity(0.15),
             borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: const Color(0xFF6C63FF).withOpacity(0.40)),
+            border: Border.all(
+                color: const Color(0xFF6C63FF).withOpacity(0.40)),
           ),
-          child: const Text(
-            '₱99.00  —  One-time',
-            style: TextStyle(
-              color: Color(0xFF6C63FF), fontSize: 18, fontWeight: FontWeight.bold,
+          child: Text(
+            '$priceLabel  —  One-time',
+            style: const TextStyle(
+              color: Color(0xFF6C63FF),
+              fontSize: 18,
+              fontWeight: FontWeight.bold,
             ),
           ),
         ),
@@ -263,7 +307,6 @@ class _RemoveAdsDialogState extends State<_RemoveAdsDialog> {
 
         const SizedBox(height: 20),
 
-        // Buttons
         SizedBox(
           width: double.infinity,
           child: ElevatedButton.icon(
@@ -281,7 +324,9 @@ class _RemoveAdsDialogState extends State<_RemoveAdsDialog> {
                         strokeWidth: 2, color: Colors.white))
                 : const Icon(Icons.qr_code_rounded, size: 20),
             label: Text(
-              _isLoading ? 'Generating QR...' : 'Pay ₱99 with GCash / QRPh',
+              _isLoading
+                  ? 'Generating QR...'
+                  : 'Pay $priceLabel with GCash / QRPh',
               style: const TextStyle(
                   fontWeight: FontWeight.bold, fontSize: 14),
             ),
@@ -298,25 +343,37 @@ class _RemoveAdsDialogState extends State<_RemoveAdsDialog> {
     );
   }
 
+  // Map benefit text to icon
+  IconData _iconForBenefit(String text) {
+    final t = text.toLowerCase();
+    if (t.contains('banner'))       return Icons.block;
+    if (t.contains('interstitial')) return Icons.skip_next;
+    if (t.contains('lifetime') || t.contains('one-time')) return Icons.all_inclusive;
+    if (t.contains('gcash') || t.contains('qr')) return Icons.qr_code;
+    if (t.contains('codm') || t.contains('check')) return Icons.gamepad_rounded;
+    if (t.contains('mlbb') || t.contains('mobile')) return Icons.sports_esports_rounded;
+    return Icons.check_circle_outline_rounded;
+  }
+
   // ── Step 2: QR Code ───────────────────────────────────────────────────────
   Widget _buildQrStep() {
+    final priceLabel = '₱${_pricePHP % 1 == 0 ? _pricePHP.toInt() : _pricePHP.toStringAsFixed(2)}';
+
     return Column(
       key: const ValueKey('qr'),
       mainAxisSize: MainAxisSize.min,
       children: [
         const Text(
           'Scan to Pay',
-          style: TextStyle(
-              color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold),
+          style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold),
         ),
         const SizedBox(height: 6),
-        const Text(
-          'Open GCash → Scan QR → Pay ₱99',
-          style: TextStyle(color: Colors.white60, fontSize: 13),
+        Text(
+          'Open GCash → Scan QR → Pay $priceLabel',
+          style: const TextStyle(color: Colors.white60, fontSize: 13),
         ),
         const SizedBox(height: 20),
 
-        // QR code
         Container(
           width: 220, height: 220,
           decoration: BoxDecoration(
@@ -327,23 +384,18 @@ class _RemoveAdsDialogState extends State<_RemoveAdsDialog> {
             borderRadius: BorderRadius.circular(16),
             child: _qrImageUrl != null && _qrImageUrl!.isNotEmpty
                 ? CachedNetworkImage(
-                    imageUrl:   _qrImageUrl!,
-                    fit:        BoxFit.contain,
+                    imageUrl:    _qrImageUrl!,
+                    fit:         BoxFit.contain,
                     placeholder: (_, __) => const Center(
-                        child: CircularProgressIndicator(
-                            color: Color(0xFF6C63FF))),
+                        child: CircularProgressIndicator(color: Color(0xFF6C63FF))),
                     errorWidget: (_, __, ___) => const Icon(
-                        Icons.qr_code_2_rounded,
-                        size: 120, color: Colors.black87),
+                        Icons.qr_code_2_rounded, size: 120, color: Colors.black87),
                   )
-                : const Icon(Icons.qr_code_2_rounded,
-                    size: 120, color: Colors.black87),
+                : const Icon(Icons.qr_code_2_rounded, size: 120, color: Colors.black87),
           ),
         ),
 
         const SizedBox(height: 16),
-
-        // Polling indicator
         Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
@@ -371,10 +423,7 @@ class _RemoveAdsDialogState extends State<_RemoveAdsDialog> {
         TextButton(
           onPressed: () {
             _pollTimer?.cancel();
-            setState(() {
-              _step        = _Step.intro;
-              _pollSeconds = 0;
-            });
+            setState(() { _step = _Step.intro; _pollSeconds = 0; });
           },
           child: const Text('Cancel',
               style: TextStyle(color: Colors.white38, fontSize: 13)),
@@ -389,14 +438,10 @@ class _RemoveAdsDialogState extends State<_RemoveAdsDialog> {
       key: const ValueKey('success'),
       mainAxisSize: MainAxisSize.min,
       children: [
-        const Icon(Icons.check_circle_rounded,
-            color: Color(0xFF7EE7C1), size: 72),
+        const Icon(Icons.check_circle_rounded, color: Color(0xFF7EE7C1), size: 72),
         const SizedBox(height: 16),
-        const Text(
-          '🎉 Ads Removed!',
-          style: TextStyle(
-              color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold),
-        ),
+        const Text('🎉 Ads Removed!',
+            style: TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold)),
         const SizedBox(height: 8),
         const Text(
           'Payment confirmed.\nEnjoy Xissin ad-free forever!',
@@ -409,8 +454,7 @@ class _RemoveAdsDialogState extends State<_RemoveAdsDialog> {
   }
 }
 
-// ── Benefit row widget ────────────────────────────────────────────────────────
-
+// ── Benefit row ───────────────────────────────────────────────────────────────
 class _BenefitRow extends StatelessWidget {
   final IconData icon;
   final String   text;
@@ -424,8 +468,10 @@ class _BenefitRow extends StatelessWidget {
         children: [
           Icon(icon, size: 16, color: const Color(0xFF7EE7C1)),
           const SizedBox(width: 10),
-          Text(text,
-              style: const TextStyle(color: Colors.white70, fontSize: 13)),
+          Expanded(
+            child: Text(text,
+                style: const TextStyle(color: Colors.white70, fontSize: 13)),
+          ),
         ],
       ),
     );

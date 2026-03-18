@@ -308,21 +308,21 @@ class _HomeScreenState extends State<HomeScreen> {
                               const Icon(Icons.block_rounded,
                                   color: Color(0xFF6C63FF), size: 18),
                               const SizedBox(width: 10),
-                              const Expanded(
+                              Expanded(
                                 child: Column(
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
                                     Text(
-                                      'Remove Ads — ₱99 Lifetime',
-                                      style: TextStyle(
+                                      'Remove Ads',
+                                      style: const TextStyle(
                                         color:      Color(0xFF6C63FF),
                                         fontSize:   13,
                                         fontWeight: FontWeight.bold,
                                       ),
                                     ),
                                     Text(
-                                      'Pay once via GCash · No ads forever',
-                                      style: TextStyle(
+                                      'Tap to see benefits & pay via GCash',
+                                      style: const TextStyle(
                                           color: Colors.white38, fontSize: 11),
                                     ),
                                   ],
@@ -575,20 +575,7 @@ class _HomeScreenState extends State<HomeScreen> {
   // ── Footer ─────────────────────────────────────────────────────────────────
 
   Widget _buildFooter(XissinColors c) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 22),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(Icons.bolt_rounded, size: 14, color: c.primary),
-          const SizedBox(width: 4),
-          Text(
-            'Xissin — by Xissin',
-            style: TextStyle(color: c.textSecondary, fontSize: 12),
-          ),
-        ],
-      ),
-    );
+    return const SizedBox(height: 8);
   }
 }
 

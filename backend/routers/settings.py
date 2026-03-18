@@ -1,10 +1,10 @@
 """
-routers/settings.py — Server control settings (maintenance, version, features, APK hosting)
+routers/settings.py — Server control settings
 """
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
 import re
 import database as db
 from auth import require_admin
@@ -13,47 +13,40 @@ router = APIRouter()
 
 
 def _normalize_drive_url(raw_url: str) -> str:
-    """
-    Accepts any Google Drive share URL format and converts it to a
-    direct-download URL.  Returns the original string unchanged if it
-    doesn't look like a Drive link.
-
-    Supported input formats:
-      https://drive.google.com/file/d/<ID>/view?usp=sharing
-      https://drive.google.com/open?id=<ID>
-      https://drive.google.com/uc?export=download&id=<ID>   <- already correct
-    """
     if not raw_url:
         return raw_url
-
-    # Already a direct-download link — leave it alone
     if "uc?export=download" in raw_url:
         return raw_url
-
-    # Extract the file ID
     match = re.search(r"/file/d/([a-zA-Z0-9_-]+)", raw_url)
     if not match:
         match = re.search(r"[?&]id=([a-zA-Z0-9_-]+)", raw_url)
-
     if match:
         file_id = match.group(1)
         return f"https://drive.google.com/uc?export=download&id={file_id}"
-
-    # Unrecognised format — return as-is so we don't silently break things
     return raw_url
 
 
 class ServerSettings(BaseModel):
-    maintenance: bool = False
-    maintenance_message: Optional[str] = "Xissin is under maintenance. We'll be back shortly!"
-    min_app_version: Optional[str] = "1.0.0"
-    latest_app_version: Optional[str] = "1.0.0"
-    feature_sms: bool = True
-    feature_keys: bool = True
-    feature_ngl: bool = True
-    # APK download — store whatever the admin pastes; we normalise on save
-    apk_download_url: Optional[str] = ""
-    apk_version_notes: Optional[str] = ""   # short changelog shown in update dialog
+    maintenance:             bool            = False
+    maintenance_message:     Optional[str]   = "Xissin is under maintenance. We'll be back shortly!"
+    min_app_version:         Optional[str]   = "1.0.0"
+    latest_app_version:      Optional[str]   = "1.0.0"
+    feature_sms:             bool            = True
+    feature_keys:            bool            = True
+    feature_ngl:             bool            = True
+    apk_download_url:        Optional[str]   = ""
+    apk_version_notes:       Optional[str]   = ""
+    # ── Remove Ads product settings ──────────────────────────────────────────
+    remove_ads_price:        Optional[int]   = 9900          # in centavos (₱99.00)
+    remove_ads_label:        Optional[str]   = "Remove Ads — ₱99 Lifetime"
+    remove_ads_subtitle:     Optional[str]   = "Pay once via GCash · No ads forever"
+    remove_ads_description:  Optional[str]   = "Enjoy Xissin completely ad-free — forever."
+    remove_ads_benefits:     Optional[List[str]] = [
+        "No more banner ads",
+        "No more interstitial ads",
+        "One-time payment — lifetime",
+        "Pay via GCash / QRPh QR code",
+    ]
 
 
 @router.get("/", dependencies=[Depends(require_admin)])
@@ -74,10 +67,10 @@ def save_settings(req: ServerSettings):
     return {"success": True, "settings": data}
 
 
-# ── Public version check endpoint (no admin required) ─────────────────────────
+# ── Public version check ───────────────────────────────────────────────────────
 @router.get("/version")
 def get_version():
-    """Public endpoint — app uses this to check for updates."""
+    """Public — app uses this to check for updates."""
     settings = db.get_server_settings()
     return {
         "min_app_version":     settings.get("min_app_version",    "1.0.0"),

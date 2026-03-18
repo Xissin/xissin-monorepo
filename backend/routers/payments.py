@@ -33,9 +33,18 @@ logger  = logging.getLogger(__name__)
 router  = APIRouter()
 
 # ── Config ────────────────────────────────────────────────────────────────────
-PAYMONGO_BASE      = "https://api.paymongo.com/v1"
-REMOVE_ADS_PRICE   = 9900   # ₱99.00 in centavos
-REMOVE_ADS_LABEL   = "Xissin — Remove Ads (Lifetime)"
+PAYMONGO_BASE           = "https://api.paymongo.com/v1"
+_DEFAULT_PRICE_CENTAVOS = 9900   # fallback ₱99.00
+_DEFAULT_LABEL          = "Xissin — Remove Ads (Lifetime)"
+
+
+def _get_remove_ads_price() -> int:
+    """Read price from settings (centavos). Falls back to ₱99 if not set."""
+    try:
+        s = db.get_server_settings()
+        return int(s.get("remove_ads_price") or _DEFAULT_PRICE_CENTAVOS)
+    except Exception:
+        return _DEFAULT_PRICE_CENTAVOS
 
 
 def _secret_key() -> str:
@@ -99,6 +108,30 @@ async def _paymongo_get(endpoint: str) -> dict:
 
 # ── 1. Create QRPh Payment Source ─────────────────────────────────────────────
 
+# ── 0. Public product info endpoint (app fetches this on dialog open) ─────────
+
+@router.get("/remove-ads-info")
+def get_remove_ads_info():
+    """Public — Flutter app fetches price, label, benefits before showing dialog."""
+    s = db.get_server_settings()
+    price = int(s.get("remove_ads_price") or _DEFAULT_PRICE_CENTAVOS)
+    return {
+        "price":       price,
+        "price_php":   price / 100,
+        "label":       s.get("remove_ads_label")       or f"Remove Ads — ₱{price // 100} Lifetime",
+        "subtitle":    s.get("remove_ads_subtitle")    or "Pay once via GCash · No ads forever",
+        "description": s.get("remove_ads_description") or "Enjoy Xissin completely ad-free — forever.",
+        "benefits":    s.get("remove_ads_benefits")    or [
+            "No more banner ads",
+            "No more interstitial ads",
+            "One-time payment — lifetime",
+            "Pay via GCash / QRPh QR code",
+        ],
+    }
+
+
+# ── 1. Create QRPh Payment Source ─────────────────────────────────────────────
+
 @router.post("/create")
 async def create_payment(req: CreatePaymentRequest):
     """
@@ -110,6 +143,8 @@ async def create_payment(req: CreatePaymentRequest):
     # Don't charge if already premium
     if db.is_premium(user_id):
         return {"already_premium": True}
+
+    REMOVE_ADS_PRICE = _get_remove_ads_price()
 
     payload = {
         "data": {
@@ -146,7 +181,7 @@ async def create_payment(req: CreatePaymentRequest):
     db.save_payment({
         "source_id":   source_id,
         "user_id":     user_id,
-        "amount":      REMOVE_ADS_PRICE,
+        "amount":      REMOVE_ADS_PRICE,  # local var from _get_remove_ads_price()
         "status":      "pending",
         "type":        "qrph",
         "product":     "remove_ads",
@@ -186,7 +221,8 @@ async def check_payment_status(req: PaymentStatusRequest):
 
         if status == "chargeable":
             # Payment confirmed by PayMongo — grant premium
-            db.set_premium(user_id, req.source_id, REMOVE_ADS_PRICE)
+            price = _get_remove_ads_price()
+            db.set_premium(user_id, req.source_id, price)
             db.save_payment({
                 "source_id": req.source_id,
                 "user_id":   user_id,

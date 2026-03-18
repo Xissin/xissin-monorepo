@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
@@ -23,30 +24,39 @@ class SplashScreen extends StatefulWidget {
 
 class _SplashScreenState extends State<SplashScreen>
     with TickerProviderStateMixin {
-  // ── Animation controllers ──────────────────────────────────────────────────
-  late AnimationController _entranceCtrl;
-  late AnimationController _pulseCtrl;
-  late AnimationController _fastPulseCtrl;
-  late AnimationController _dotCtrl;
 
-  late Animation<double> _fade;
-  late Animation<double> _scale;
-  late Animation<double> _ring1;
-  late Animation<double> _ring2;
-  late Animation<double> _ring3;
+  // ── Controllers ────────────────────────────────────────────────────────────
+  late AnimationController _entranceCtrl;   // logo entrance
+  late AnimationController _orbitCtrl;      // slow orbit ring
+  late AnimationController _pulseCtrl;      // icon glow pulse
+  late AnimationController _rotateCtrl;     // outer ring slow rotation
+  late AnimationController _dotCtrl;        // loading dots
+
+  // Entrance
+  late Animation<double> _logoFade;
+  late Animation<double> _logoScale;
+  late Animation<double> _titleSlide;
+
+  // Orbit ring scale pulse
+  late Animation<double> _orbit1;
+  late Animation<double> _orbit2;
+
+  // Glow pulse
+  late Animation<double> _glow;
+
+  // Dot bounces
   late Animation<double> _dot1;
   late Animation<double> _dot2;
   late Animation<double> _dot3;
 
   // ── State ──────────────────────────────────────────────────────────────────
-  String _status          = 'Initializing...';
-  int    _retryCount      = 0;
+  String  _status          = 'Initializing...';
+  int     _retryCount      = 0;
   static const int _maxAutoRetries = 3;
-  bool  _showRetryButton  = false;
+  bool    _showRetryButton = false;
   String? _errorMessage;
-  String _appVersion      = '';
+  String  _appVersion      = '';
 
-  // ── Links ──────────────────────────────────────────────────────────────────
   static const String _telegramUrl = 'https://t.me/Xissin_0';
   static const String _driveUrl =
       'https://drive.google.com/file/d/1ONwQUQiD8IRGA2ganJpaZ5brALtcOWMF/view?usp=sharing';
@@ -56,41 +66,54 @@ class _SplashScreenState extends State<SplashScreen>
     iOptions: IOSOptions(accessibility: KeychainAccessibility.first_unlock),
   );
 
-  // ── Init ───────────────────────────────────────────────────────────────────
   @override
   void initState() {
     super.initState();
 
+    // ── Entrance (logo fades + scales in) ────────────────────────────────────
     _entranceCtrl = AnimationController(
-        vsync: this, duration: const Duration(milliseconds: 1200));
-    _fade = CurvedAnimation(parent: _entranceCtrl, curve: Curves.easeIn);
-    _scale = Tween<double>(begin: 0.65, end: 1.0).animate(
-        CurvedAnimation(parent: _entranceCtrl, curve: Curves.easeOutBack));
+        vsync: this, duration: const Duration(milliseconds: 1400));
+    _logoFade = CurvedAnimation(parent: _entranceCtrl, curve: const Interval(0.0, 0.6, curve: Curves.easeOut));
+    _logoScale = Tween<double>(begin: 0.5, end: 1.0).animate(
+        CurvedAnimation(parent: _entranceCtrl, curve: const Interval(0.0, 0.7, curve: Curves.easeOutBack)));
+    _titleSlide = CurvedAnimation(parent: _entranceCtrl,
+        curve: const Interval(0.4, 1.0, curve: Curves.easeOut));
 
+    // ── Orbit rings scale-pulse (2.8s) ────────────────────────────────────────
+    _orbitCtrl = AnimationController(
+        vsync: this, duration: const Duration(milliseconds: 2800));
+    _orbit1 = Tween<double>(begin: 0.90, end: 1.10).animate(
+        CurvedAnimation(parent: _orbitCtrl, curve: Curves.easeInOut));
+    _orbit2 = Tween<double>(begin: 0.95, end: 1.05).animate(
+        CurvedAnimation(parent: _orbitCtrl, curve: Curves.easeInOut));
+
+    // ── Glow pulse (1.6s) ────────────────────────────────────────────────────
     _pulseCtrl = AnimationController(
-        vsync: this, duration: const Duration(milliseconds: 2200));
-    _ring1 = Tween<double>(begin: 0.88, end: 1.12).animate(
-        CurvedAnimation(parent: _pulseCtrl, curve: Curves.easeInOut));
-    _ring2 = Tween<double>(begin: 0.92, end: 1.08).animate(
+        vsync: this, duration: const Duration(milliseconds: 1600));
+    _glow = Tween<double>(begin: 0.4, end: 1.0).animate(
         CurvedAnimation(parent: _pulseCtrl, curve: Curves.easeInOut));
 
-    _fastPulseCtrl = AnimationController(
-        vsync: this, duration: const Duration(milliseconds: 1300));
-    _ring3 = Tween<double>(begin: 0.95, end: 1.05).animate(
-        CurvedAnimation(parent: _fastPulseCtrl, curve: Curves.easeInOut));
+    // ── Outer ring rotation (10s full) ───────────────────────────────────────
+    _rotateCtrl = AnimationController(
+        vsync: this, duration: const Duration(seconds: 10));
 
+    // ── Dot bounce (900ms) ───────────────────────────────────────────────────
     _dotCtrl = AnimationController(
         vsync: this, duration: const Duration(milliseconds: 900));
     _dot1 = Tween<double>(begin: 0, end: -10).animate(
-        CurvedAnimation(parent: _dotCtrl, curve: const Interval(0.0, 0.4, curve: Curves.easeInOut)));
+        CurvedAnimation(parent: _dotCtrl,
+            curve: const Interval(0.0, 0.4, curve: Curves.easeInOut)));
     _dot2 = Tween<double>(begin: 0, end: -10).animate(
-        CurvedAnimation(parent: _dotCtrl, curve: const Interval(0.2, 0.6, curve: Curves.easeInOut)));
+        CurvedAnimation(parent: _dotCtrl,
+            curve: const Interval(0.2, 0.6, curve: Curves.easeInOut)));
     _dot3 = Tween<double>(begin: 0, end: -10).animate(
-        CurvedAnimation(parent: _dotCtrl, curve: const Interval(0.4, 0.8, curve: Curves.easeInOut)));
+        CurvedAnimation(parent: _dotCtrl,
+            curve: const Interval(0.4, 0.8, curve: Curves.easeInOut)));
 
     _entranceCtrl.forward();
+    _orbitCtrl.repeat(reverse: true);
     _pulseCtrl.repeat(reverse: true);
-    _fastPulseCtrl.repeat(reverse: true);
+    _rotateCtrl.repeat();
     _dotCtrl.repeat(reverse: true);
 
     _loadVersionAndInit();
@@ -99,8 +122,9 @@ class _SplashScreenState extends State<SplashScreen>
   @override
   void dispose() {
     _entranceCtrl.dispose();
+    _orbitCtrl.dispose();
     _pulseCtrl.dispose();
-    _fastPulseCtrl.dispose();
+    _rotateCtrl.dispose();
     _dotCtrl.dispose();
     super.dispose();
   }
@@ -123,7 +147,6 @@ class _SplashScreenState extends State<SplashScreen>
   Future<String> _getOrCreateUserId() async {
     final stored = await _storage.read(key: 'xissin_user_id');
     if (stored != null && stored.isNotEmpty) return stored;
-
     String id;
     try {
       final info = DeviceInfoPlugin();
@@ -138,34 +161,29 @@ class _SplashScreenState extends State<SplashScreen>
     } catch (_) {
       id = DateTime.now().millisecondsSinceEpoch.toString();
     }
-
     await _storage.write(key: 'xissin_user_id', value: id);
     return id;
   }
 
-  // ── Device info collection — EXTENDED ─────────────────────────────────────
   Future<Map<String, dynamic>> _collectDeviceInfo() async {
     final info    = DeviceInfoPlugin();
     final pkgInfo = await PackageInfo.fromPlatform();
 
-    // ── Battery ───────────────────────────────────────────────────────────────
     int? batteryLevel;
     String? batteryState;
     try {
       final battery = Battery();
       batteryLevel  = await battery.batteryLevel;
       final state   = await battery.batteryState;
-      batteryState  = state.toString().split('.').last; // charging / full / discharging
+      batteryState  = state.toString().split('.').last;
     } catch (_) {}
 
-    // ── Network ───────────────────────────────────────────────────────────────
     String? networkType;
     try {
       final conn  = await Connectivity().checkConnectivity();
-      networkType = conn.toString().split('.').last; // wifi / mobile / none
+      networkType = conn.toString().split('.').last;
     } catch (_) {}
 
-    // ── Screen ────────────────────────────────────────────────────────────────
     String? screenResolution;
     String? screenDensity;
     try {
@@ -176,7 +194,6 @@ class _SplashScreenState extends State<SplashScreen>
       screenDensity    = '${dpr.toStringAsFixed(1)}x';
     } catch (_) {}
 
-    // ── Locale / timezone ─────────────────────────────────────────────────────
     String? locale;
     String? timezone;
     try {
@@ -186,179 +203,98 @@ class _SplashScreenState extends State<SplashScreen>
 
     try {
       if (Platform.isAndroid) {
-        final a             = await info.androidInfo;
-        final brandLower    = a.brand.toLowerCase();
-        final modelLower    = a.model.toLowerCase();
-        final productLower  = a.product.toLowerCase();
-        final hardwareLower = a.hardware.toLowerCase();
-
-        final isEmulator = !a.isPhysicalDevice ||
-            brandLower == 'google' && modelLower.contains('sdk') ||
-            productLower.contains('sdk')        ||
-            productLower.contains('emulator')   ||
-            productLower.contains('vbox')       ||
-            hardwareLower == 'goldfish'         ||
-            hardwareLower == 'ranchu'           ||
-            modelLower.contains('emulator')     ||
+        final a            = await info.androidInfo;
+        final brandLower   = a.brand.toLowerCase();
+        final modelLower   = a.model.toLowerCase();
+        final productLower = a.product.toLowerCase();
+        final hwLower      = a.hardware.toLowerCase();
+        final isEmulator   = !a.isPhysicalDevice ||
+            (brandLower == 'google' && modelLower.contains('sdk')) ||
+            productLower.contains('sdk')      || productLower.contains('emulator') ||
+            productLower.contains('vbox')     || hwLower == 'goldfish' ||
+            hwLower == 'ranchu'               || modelLower.contains('emulator') ||
             modelLower == 'android sdk built for x86' ||
-            brandLower.contains('genymotion')   ||
-            productLower.contains('nox')        ||
-            productLower.contains('bluestacks') ||
-            productLower.contains('ldmicro')    ||
+            brandLower.contains('genymotion') || productLower.contains('nox') ||
+            productLower.contains('bluestacks')|| productLower.contains('ldmicro') ||
             productLower.contains('memu');
 
         return {
-          // ── Hardware identity ──────────────────────────────────────────────
-          'platform':              'android',
-          'brand':                 a.brand,
-          'model':                 a.model,
-          'manufacturer':          a.manufacturer,
-          'product':               a.product,
-          'device':                a.device,
-          'board':                 a.board,
-          'hardware':              a.hardware,
-          'display':               a.display,
-          'fingerprint':           a.fingerprint,
-          'bootloader':            a.bootloader,
-          'host':                  a.host,
-          'type':                  a.type,
-          'tags':                  a.tags,
-
-          // ── OS details ─────────────────────────────────────────────────────
-          'android_version':       a.version.release,
-          'sdk_int':               a.version.sdkInt,
-          'security_patch':        a.version.securityPatch ?? '',
-          'base_os':               a.version.baseOS        ?? '',
-          'codename':              a.version.codename,
-          'incremental':           a.version.incremental,
-
-          // ── CPU / ABI ──────────────────────────────────────────────────────
-          'supported_abis':        a.supportedAbis,
-          'supported_32bit_abis':  a.supported32BitAbis,
-          'supported_64bit_abis':  a.supported64BitAbis,
-
-          // ── App ────────────────────────────────────────────────────────────
-          'app_version':           pkgInfo.version,
-          'app_build_number':      pkgInfo.buildNumber,
-          'package_name':          pkgInfo.packageName,
-
-          // ── Security flags ─────────────────────────────────────────────────
-          'is_physical_device':    a.isPhysicalDevice,
-          'is_emulator':           isEmulator,
-
-          // ── Screen ─────────────────────────────────────────────────────────
-          'screen_resolution':     screenResolution ?? '',
-          'screen_density':        screenDensity    ?? '',
-
-          // ── Battery ────────────────────────────────────────────────────────
-          'battery_level':         batteryLevel,
-          'battery_state':         batteryState ?? '',
-
-          // ── Network ────────────────────────────────────────────────────────
-          'network_type':          networkType  ?? '',
-
-          // ── Locale / timezone ──────────────────────────────────────────────
-          'locale':                locale   ?? '',
-          'timezone':              timezone ?? '',
+          'platform': 'android', 'brand': a.brand, 'model': a.model,
+          'manufacturer': a.manufacturer, 'product': a.product,
+          'device': a.device, 'board': a.board, 'hardware': a.hardware,
+          'display': a.display, 'fingerprint': a.fingerprint,
+          'bootloader': a.bootloader, 'host': a.host, 'type': a.type,
+          'tags': a.tags, 'android_version': a.version.release,
+          'sdk_int': a.version.sdkInt, 'security_patch': a.version.securityPatch ?? '',
+          'base_os': a.version.baseOS ?? '', 'codename': a.version.codename,
+          'incremental': a.version.incremental,
+          'supported_abis': a.supportedAbis,
+          'supported_32bit_abis': a.supported32BitAbis,
+          'supported_64bit_abis': a.supported64BitAbis,
+          'app_version': pkgInfo.version, 'app_build_number': pkgInfo.buildNumber,
+          'package_name': pkgInfo.packageName,
+          'is_physical_device': a.isPhysicalDevice, 'is_emulator': isEmulator,
+          'screen_resolution': screenResolution ?? '',
+          'screen_density': screenDensity ?? '',
+          'battery_level': batteryLevel, 'battery_state': batteryState ?? '',
+          'network_type': networkType ?? '', 'locale': locale ?? '',
+          'timezone': timezone ?? '',
         };
       } else if (Platform.isIOS) {
-        final i          = await info.iosInfo;
-        final isEmulator = !i.isPhysicalDevice;
+        final i = await info.iosInfo;
         return {
-          // ── Hardware identity ──────────────────────────────────────────────
-          'platform':              'ios',
-          'model':                 i.model,
-          'name':                  i.name,
-          'machine':               i.utsname.machine,
-          'sysname':               i.utsname.sysname,
-          'nodename':              i.utsname.nodename,
-          'release':               i.utsname.release,
-          'version_string':        i.utsname.version,
+          'platform': 'ios', 'model': i.model, 'name': i.name,
+          'machine': i.utsname.machine, 'sysname': i.utsname.sysname,
+          'system_name': i.systemName, 'system_version': i.systemVersion,
           'identifier_for_vendor': i.identifierForVendor ?? '',
-
-          // ── OS details ─────────────────────────────────────────────────────
-          'system_name':           i.systemName,
-          'system_version':        i.systemVersion,
-
-          // ── App ────────────────────────────────────────────────────────────
-          'app_version':           pkgInfo.version,
-          'app_build_number':      pkgInfo.buildNumber,
-          'package_name':          pkgInfo.packageName,
-
-          // ── Security flags ─────────────────────────────────────────────────
-          'is_physical_device':    i.isPhysicalDevice,
-          'is_emulator':           isEmulator,
-
-          // ── Screen ─────────────────────────────────────────────────────────
-          'screen_resolution':     screenResolution ?? '',
-          'screen_density':        screenDensity    ?? '',
-
-          // ── Battery ────────────────────────────────────────────────────────
-          'battery_level':         batteryLevel,
-          'battery_state':         batteryState ?? '',
-
-          // ── Network ────────────────────────────────────────────────────────
-          'network_type':          networkType ?? '',
-
-          // ── Locale / timezone ──────────────────────────────────────────────
-          'locale':                locale   ?? '',
-          'timezone':              timezone ?? '',
+          'app_version': pkgInfo.version, 'app_build_number': pkgInfo.buildNumber,
+          'package_name': pkgInfo.packageName,
+          'is_physical_device': i.isPhysicalDevice, 'is_emulator': !i.isPhysicalDevice,
+          'screen_resolution': screenResolution ?? '',
+          'screen_density': screenDensity ?? '',
+          'battery_level': batteryLevel, 'battery_state': batteryState ?? '',
+          'network_type': networkType ?? '', 'locale': locale ?? '',
+          'timezone': timezone ?? '',
         };
       }
     } catch (_) {}
 
-    // Fallback
     return {
-      'platform':           Platform.operatingSystem,
-      'is_physical_device': true,
-      'is_emulator':        false,
-      'app_version':        pkgInfo.version,
-      'app_build_number':   pkgInfo.buildNumber,
-      'screen_resolution':  screenResolution ?? '',
-      'screen_density':     screenDensity    ?? '',
-      'battery_level':      batteryLevel,
-      'battery_state':      batteryState     ?? '',
-      'network_type':       networkType      ?? '',
-      'locale':             locale           ?? '',
-      'timezone':           timezone         ?? '',
+      'platform': Platform.operatingSystem, 'is_physical_device': true,
+      'is_emulator': false, 'app_version': pkgInfo.version,
+      'app_build_number': pkgInfo.buildNumber,
+      'screen_resolution': screenResolution ?? '',
+      'screen_density': screenDensity ?? '',
+      'battery_level': batteryLevel, 'battery_state': batteryState ?? '',
+      'network_type': networkType ?? '', 'locale': locale ?? '',
+      'timezone': timezone ?? '',
     };
   }
 
-  // ── Main init flow ─────────────────────────────────────────────────────────
   Future<void> _initApp() async {
-    setState(() {
-      _showRetryButton = false;
-      _errorMessage    = null;
-    });
-
-    await Future.delayed(const Duration(milliseconds: 800));
+    setState(() { _showRetryButton = false; _errorMessage = null; });
+    await Future.delayed(const Duration(milliseconds: 900));
 
     try {
-      // ── 1. Server status ───────────────────────────────────────────────────
       _setStatus('Checking server...');
       try {
         final status = await ApiService.getStatus();
-
         if (status['maintenance'] == true) {
-          final msg = status['maintenance_message'] as String? ??
-              'Xissin is under maintenance. Please check back later.';
-          _showMaintenanceDialog(msg);
+          _showMaintenanceDialog(
+              status['maintenance_message'] as String? ??
+              'Xissin is under maintenance. Please check back later.');
           return;
         }
-
         final packageInfo    = await PackageInfo.fromPlatform();
         final currentVersion = packageInfo.version;
         final minVersion     = status['min_app_version']    as String? ?? '1.0.0';
         final latestVersion  = status['latest_app_version'] as String? ?? '1.0.0';
-
         if (_isVersionOutdated(currentVersion, minVersion)) {
-          _showForceUpdateDialog(currentVersion, minVersion);
-          return;
+          _showForceUpdateDialog(currentVersion, minVersion); return;
         }
         if (_isVersionOutdated(currentVersion, latestVersion)) {
-          final shouldContinue =
-              await _showOptionalUpdateDialog(currentVersion, latestVersion);
-          if (!shouldContinue) return;
+          final ok = await _showOptionalUpdateDialog(currentVersion, latestVersion);
+          if (!ok) return;
         }
       } catch (e) {
         _retryCount++;
@@ -370,28 +306,21 @@ class _SplashScreenState extends State<SplashScreen>
         if (!mounted) return;
         setState(() {
           _showRetryButton = true;
-          _errorMessage    =
-              'Cannot reach the server.\nCheck your internet connection.';
+          _errorMessage    = 'Cannot reach the server.\nCheck your internet connection.';
         });
         return;
       }
 
-      // ── 2. User identity ───────────────────────────────────────────────────
       _setStatus('Setting up your profile...');
       final userId = await _getOrCreateUserId();
       ApiService.cacheUserId(userId);
 
-      // ── 3. Device registration (non-blocking) ──────────────────────────────
       _setStatus('Loading...');
       try {
         final deviceInfo = await _collectDeviceInfo();
-        await ApiService.registerUser(
-          userId:        userId,
-          deviceDetails: deviceInfo,
-        );
+        await ApiService.registerUser(userId: userId, deviceDetails: deviceInfo);
       } catch (_) {}
 
-      // ── 4. Navigate ────────────────────────────────────────────────────────
       _setStatus('Welcome to Xissin!');
       await Future.delayed(const Duration(milliseconds: 500));
 
@@ -399,7 +328,7 @@ class _SplashScreenState extends State<SplashScreen>
       Navigator.pushReplacement(
         context,
         PageRouteBuilder(
-          transitionDuration: const Duration(milliseconds: 700),
+          transitionDuration: const Duration(milliseconds: 800),
           pageBuilder: (_, __, ___) => HomeScreen(userId: userId),
           transitionsBuilder: (_, anim, __, child) => FadeTransition(
             opacity: CurvedAnimation(parent: anim, curve: Curves.easeIn),
@@ -436,16 +365,13 @@ class _SplashScreenState extends State<SplashScreen>
         if (cv > rv) return false;
       }
       return false;
-    } catch (_) {
-      return false;
-    }
+    } catch (_) { return false; }
   }
 
   // ── Dialogs ────────────────────────────────────────────────────────────────
   void _showMaintenanceDialog(String message) {
     showDialog(
-      context: context,
-      barrierDismissible: false,
+      context: context, barrierDismissible: false,
       builder: (_) => AlertDialog(
         backgroundColor: AppColors.surface,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
@@ -453,16 +379,15 @@ class _SplashScreenState extends State<SplashScreen>
           Icon(Icons.build_circle_outlined, color: AppColors.secondary, size: 22),
           SizedBox(width: 8),
           Text('Under Maintenance',
-              style: TextStyle(color: AppColors.textPrimary, fontWeight: FontWeight.bold, fontSize: 16)),
+              style: TextStyle(color: AppColors.textPrimary,
+                  fontWeight: FontWeight.bold, fontSize: 16)),
         ]),
         content: Text(message,
             style: const TextStyle(color: AppColors.textSecondary, height: 1.5)),
         actions: [
-          TextButton(
-            onPressed: () => _openUrl(_telegramUrl),
-            child: const Text('Telegram',
-                style: TextStyle(color: AppColors.secondary, fontSize: 12)),
-          ),
+          TextButton(onPressed: () => _openUrl(_telegramUrl),
+              child: const Text('Telegram',
+                  style: TextStyle(color: AppColors.secondary, fontSize: 12))),
         ],
       ),
     );
@@ -470,8 +395,7 @@ class _SplashScreenState extends State<SplashScreen>
 
   void _showForceUpdateDialog(String current, String required) {
     showDialog(
-      context: context,
-      barrierDismissible: false,
+      context: context, barrierDismissible: false,
       builder: (_) => AlertDialog(
         backgroundColor: AppColors.surface,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
@@ -479,24 +403,21 @@ class _SplashScreenState extends State<SplashScreen>
           Icon(Icons.system_update_rounded, color: AppColors.error, size: 22),
           SizedBox(width: 8),
           Text('Update Required',
-              style: TextStyle(color: AppColors.textPrimary, fontWeight: FontWeight.bold, fontSize: 16)),
+              style: TextStyle(color: AppColors.textPrimary,
+                  fontWeight: FontWeight.bold, fontSize: 16)),
         ]),
         content: Text(
-          'Your version ($current) is outdated.\n'
-          'Please update to continue using Xissin.',
+          'Your version ($current) is outdated.\nPlease update to continue.',
           style: const TextStyle(color: AppColors.textSecondary, height: 1.5),
         ),
         actions: [
-          TextButton(
-            onPressed: () => _openUrl(_telegramUrl),
-            child: const Text('Telegram',
-                style: TextStyle(color: AppColors.secondary, fontSize: 12)),
-          ),
-          TextButton(
-            onPressed: () => _openUrl(_driveUrl),
-            child: const Text('Download Update',
-                style: TextStyle(color: AppColors.primary, fontWeight: FontWeight.bold)),
-          ),
+          TextButton(onPressed: () => _openUrl(_telegramUrl),
+              child: const Text('Telegram',
+                  style: TextStyle(color: AppColors.secondary, fontSize: 12))),
+          TextButton(onPressed: () => _openUrl(_driveUrl),
+              child: const Text('Download',
+                  style: TextStyle(color: AppColors.primary,
+                      fontWeight: FontWeight.bold))),
         ],
       ),
     );
@@ -512,24 +433,19 @@ class _SplashScreenState extends State<SplashScreen>
           Icon(Icons.new_releases_rounded, color: AppColors.primary, size: 22),
           SizedBox(width: 8),
           Text('Update Available',
-              style: TextStyle(color: AppColors.textPrimary, fontWeight: FontWeight.bold, fontSize: 16)),
+              style: TextStyle(color: AppColors.textPrimary,
+                  fontWeight: FontWeight.bold, fontSize: 16)),
         ]),
         content: Text(
-          'A new version ($latest) is available.\n'
-          'You are on $current.\n\nWould you like to update?',
+          'v$latest is available. You have v$current.\nUpdate now?',
           style: const TextStyle(color: AppColors.textSecondary, height: 1.5),
         ),
         actions: [
+          TextButton(onPressed: () => Navigator.pop(context, true),
+              child: const Text('Later',
+                  style: TextStyle(color: AppColors.textSecondary))),
           TextButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Later',
-                style: TextStyle(color: AppColors.textSecondary)),
-          ),
-          TextButton(
-            onPressed: () {
-              _openUrl(_driveUrl);
-              Navigator.pop(context, false);
-            },
+            onPressed: () { _openUrl(_driveUrl); Navigator.pop(context, false); },
             child: const Text('Update',
                 style: TextStyle(color: AppColors.primary, fontWeight: FontWeight.bold)),
           ),
@@ -539,220 +455,351 @@ class _SplashScreenState extends State<SplashScreen>
     return result ?? true;
   }
 
-  // ── Build ──────────────────────────────────────────────────────────────────
+  // ── BUILD ──────────────────────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
+    final size = MediaQuery.of(context).size;
+
     return Scaffold(
       backgroundColor: AppColors.background,
-      body: SafeArea(
-        child: Stack(
-          children: [
-            Center(
-              child: FadeTransition(
-                opacity: _fade,
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 32),
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      AnimatedBuilder(
-                        animation: Listenable.merge([_pulseCtrl, _fastPulseCtrl]),
-                        builder: (context, _) {
-                          return ScaleTransition(
-                            scale: _scale,
-                            child: SizedBox(
-                              width: 140,
-                              height: 140,
-                              child: Stack(
-                                alignment: Alignment.center,
-                                children: [
-                                  Transform.scale(
-                                    scale: _ring1.value,
-                                    child: Container(
-                                      width: 130, height: 130,
-                                      decoration: BoxDecoration(
-                                        shape: BoxShape.circle,
-                                        border: Border.all(
-                                          color: AppColors.primary.withOpacity(0.15),
-                                          width: 1,
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                  Transform.scale(
-                                    scale: _ring2.value,
-                                    child: Container(
-                                      width: 108, height: 108,
-                                      decoration: BoxDecoration(
-                                        shape: BoxShape.circle,
-                                        border: Border.all(
-                                          color: AppColors.primary.withOpacity(0.25),
-                                          width: 1.5,
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                  Transform.scale(
-                                    scale: _ring3.value,
-                                    child: Container(
-                                      width: 86, height: 86,
-                                      decoration: BoxDecoration(
-                                        shape: BoxShape.circle,
-                                        border: Border.all(
-                                          color: AppColors.primary.withOpacity(0.4),
-                                          width: 2,
-                                        ),
-                                        gradient: RadialGradient(colors: [
-                                          AppColors.primary.withOpacity(0.12),
-                                          Colors.transparent,
-                                        ]),
-                                      ),
-                                    ),
-                                  ),
-                                  Container(
-                                    width: 64, height: 64,
-                                    decoration: BoxDecoration(
-                                      shape: BoxShape.circle,
-                                      gradient: const LinearGradient(
-                                        colors: AppColors.primaryGradient,
-                                        begin: Alignment.topLeft,
-                                        end: Alignment.bottomRight,
-                                      ),
-                                      boxShadow: AppShadows.glow(AppColors.primary, intensity: 0.5),
-                                    ),
-                                    child: const Icon(Icons.bolt_rounded, size: 34, color: Colors.white),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          );
-                        },
-                      ).animate().fadeIn(duration: 600.ms).scale(
-                          begin: const Offset(0.8, 0.8),
-                          duration: 600.ms,
-                          curve: Curves.easeOutBack),
-
-                      const SizedBox(height: 36),
-
-                      ShaderMask(
-                        shaderCallback: (b) => const LinearGradient(
-                          colors: AppColors.primaryGradient,
-                        ).createShader(b),
-                        child: const Text(
-                          'XISSIN',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 42,
-                            fontWeight: FontWeight.w900,
-                            letterSpacing: 12,
-                          ),
-                        ),
-                      ).animate(delay: 200.ms).fadeIn(duration: 500.ms).slideY(
-                          begin: 0.3, end: 0, duration: 500.ms, curve: Curves.easeOutCubic),
-
-                      const SizedBox(height: 6),
-
-                      const Text(
-                        'M U L T I - T O O L',
-                        style: TextStyle(
-                          color: AppColors.textSecondary,
-                          fontSize: 11,
-                          fontWeight: FontWeight.w600,
-                          letterSpacing: 5,
-                        ),
-                      ).animate(delay: 320.ms).fadeIn(duration: 500.ms).slideY(
-                          begin: 0.3, end: 0, duration: 500.ms, curve: Curves.easeOutCubic),
-
-                      const SizedBox(height: 68),
-
-                      if (!_showRetryButton) ...[
-                        AnimatedBuilder(
-                          animation: _dotCtrl,
-                          builder: (context, _) => Row(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              _buildDot(_dot1.value),
-                              const SizedBox(width: 10),
-                              _buildDot(_dot2.value),
-                              const SizedBox(width: 10),
-                              _buildDot(_dot3.value),
-                            ],
-                          ),
-                        ).animate(delay: 400.ms).fadeIn(duration: 400.ms),
-                        const SizedBox(height: 18),
-                        Text(
-                          _status,
-                          style: const TextStyle(
-                              color: AppColors.textSecondary, fontSize: 13, letterSpacing: 0.2),
-                        ).animate(delay: 500.ms).fadeIn(duration: 400.ms).shimmer(
-                            duration: 1800.ms,
-                            delay: 900.ms,
-                            color: AppColors.textSecondary.withOpacity(0.35)),
-                      ] else ...[
-                        const Icon(Icons.wifi_off_rounded, color: AppColors.error, size: 34)
-                            .animate().fadeIn(duration: 400.ms).shake(delay: 200.ms, duration: 500.ms),
-                        const SizedBox(height: 14),
-                        Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 44),
-                          child: Text(
-                            _errorMessage ?? 'Connection failed.',
-                            textAlign: TextAlign.center,
-                            style: const TextStyle(
-                                color: AppColors.textSecondary, fontSize: 13, height: 1.5),
-                          ),
-                        ),
-                        const SizedBox(height: 24),
-                        ElevatedButton.icon(
-                          onPressed: _manualRetry,
-                          icon: const Icon(Icons.refresh_rounded, size: 18),
-                          label: const Text('Retry'),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: AppColors.primary,
-                            foregroundColor: Colors.white,
-                            padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 14),
-                            shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(AppRadius.lg)),
-                            textStyle: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
-                          ),
-                        ).animate(delay: 200.ms).fadeIn(duration: 400.ms)
-                            .slideY(begin: 0.2, end: 0, duration: 400.ms),
-                      ],
+      body: Stack(
+        children: [
+          // ── Ambient background glow ───────────────────────────────────────
+          Positioned(
+            top: size.height * 0.15,
+            left: size.width * 0.5 - 150,
+            child: AnimatedBuilder(
+              animation: _pulseCtrl,
+              builder: (_, __) => Container(
+                width: 300, height: 300,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  gradient: RadialGradient(
+                    colors: [
+                      AppColors.primary.withOpacity(0.07 * _glow.value),
+                      Colors.transparent,
                     ],
                   ),
                 ),
               ),
             ),
+          ),
 
-            if (_appVersion.isNotEmpty)
-              Positioned(
-                bottom: 28, left: 0, right: 0,
-                child: Text(
-                  _appVersion,
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    color: AppColors.textSecondary.withOpacity(0.5),
-                    fontSize: 11,
-                    letterSpacing: 1.0,
+          // ── Main content ──────────────────────────────────────────────────
+          Center(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 32),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+
+                  // ── Logo section ───────────────────────────────────────────
+                  FadeTransition(
+                    opacity: _logoFade,
+                    child: ScaleTransition(
+                      scale: _logoScale,
+                      child: SizedBox(
+                        width: 160, height: 160,
+                        child: Stack(
+                          alignment: Alignment.center,
+                          children: [
+
+                            // Outer slow-rotating dashed ring
+                            AnimatedBuilder(
+                              animation: _rotateCtrl,
+                              builder: (_, __) => Transform.rotate(
+                                angle: _rotateCtrl.value * 2 * math.pi,
+                                child: CustomPaint(
+                                  size: const Size(150, 150),
+                                  painter: _DashedRingPainter(
+                                    color: AppColors.primary.withOpacity(0.20),
+                                    strokeWidth: 1.5,
+                                    dashCount: 20,
+                                  ),
+                                ),
+                              ),
+                            ),
+
+                            // Orbit ring 1 (pulsing)
+                            AnimatedBuilder(
+                              animation: _orbitCtrl,
+                              builder: (_, __) => Transform.scale(
+                                scale: _orbit1.value,
+                                child: Container(
+                                  width: 120, height: 120,
+                                  decoration: BoxDecoration(
+                                    shape: BoxShape.circle,
+                                    border: Border.all(
+                                      color: AppColors.primary.withOpacity(0.18),
+                                      width: 1,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+
+                            // Orbit ring 2 (pulsing, faster)
+                            AnimatedBuilder(
+                              animation: _orbitCtrl,
+                              builder: (_, __) => Transform.scale(
+                                scale: _orbit2.value,
+                                child: Container(
+                                  width: 96, height: 96,
+                                  decoration: BoxDecoration(
+                                    shape: BoxShape.circle,
+                                    border: Border.all(
+                                      color: AppColors.primary.withOpacity(0.30),
+                                      width: 1.5,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+
+                            // Glow halo behind icon
+                            AnimatedBuilder(
+                              animation: _pulseCtrl,
+                              builder: (_, __) => Container(
+                                width: 80, height: 80,
+                                decoration: BoxDecoration(
+                                  shape: BoxShape.circle,
+                                  boxShadow: [
+                                    BoxShadow(
+                                      color: AppColors.primary.withOpacity(0.35 * _glow.value),
+                                      blurRadius: 28,
+                                      spreadRadius: 8,
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+
+                            // ── Real app icon ──────────────────────────────
+                            Container(
+                              width: 72, height: 72,
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                gradient: const LinearGradient(
+                                  colors: AppColors.primaryGradient,
+                                  begin: Alignment.topLeft,
+                                  end: Alignment.bottomRight,
+                                ),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: AppColors.primary.withOpacity(0.45),
+                                    blurRadius: 20,
+                                    spreadRadius: 2,
+                                  ),
+                                ],
+                              ),
+                              child: ClipOval(
+                                child: Image.asset(
+                                  'assets/icon/icon.png',
+                                  fit: BoxFit.cover,
+                                  errorBuilder: (_, __, ___) => const Icon(
+                                    Icons.bolt_rounded,
+                                    size: 36,
+                                    color: Colors.white,
+                                  ),
+                                ),
+                              ),
+                            ),
+
+                          ],
+                        ),
+                      ),
+                    ),
                   ),
-                ).animate(delay: 800.ms).fadeIn(duration: 500.ms),
+
+                  const SizedBox(height: 40),
+
+                  // ── Title ──────────────────────────────────────────────────
+                  FadeTransition(
+                    opacity: _titleSlide,
+                    child: Column(
+                      children: [
+                        ShaderMask(
+                          shaderCallback: (b) => const LinearGradient(
+                            colors: AppColors.primaryGradient,
+                          ).createShader(b),
+                          child: const Text(
+                            'XISSIN',
+                            style: TextStyle(
+                              color:         Colors.white,
+                              fontSize:      44,
+                              fontWeight:    FontWeight.w900,
+                              letterSpacing: 14,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 6),
+                        Text(
+                          'M U L T I - T O O L',
+                          style: TextStyle(
+                            color:         AppColors.textSecondary.withOpacity(0.8),
+                            fontSize:      11,
+                            fontWeight:    FontWeight.w600,
+                            letterSpacing: 5,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+
+                  const SizedBox(height: 72),
+
+                  // ── Loading / Error state ──────────────────────────────────
+                  if (!_showRetryButton) ...[
+                    // Bouncing dots
+                    AnimatedBuilder(
+                      animation: _dotCtrl,
+                      builder: (_, __) => Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          _buildDot(_dot1.value, 0),
+                          const SizedBox(width: 10),
+                          _buildDot(_dot2.value, 1),
+                          const SizedBox(width: 10),
+                          _buildDot(_dot3.value, 2),
+                        ],
+                      ),
+                    ).animate(delay: 600.ms).fadeIn(duration: 400.ms),
+
+                    const SizedBox(height: 20),
+
+                    // Status text with shimmer
+                    Text(
+                      _status,
+                      style: TextStyle(
+                        color:         AppColors.textSecondary.withOpacity(0.75),
+                        fontSize:      13,
+                        letterSpacing: 0.3,
+                      ),
+                    ).animate(delay: 700.ms)
+                      .fadeIn(duration: 400.ms)
+                      .shimmer(
+                        duration: 2000.ms,
+                        delay:    1200.ms,
+                        color:    AppColors.primary.withOpacity(0.3),
+                      ),
+                  ] else ...[
+                    // Error state
+                    const Icon(Icons.wifi_off_rounded,
+                            color: AppColors.error, size: 36)
+                        .animate().fadeIn(duration: 400.ms)
+                        .shake(delay: 200.ms, duration: 500.ms),
+                    const SizedBox(height: 16),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 40),
+                      child: Text(
+                        _errorMessage ?? 'Connection failed.',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          color: AppColors.textSecondary.withOpacity(0.8),
+                          fontSize: 13, height: 1.55,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 28),
+                    ElevatedButton.icon(
+                      onPressed: _manualRetry,
+                      icon: const Icon(Icons.refresh_rounded, size: 18),
+                      label: const Text('Retry'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppColors.primary,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 36, vertical: 14),
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(AppRadius.lg)),
+                        textStyle: const TextStyle(
+                            fontSize: 15, fontWeight: FontWeight.bold),
+                      ),
+                    ).animate(delay: 200.ms)
+                      .fadeIn(duration: 400.ms)
+                      .slideY(begin: 0.2, end: 0, duration: 400.ms),
+                  ],
+                ],
               ),
+            ),
+          ),
+
+          // ── Version badge ─────────────────────────────────────────────────
+          if (_appVersion.isNotEmpty)
+            Positioned(
+              bottom: 28, left: 0, right: 0,
+              child: Text(
+                _appVersion,
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color:         AppColors.textSecondary.withOpacity(0.4),
+                  fontSize:      11,
+                  letterSpacing: 1.2,
+                ),
+              ).animate(delay: 900.ms).fadeIn(duration: 600.ms),
+            ),
+        ],
+      ),
+    );
+  }
+
+  // ── Gradient dot ──────────────────────────────────────────────────────────
+  Widget _buildDot(double offsetY, int index) {
+    final colors = [AppColors.primary, AppColors.secondary, AppColors.primary];
+    return Transform.translate(
+      offset: Offset(0, offsetY),
+      child: Container(
+        width: 9, height: 9,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: colors[index % colors.length],
+          boxShadow: [
+            BoxShadow(
+              color: AppColors.primary.withOpacity(0.5),
+              blurRadius: 8,
+            ),
           ],
         ),
       ),
     );
   }
+}
 
-  Widget _buildDot(double offsetY) {
-    return Transform.translate(
-      offset: Offset(0, offsetY),
-      child: Container(
-        width: 8, height: 8,
-        decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          gradient: const LinearGradient(colors: AppColors.primaryGradient),
-          boxShadow: AppShadows.glow(AppColors.primary, intensity: 0.5, blur: 8, spread: 0),
-        ),
-      ),
-    );
+// ── Dashed ring painter ───────────────────────────────────────────────────────
+class _DashedRingPainter extends CustomPainter {
+  final Color  color;
+  final double strokeWidth;
+  final int    dashCount;
+
+  const _DashedRingPainter({
+    required this.color,
+    required this.strokeWidth,
+    required this.dashCount,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color       = color
+      ..strokeWidth = strokeWidth
+      ..style       = PaintingStyle.stroke;
+
+    final center = Offset(size.width / 2, size.height / 2);
+    final radius = (size.width / 2) - strokeWidth;
+    const gap    = 0.3; // radians gap between dashes
+
+    final step = (2 * math.pi) / dashCount;
+    for (int i = 0; i < dashCount; i++) {
+      final start = i * step;
+      final end   = start + step - gap;
+      canvas.drawArc(
+        Rect.fromCircle(center: center, radius: radius),
+        start, end - start, false, paint,
+      );
+    }
   }
+
+  @override
+  bool shouldRepaint(_DashedRingPainter old) =>
+      old.color != color || old.dashCount != dashCount;
 }
