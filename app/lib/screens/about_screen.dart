@@ -103,15 +103,27 @@ class _AboutScreenState extends State<AboutScreen> {
       }
 
       if (hasUpdate && mounted) {
-        UpdateService.showUpdateDialog(
-          context:        context,
-          currentVersion: _version,
-          latestVersion:  latest,
-          apkUrl:         apkUrl,
-          expectedSha256: sha256,
-          versionNotes:   notes,
-          forceUpdate:    false,
-        );
+        if (apkUrl.isNotEmpty) {
+          // Directly start download — no extra tap needed
+          UpdateService.downloadAndInstall(
+            context:        context,
+            apkUrl:         apkUrl,
+            latestVersion:  latest,
+            expectedSha256: sha256,
+            versionNotes:   notes,
+          );
+        } else {
+          // No APK URL configured yet — show dialog with info only
+          UpdateService.showUpdateDialog(
+            context:        context,
+            currentVersion: _version,
+            latestVersion:  latest,
+            apkUrl:         apkUrl,
+            expectedSha256: sha256,
+            versionNotes:   notes,
+            forceUpdate:    false,
+          );
+        }
       } else if (!hasUpdate && mounted) {
         _showUpToDateSnack();
       }

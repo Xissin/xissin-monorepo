@@ -12,6 +12,7 @@ import 'package:connectivity_plus/connectivity_plus.dart';
 
 import '../theme/app_theme.dart';
 import '../services/api_service.dart';
+import '../services/update_service.dart';
 import '../widgets/shimmer_skeleton.dart';
 import 'home_screen.dart';
 
@@ -58,8 +59,7 @@ class _SplashScreenState extends State<SplashScreen>
   String  _appVersion      = '';
 
   static const String _telegramUrl = 'https://t.me/Xissin_0';
-  static const String _driveUrl =
-      'https://drive.google.com/file/d/1ONwQUQiD8IRGA2ganJpaZ5brALtcOWMF/view?usp=sharing';
+  // _driveUrl removed — APK URL now comes dynamically from /api/status
 
   static const _storage = FlutterSecureStorage(
     aOptions: AndroidOptions(encryptedSharedPreferences: true),
@@ -289,11 +289,16 @@ class _SplashScreenState extends State<SplashScreen>
         final currentVersion = packageInfo.version;
         final minVersion     = status['min_app_version']    as String? ?? '1.0.0';
         final latestVersion  = status['latest_app_version'] as String? ?? '1.0.0';
+        final apkUrl         = status['apk_download_url']   as String? ?? '';
+        final apkSha256      = status['apk_sha256']         as String?;
+        final apkNotes       = status['apk_version_notes']  as String?;
+
         if (_isVersionOutdated(currentVersion, minVersion)) {
-          _showForceUpdateDialog(currentVersion, minVersion); return;
+          _showForceUpdateDialog(currentVersion, minVersion, apkUrl, apkSha256); return;
         }
         if (_isVersionOutdated(currentVersion, latestVersion)) {
-          final ok = await _showOptionalUpdateDialog(currentVersion, latestVersion);
+          final ok = await _showOptionalUpdateDialog(
+            currentVersion, latestVersion, apkUrl, apkSha256, apkNotes);
           if (!ok) return;
         }
       } catch (e) {
@@ -393,7 +398,8 @@ class _SplashScreenState extends State<SplashScreen>
     );
   }
 
-  void _showForceUpdateDialog(String current, String required) {
+  void _showForceUpdateDialog(
+    String current, String required, String apkUrl, String? apkSha256) {
     showDialog(
       context: context, barrierDismissible: false,
       builder: (_) => AlertDialog(
@@ -414,16 +420,32 @@ class _SplashScreenState extends State<SplashScreen>
           TextButton(onPressed: () => _openUrl(_telegramUrl),
               child: const Text('Telegram',
                   style: TextStyle(color: AppColors.secondary, fontSize: 12))),
-          TextButton(onPressed: () => _openUrl(_driveUrl),
-              child: const Text('Download',
-                  style: TextStyle(color: AppColors.primary,
-                      fontWeight: FontWeight.bold))),
+          TextButton(
+            onPressed: () {
+              if (apkUrl.isNotEmpty) {
+                UpdateService.downloadAndInstall(
+                  context:        context,
+                  apkUrl:         apkUrl,
+                  latestVersion:  required,
+                  expectedSha256: apkSha256,
+                );
+              } else {
+                _openUrl(_telegramUrl);
+              }
+            },
+            child: const Text('Download',
+                style: TextStyle(color: AppColors.primary,
+                    fontWeight: FontWeight.bold)),
+          ),
         ],
       ),
     );
   }
 
-  Future<bool> _showOptionalUpdateDialog(String current, String latest) async {
+  Future<bool> _showOptionalUpdateDialog(
+    String current, String latest,
+    String apkUrl, String? apkSha256, String? notes,
+  ) async {
     final result = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
@@ -436,18 +458,46 @@ class _SplashScreenState extends State<SplashScreen>
               style: TextStyle(color: AppColors.textPrimary,
                   fontWeight: FontWeight.bold, fontSize: 16)),
         ]),
-        content: Text(
-          'v$latest is available. You have v$current.\nUpdate now?',
-          style: const TextStyle(color: AppColors.textSecondary, height: 1.5),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'v$latest is available. You have v$current.',
+              style: const TextStyle(color: AppColors.textSecondary, height: 1.5),
+            ),
+            if (notes != null && notes.isNotEmpty) ...[
+              const SizedBox(height: 10),
+              Text(notes,
+                  style: const TextStyle(
+                      color: AppColors.textSecondary, fontSize: 12, height: 1.5)),
+            ],
+          ],
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, true),
-              child: const Text('Later',
-                  style: TextStyle(color: AppColors.textSecondary))),
           TextButton(
-            onPressed: () { _openUrl(_driveUrl); Navigator.pop(context, false); },
-            child: const Text('Update',
-                style: TextStyle(color: AppColors.primary, fontWeight: FontWeight.bold)),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Later',
+                style: TextStyle(color: AppColors.textSecondary)),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context, false);
+              if (apkUrl.isNotEmpty) {
+                UpdateService.downloadAndInstall(
+                  context:        context,
+                  apkUrl:         apkUrl,
+                  latestVersion:  latest,
+                  expectedSha256: apkSha256,
+                  versionNotes:   notes,
+                );
+              } else {
+                _openUrl(_telegramUrl);
+              }
+            },
+            child: const Text('Download & Install',
+                style: TextStyle(
+                    color: AppColors.primary, fontWeight: FontWeight.bold)),
           ),
         ],
       ),

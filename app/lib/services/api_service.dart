@@ -256,7 +256,9 @@ class ApiService {
     });
   }
 
-  // ── Version (cached 5min, deduped) ────────────────────────────────────────
+  // ── Version (cached 5min, deduped) ──────────────────────────────────────────
+  // Reads from /api/status which contains: latest_app_version, min_app_version,
+  // apk_download_url, apk_sha256, apk_version_notes all in one call.
 
   static Future<Map<String, dynamic>> getVersion() async {
     const cacheKey = 'version';
@@ -268,7 +270,7 @@ class ApiService {
       try {
         final res = await http
             .get(
-              Uri.parse('$_base/api/settings/version'),
+              Uri.parse('$_base/api/status'),
               headers: _baseHeaders,
             )
             .timeout(const Duration(seconds: 10));
@@ -286,6 +288,7 @@ class ApiService {
         'maintenance':        false,
         'maintenance_message': '',
         'apk_download_url':   '',
+        'apk_sha256':         '',
         'apk_version_notes':  '',
       };
     });
