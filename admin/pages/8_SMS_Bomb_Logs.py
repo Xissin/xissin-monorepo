@@ -70,8 +70,11 @@ with st.spinner("Loading SMS bomb logs..."):
 if search_user.strip():
     logs = [l for l in logs if search_user.strip().lower() in str(l.get("user_id", "")).lower()]
 if search_phone.strip():
-    q = search_phone.strip().replace("+63", "").replace("0", "", 1)
-    logs = [l for l in logs if q in str(l.get("phone", ""))]
+    # FIX: old code did .replace("0", "", 1) which stripped first "0" anywhere
+    # in the string — even in the middle of a number. Now we just normalize
+    # both the search term and the stored phone to a raw 9XXXXXXXXX format.
+    raw = search_phone.strip().lstrip("+").lstrip("63").lstrip("0")
+    logs = [l for l in logs if raw in str(l.get("phone", "")).lstrip("+63").lstrip("0")]
 
 # ── Summary stats ─────────────────────────────────────────────────────────────
 if logs:
@@ -111,6 +114,15 @@ with tab1:
         total         = log.get("total", total_sent + total_failed)
         success_rate  = log.get("success_rate", 0)
         results       = log.get("results", [])
+        # "client" = fired from user's phone (SmsService), "server" = Railway
+        source        = log.get("source", "server")
+        source_badge  = (
+            "<span style='background:#A78BFA22;color:#A78BFA;border-radius:4px;"
+            "padding:2px 7px;font-size:10px;font-weight:700'>📱 CLIENT</span>"
+            if source == "client" else
+            "<span style='background:#38BDF822;color:#38BDF8;border-radius:4px;"
+            "padding:2px 7px;font-size:10px;font-weight:700'>🖥️ SERVER</span>"
+        )
 
         if success_rate >= 70:
             dot_color  = "#7EE7C1"
@@ -130,7 +142,7 @@ with tab1:
                 <div style='flex:1'>
                     <div style='display:flex; justify-content:space-between; flex-wrap:wrap; gap:6px'>
                         <span style='font-family:monospace; font-weight:700;
-                            font-size:13px; color:#FF6EC7'>💣 SMS Bomb</span>
+                            font-size:13px; color:#FF6EC7'>💣 SMS Bomb &nbsp; {source_badge}</span>
                         <span style='font-size:10px; color:#7a8ab8'>{ts} PHT</span>
                     </div>
                     <div style='margin-top:6px; display:flex; flex-wrap:wrap; gap:8px'>

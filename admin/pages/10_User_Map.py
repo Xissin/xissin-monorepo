@@ -54,14 +54,20 @@ def format_time(ts_str: str) -> str:
 
 def time_ago(ts_str: str) -> str:
     try:
-        dt = datetime.fromisoformat(ts_str)
-        diff = datetime.now() - dt
-        if diff < timedelta(minutes=1):
+        dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+        # FIX: use UTC-aware now so comparison doesn't drift by 8h
+        if dt.tzinfo is None:
+            # treat naive timestamps as UTC
+            from datetime import timezone
+            dt = dt.replace(tzinfo=timezone.utc)
+        from datetime import timezone
+        diff = datetime.now(timezone.utc) - dt
+        if diff.total_seconds() < 60:
             return "Just now"
-        if diff < timedelta(hours=1):
-            return f"{int(diff.seconds / 60)}m ago"
-        if diff < timedelta(days=1):
-            return f"{int(diff.seconds / 3600)}h ago"
+        if diff.total_seconds() < 3600:
+            return f"{int(diff.total_seconds() / 60)}m ago"
+        if diff.total_seconds() < 86400:
+            return f"{int(diff.total_seconds() / 3600)}h ago"
         return f"{diff.days}d ago"
     except Exception:
         return "Unknown"
@@ -198,7 +204,8 @@ with f3:
 # ── Apply filters ─────────────────────────────────────────────────────────────
 def apply_filters(locs):
     result = []
-    now = datetime.now()
+    from datetime import timezone
+    now = datetime.now(timezone.utc)  # FIX: use UTC-aware now
     for loc in locs:
         uid = loc.get("user_id", "")
 
@@ -210,7 +217,9 @@ def apply_filters(locs):
         if filter_time != "All Time":
             ts = loc.get("updated_at", "")
             try:
-                dt   = datetime.fromisoformat(ts)
+                dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
                 diff = now - dt
                 if filter_time == "Last 24 Hours" and diff > timedelta(hours=24):
                     continue

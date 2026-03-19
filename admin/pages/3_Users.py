@@ -22,7 +22,8 @@ def load_users():
     try:
         ngl_stats = get("/api/ngl/stats").get("by_user", [])
         ngl_map   = {x["user_id"]: x["total"] for x in ngl_stats}
-    except: pass
+    except Exception:
+        pass
     return users, ngl_map
 
 with st.spinner("Loading users..."):

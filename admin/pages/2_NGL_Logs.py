@@ -12,15 +12,21 @@ col_a, col_b, col_c = st.columns([2,1,1])
 with col_a: search = st.text_input("🔍 Search", placeholder="Filter by user ID, username, or target...", label_visibility="collapsed")
 with col_b: limit  = st.selectbox("Show last", [50,100,200,500], index=1, label_visibility="collapsed")
 with col_c:
-    if st.button("↺  REFRESH", use_container_width=True): st.cache_data.clear()
+    if st.button("↺  REFRESH", use_container_width=True):
+        st.cache_data.clear()
+        st.rerun()  # FIX: was missing — cache cleared but page never reloaded
 
 @st.cache_data(ttl=20, show_spinner=False)
 def load_ngl(limit):
     stats, logs = {}, []
-    try: stats = get("/api/ngl/stats")
-    except: pass
-    try: logs  = get("/api/ngl/logs", {"limit": limit}).get("logs", [])
-    except: pass
+    try:
+        stats = get("/api/ngl/stats")
+    except Exception:
+        pass
+    try:
+        logs = get("/api/ngl/logs", {"limit": limit}).get("logs", [])
+    except Exception:
+        pass
     return stats, logs
 
 with st.spinner("Loading NGL data..."):

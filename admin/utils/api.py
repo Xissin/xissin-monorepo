@@ -58,11 +58,15 @@ def _raise(r: requests.Response):
 
 
 def verify_admin_key(key: str) -> bool:
-    """Try hitting a protected endpoint. Returns True if key is valid."""
+    """
+    Verify admin key using a lightweight endpoint.
+    FIX: was fetching /api/users/list (entire user list payload) just to check auth.
+    Now uses /api/settings/ which is small and admin-only.
+    """
     try:
         r = requests.get(
-            f"{BASE_URL}/api/users/list",
-            headers={"X-Admin-Key": key},
+            f"{BASE_URL}/api/settings/",
+            headers={"X-Admin-Key": key, "Accept": "application/json"},
             timeout=TIMEOUT,
         )
         return r.status_code == 200

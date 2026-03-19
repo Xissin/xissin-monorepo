@@ -25,15 +25,15 @@ with col_r:
 def load_dashboard_data():
     results = {}
     try: results["users"]   = get("/api/users/list").get("users", [])
-    except: results["users"] = []
+    except Exception: results["users"] = []
     try: results["status"]  = get_public("/api/status")
-    except: results["status"] = {}
+    except Exception: results["status"] = {}
     try: results["ngl"]     = get("/api/ngl/stats")
-    except: results["ngl"] = {}
+    except Exception: results["ngl"] = {}
     try: results["logs"]    = get("/api/users/logs/recent", {"limit": 12}).get("logs", [])
-    except: results["logs"] = []
+    except Exception: results["logs"] = []
     try: results["ann"]     = get_public("/api/announcements")
-    except: results["ann"] = []
+    except Exception: results["ann"] = []
     return results
 
 with st.spinner("Loading command center..."):

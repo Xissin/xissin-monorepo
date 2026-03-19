@@ -86,6 +86,9 @@ with tab1:
         if log.get("reason"):     meta_parts.append(f"Reason: {log['reason']}")
         if log.get("days"):       meta_parts.append(f"{log['days']}d")
         if log.get("title"):      meta_parts.append(f'"{log["title"]}"')
+        # Show source badge for client-side SMS bombs
+        if log.get("source") == "client":
+            meta_parts.append("📱 fired from user's phone")
         meta = " · ".join(meta_parts)
 
         st.markdown(f"""
