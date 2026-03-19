@@ -17,6 +17,8 @@ import '../widgets/haptic_button.dart';
 import 'sms_bomber_screen.dart';
 import 'about_screen.dart';
 import 'ngl_screen.dart';
+import 'url_remover_screen.dart';
+import 'duplicate_remover_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   final String userId;
@@ -134,6 +136,18 @@ class _HomeScreenState extends State<HomeScreen> {
     HapticFeedback.selectionClick();
     Navigator.push(
         context, MaterialPageRoute(builder: (_) => const AboutScreen()));
+  }
+
+  // ── NEW: URL Remover ───────────────────────────────────────────────────────
+  void _goToUrlRemover() {
+    HapticFeedback.mediumImpact();
+    _pushSlide(const UrlRemoverScreen());
+  }
+
+  // ── NEW: Duplicate Remover ─────────────────────────────────────────────────
+  void _goToDupRemover() {
+    HapticFeedback.mediumImpact();
+    _pushSlide(const DuplicateRemoverScreen());
   }
 
   void _showComingSoon(String name) {
@@ -420,7 +434,9 @@ class _HomeScreenState extends State<HomeScreen> {
                           borderRadius: BorderRadius.circular(AppRadius.full),
                         ),
                         child: Text(
-                          '4',
+                          // Updated count: SMS Bomber, NGL Bomber,
+                          // URL Remover, Dup Remover + About = 5 tools shown
+                          '5',
                           style: TextStyle(
                             color:      c.primary,
                             fontSize:   11,
@@ -438,6 +454,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 padding: const EdgeInsets.fromLTRB(16, 0, 16, 32),
                 sliver: SliverGrid(
                   delegate: SliverChildListDelegate([
+                    // ── 0: SMS Bomber ─────────────────────────────────────────
                     _FeatureCard(
                       icon:      Icons.sms_rounded,
                       title:     'SMS Bomber',
@@ -447,6 +464,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       onTap:     _goToSms,
                       index:     0,
                     ),
+                    // ── 1: NGL Bomber ─────────────────────────────────────────
                     _FeatureCard(
                       icon:      Icons.chat_bubble_outline_rounded,
                       title:     'NGL Bomber',
@@ -456,6 +474,33 @@ class _HomeScreenState extends State<HomeScreen> {
                       onTap:     _goToNgl,
                       index:     1,
                     ),
+                    // ── 2: URL Remover (NEW — fully local) ────────────────────
+                    _FeatureCard(
+                      icon:      Icons.link_off_rounded,
+                      title:     'URL Remover',
+                      subtitle:  'Clean Combo Lists',
+                      gradient:  const [
+                        Color(0xFF7B8CDE),
+                        Color(0xFF4A5BAA),
+                      ],
+                      glowColor: const Color(0xFF7B8CDE),
+                      onTap:     _goToUrlRemover,
+                      index:     2,
+                    ),
+                    // ── 3: Duplicate Remover (NEW — fully local) ──────────────
+                    _FeatureCard(
+                      icon:      Icons.filter_list_off_rounded,
+                      title:     'Dup Remover',
+                      subtitle:  'Remove Duplicates',
+                      gradient:  const [
+                        Color(0xFFFFA94D),
+                        Color(0xFFE67E22),
+                      ],
+                      glowColor: const Color(0xFFFFA94D),
+                      onTap:     _goToDupRemover,
+                      index:     3,
+                    ),
+                    // ── 4: About ──────────────────────────────────────────────
                     _FeatureCard(
                       icon:      Icons.info_outline_rounded,
                       title:     'About',
@@ -463,8 +508,9 @@ class _HomeScreenState extends State<HomeScreen> {
                       gradient:  AppColors.aboutGradient,
                       glowColor: c.secondary,
                       onTap:     _goToAbout,
-                      index:     2,
+                      index:     4,
                     ),
+                    // ── 5: IP Tracker (coming soon) ───────────────────────────
                     _FeatureCard(
                       icon:      Icons.location_on_rounded,
                       title:     'IP Tracker',
@@ -472,17 +518,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       gradient:  c.comingSoonGradient,
                       glowColor: AppColors.neonOrange,
                       onTap:     () => _showComingSoon('IP Tracker'),
-                      index:     3,
-                      comingSoon: true,
-                    ),
-                    _FeatureCard(
-                      icon:      Icons.phonelink_ring_rounded,
-                      title:     'Phone Info',
-                      subtitle:  'Number Lookup',
-                      gradient:  c.comingSoonGradient,
-                      glowColor: AppColors.neonPink,
-                      onTap:     () => _showComingSoon('Phone Info'),
-                      index:     4,
+                      index:     5,
                       comingSoon: true,
                     ),
                   ]),
