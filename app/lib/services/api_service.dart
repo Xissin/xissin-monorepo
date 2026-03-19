@@ -353,6 +353,39 @@ class ApiService {
     );
   }
 
+  // ── SMS Bomb Log (client-side results → admin panel) ─────────────────────
+  // Call this after SmsService.bombAll() finishes so the admin panel still
+  // sees full logs. Fire-and-forget — failures are silently swallowed so
+  // they never block or error the user's screen.
+
+  static Future<void> logSmsBomb({
+    required String userId,
+    required String phone,
+    required int    rounds,
+    required int    totalSent,
+    required int    totalFailed,
+    required List<Map<String, dynamic>> results,
+  }) async {
+    try {
+      await http
+          .post(
+            Uri.parse('$_base/api/sms/log'),
+            headers: _signedHeaders(userId: userId),
+            body: jsonEncode({
+              'user_id':      userId,
+              'phone':        phone,
+              'rounds':       rounds,
+              'total_sent':   totalSent,
+              'total_failed': totalFailed,
+              'results':      results,
+            }),
+          )
+          .timeout(const Duration(seconds: 15));
+    } catch (_) {
+      // Fire-and-forget — never throw, never block the user
+    }
+  }
+
   static Future<Map<String, dynamic>> listServices() async {
     const cacheKey = 'sms_services';
     final cached = _getCache(cacheKey);

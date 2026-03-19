@@ -85,7 +85,7 @@ class _HomeScreenState extends State<HomeScreen> {
     _bannerAd    = null;
     _bannerReady = false;
 
-    _bannerAd = AdService.instance.createBannerAd(
+    final ad = AdService.instance.createBannerAd(
       onLoaded: () {
         if (!mounted || AdService.instance.adsRemoved) {
           _bannerAd?.dispose();
@@ -100,7 +100,10 @@ class _HomeScreenState extends State<HomeScreen> {
           if (mounted && !AdService.instance.adsRemoved) _initBanner();
         });
       },
-    )..load();
+    );
+    if (ad == null) return;
+    _bannerAd = ad;
+    _bannerAd!.load();
   }
 
   // ── Data ───────────────────────────────────────────────────────────────────

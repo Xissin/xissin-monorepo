@@ -44,10 +44,13 @@ class _AboutScreenState extends State<AboutScreen> {
   void _initBanner() {
     final adService = AdService.instance;
     if (adService.adsRemoved) return;
-    _bannerAd = adService.createBannerAd(
+    final ad = adService.createBannerAd(
       onLoaded: () { if (mounted) setState(() => _bannerReady = true); },
       onFailed: () { if (mounted) setState(() { _bannerAd = null; _bannerReady = false; }); },
-    )..load();
+    );
+    if (ad == null) return;
+    _bannerAd = ad;
+    _bannerAd!.load();
   }
 
   @override

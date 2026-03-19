@@ -7,8 +7,12 @@ import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../theme/app_theme.dart';
 import '../services/ad_service.dart';
-import '../services/api_service.dart';
+import '../services/api_service.dart';       // ← for logSmsBomb (admin panel logging)
+import '../services/sms_service.dart';       // ← client-side, fires from user's phone
 import '../widgets/glass_neumorphic_card.dart';
+
+// ApiService import removed — SMS now fires from user's phone, not Railway backend.
+// Results are shown live as each service responds.
 
 const _kSmsRed    = Color(0xFFFF4E4E);
 const _kSmsOrange = Color(0xFFFF9A44);
@@ -22,7 +26,7 @@ class _AttackRecord {
   final int failed;
   final int total;
   final DateTime time;
-  final List<dynamic> results;
+  final List<SmsResult> results;
 
   double get successPct => total == 0 ? 0 : sent / total;
   double get failedPct  => total == 0 ? 0 : failed / total;
@@ -44,7 +48,7 @@ class _AttackRecord {
         'failed':  failed,
         'total':   total,
         'time':    time.toIso8601String(),
-        'results': results,
+        'results': results.map((r) => r.toJson()).toList(),
       };
 
   factory _AttackRecord.fromJson(Map<String, dynamic> j) => _AttackRecord(
@@ -54,7 +58,13 @@ class _AttackRecord {
         failed:  j['failed'] as int,
         total:   j['total']  as int,
         time:    DateTime.parse(j['time'] as String),
-        results: (j['results'] as List?) ?? [],
+        results: ((j['results'] as List?) ?? [])
+            .map((e) => SmsResult(
+                  service: (e['service'] ?? '') as String,
+                  success: (e['success'] ?? false) as bool,
+                  message: (e['message'] ?? '') as String,
+                ))
+            .toList(),
       );
 }
 
@@ -82,6 +92,11 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
   int  _rounds  = 1;
   bool _loading = false;
 
+  // Live results shown DURING an active attack
+  List<SmsResult> _liveResults  = [];
+  int             _liveSent     = 0;
+  int             _liveFailed   = 0;
+
   List<_AttackRecord> _history = [];
 
   DateTime? _lastFire;
@@ -96,9 +111,7 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
   void initState() {
     super.initState();
     _loadPersistedData();
-    // Listen for premium state changes
     AdService.instance.addListener(_onAdServiceChanged);
-    // Load our own banner ad
     _initBanner();
   }
 
@@ -125,6 +138,7 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
   }
 
   // ── Banner init ────────────────────────────────────────────────────────────
+  // FIX: createBannerAd() now returns BannerAd? — must null-check before .load()
 
   void _initBanner() {
     if (AdService.instance.adsRemoved) return;
@@ -133,7 +147,8 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
     _bannerAd    = null;
     _bannerReady = false;
 
-    _bannerAd = AdService.instance.createBannerAd(
+    // createBannerAd returns null if SDK not ready or user is premium
+    final ad = AdService.instance.createBannerAd(
       onLoaded: () {
         if (!mounted || AdService.instance.adsRemoved) {
           _bannerAd?.dispose();
@@ -148,7 +163,11 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
           if (mounted && !AdService.instance.adsRemoved) _initBanner();
         });
       },
-    )..load();
+    );
+
+    if (ad == null) return; // SDK not ready yet — ad_service will retry
+    _bannerAd = ad;
+    _bannerAd!.load();
   }
 
   // ── Persistence ────────────────────────────────────────────────────────────
@@ -203,7 +222,7 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
     return '${d.inMinutes}:${s.toString().padLeft(2, '0')}';
   }
 
-  // ── Fire ───────────────────────────────────────────────────────────────────
+  // ── Fire (client-side — all requests fire from user's phone) ───────────────
 
   Future<void> _fire() async {
     if (_onCooldown) {
@@ -220,28 +239,37 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
     }
 
     HapticFeedback.heavyImpact();
-    setState(() => _loading = true);
+    setState(() {
+      _loading     = true;
+      _liveResults = [];
+      _liveSent    = 0;
+      _liveFailed  = 0;
+    });
 
     try {
-      final data = await ApiService.smsBomb(
+      // ── Fires directly from the user's phone — no Railway IP geoblocking ──
+      final result = await SmsService.bombAll(
         phone:  phone,
-        userId: widget.userId,
         rounds: _rounds,
+        onServiceDone: (smsResult, sent, failed) {
+          // Called immediately as each service responds — live update!
+          if (!mounted) return;
+          setState(() {
+            _liveResults = [..._liveResults, smsResult];
+            _liveSent    = sent;
+            _liveFailed  = failed;
+          });
+        },
       );
-
-      final sent    = (data['total_sent']   as int?) ?? 0;
-      final failed  = (data['total_failed'] as int?) ?? 0;
-      final results = (data['results']      as List?) ?? [];
-      final total   = sent + failed;
 
       final record = _AttackRecord(
         phone:   phone,
         rounds:  _rounds,
-        sent:    sent,
-        failed:  failed,
-        total:   total,
+        sent:    result.sent,
+        failed:  result.failed,
+        total:   result.sent + result.failed,
         time:    DateTime.now(),
-        results: results,
+        results: result.results,
       );
 
       _lastFire = DateTime.now();
@@ -253,19 +281,40 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
         if (_history.length > _kMaxHistory) {
           _history = _history.take(_kMaxHistory).toList();
         }
+        // Clear live panel — results are now in the history card
+        _liveResults = [];
+        _liveSent    = 0;
+        _liveFailed  = 0;
       });
 
       await _saveHistory();
 
-      // Show interstitial ad after successful attack
+      // Show interstitial after successful attack
       AdService.instance.showInterstitial();
 
-    } on ApiException catch (e) {
-      _snack(e.userMessage, error: true);
+      // ── Log to admin panel (fire-and-forget) ────────────────────────────
+      // SMS fired from user's phone, so Railway never saw it.
+      // This call sends the results to the backend so the admin panel logs it.
+      ApiService.logSmsBomb(
+        userId:      widget.userId,
+        phone:       phone,
+        rounds:      _rounds,
+        totalSent:   result.sent,
+        totalFailed: result.failed,
+        results:     result.results
+            .map((r) => {
+                  'service': r.service,
+                  'success': r.success,
+                  'message': r.message,
+                })
+            .toList(),
+      );
+
+      _snack('Done! ${result.sent} sent, ${result.failed} failed');
     } catch (e) {
       _snack('Request failed: $e', error: true);
     } finally {
-      setState(() => _loading = false);
+      if (mounted) setState(() => _loading = false);
     }
   }
 
@@ -291,7 +340,6 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
   }
 
   // ── Banner Ad ──────────────────────────────────────────────────────────────
-  // Uses LOCAL _bannerAd — not a shared instance — so no "already in tree" crash.
 
   Widget _buildBannerAd() {
     if (AdService.instance.adsRemoved || !_bannerReady || _bannerAd == null) {
@@ -306,6 +354,70 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
         child:  AdWidget(ad: _bannerAd!),
       ),
     );
+  }
+
+  // ── Live progress panel (shown while attack is running) ───────────────────
+
+  Widget _buildLivePanel() {
+    if (!_loading && _liveResults.isEmpty) return const SizedBox.shrink();
+
+    final total = _liveSent + _liveFailed;
+    final pct   = total == 0 ? 0.0 : _liveSent / total;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SizedBox(height: 24),
+
+        // Header row
+        Row(
+          children: [
+            const Icon(Icons.bolt_rounded, color: _kSmsOrange, size: 16),
+            const SizedBox(width: 6),
+            const Text('Live Results',
+                style: TextStyle(
+                    color:      AppColors.textSecondary,
+                    fontSize:   13,
+                    fontWeight: FontWeight.w600)),
+            const Spacer(),
+            if (_loading)
+              const SizedBox(
+                width: 12, height: 12,
+                child: CircularProgressIndicator(
+                    strokeWidth: 1.5, color: _kSmsOrange),
+              ),
+            const SizedBox(width: 8),
+            Text('$_liveSent sent  •  $_liveFailed failed',
+                style: const TextStyle(
+                    color: AppColors.textSecondary, fontSize: 11)),
+          ],
+        ),
+
+        const SizedBox(height: 8),
+
+        // Overall progress bar
+        ClipRRect(
+          borderRadius: BorderRadius.circular(AppRadius.xs),
+          child: LinearProgressIndicator(
+            value:           _loading && total == 0 ? null : pct.clamp(0.0, 1.0),
+            minHeight:       5,
+            backgroundColor: AppColors.error.withOpacity(0.18),
+            valueColor:      const AlwaysStoppedAnimation<Color>(AppColors.accent),
+          ),
+        ),
+
+        const SizedBox(height: 10),
+
+        // Live service rows
+        ...List.generate(_liveResults.length, (i) {
+          final r = _liveResults[i];
+          return _ServiceRow(
+            data:  {'service': r.service, 'success': r.success, 'message': r.message},
+            index: i,
+          );
+        }),
+      ],
+    ).animate().fadeIn(duration: 300.ms);
   }
 
   // ── Build ──────────────────────────────────────────────────────────────────
@@ -604,6 +716,9 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
               ),
             ],
 
+            // ── Live results panel (shows during active attack) ────────
+            _buildLivePanel(),
+
             const SizedBox(height: 32),
 
             // ── Attack History ─────────────────────────────────────────
@@ -851,7 +966,14 @@ class _HistoryCardState extends State<_HistoryCard> {
             Container(height: 1, color: AppColors.border),
             const SizedBox(height: 10),
             ...r.results.asMap().entries.map(
-                  (e) => _ServiceRow(data: e.value, index: e.key),
+                  (e) => _ServiceRow(
+                    data: {
+                      'service': e.value.service,
+                      'success': e.value.success,
+                      'message': e.value.message,
+                    },
+                    index: e.key,
+                  ),
                 ),
           ],
         ],
@@ -940,8 +1062,8 @@ class _ProgressBar extends StatelessWidget {
 }
 
 class _ServiceRow extends StatelessWidget {
-  final Map data;
-  final int index;
+  final Map  data;
+  final int  index;
   const _ServiceRow({required this.data, required this.index});
 
   @override
@@ -972,7 +1094,7 @@ class _ServiceRow extends StatelessWidget {
           Expanded(
             flex: 3,
             child: Text(
-              data['service'] ?? '',
+              (data['service'] ?? '').toString(),
               style: const TextStyle(
                   color:      AppColors.textPrimary,
                   fontSize:   12,
@@ -996,7 +1118,7 @@ class _ServiceRow extends StatelessWidget {
         ],
       ),
     )
-        .animate(delay: Duration(milliseconds: 40 * index))
+        .animate(delay: Duration(milliseconds: 40 * index.clamp(0, 20)))
         .fadeIn(duration: 250.ms)
         .slideX(begin: 0.05, end: 0, duration: 250.ms);
   }

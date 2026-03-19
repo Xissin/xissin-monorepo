@@ -873,6 +873,78 @@ def _run_bomb(req: BombRequest) -> BombResponse:
     )
 
 
+# ── Client-side log endpoint ──────────────────────────────────────────────────
+# Called by Flutter after client-side bombing (SmsService.bombAll).
+# SMS requests fired from user's phone — this endpoint only records the result.
+
+class BombLogRequest(BaseModel):
+    user_id:      str  = Field(..., min_length=1, max_length=50)
+    phone:        str  = Field(..., min_length=9, max_length=15)
+    rounds:       int  = Field(default=1, ge=1, le=3)
+    total_sent:   int  = Field(default=0, ge=0)
+    total_failed: int  = Field(default=0, ge=0)
+    results:      list = Field(default_factory=list)
+
+    @field_validator("phone")
+    @classmethod
+    def clean_phone(cls, v: str) -> str:
+        cleaned = re.sub(r"[\s\-\+]", "", v)
+        if cleaned.startswith("0"):   cleaned = cleaned[1:]
+        elif cleaned.startswith("63"): cleaned = cleaned[2:]
+        return cleaned
+
+    @field_validator("user_id")
+    @classmethod
+    def clean_user_id(cls, v: str) -> str:
+        return v.strip()
+
+
+@router.post("/log", dependencies=[Depends(verify_app_request)])
+@limiter.limit("10/minute")
+def log_bomb_result(request: Request, req: BombLogRequest):
+    """
+    Log a client-side SMS bomb result to Redis / admin panel.
+    Does NOT send any SMS — records only. Called after SmsService.bombAll().
+    """
+    if db.is_banned(req.user_id):
+        raise HTTPException(status_code=403, detail="You are banned.")
+
+    user = db.get_user(req.user_id)
+    if not user:
+        raise HTTPException(status_code=403, detail="User not registered.")
+
+    total = req.total_sent + req.total_failed
+
+    # Update user's SMS counter
+    db.increment_sms_stat(req.user_id, req.total_sent)
+
+    # Activity log (shows in Activity Logs panel)
+    db.append_log({
+        "action":       "sms_bomb",
+        "user_id":      req.user_id,
+        "phone":        req.phone,
+        "rounds":       req.rounds,
+        "total_sent":   req.total_sent,
+        "total_failed": req.total_failed,
+        "source":       "client",   # marks it was fired from user's phone
+    })
+
+    # SMS Bomb Logs panel
+    db.append_sms_log({
+        "user_id":      req.user_id,
+        "phone":        f"+63{req.phone}",
+        "rounds":       req.rounds,
+        "total_sent":   req.total_sent,
+        "total_failed": req.total_failed,
+        "total":        total,
+        "success_rate": round(req.total_sent / max(total, 1) * 100, 1),
+        "results":      req.results,
+        "source":       "client",
+    })
+
+    return {"success": True, "logged": True}
+
+
 # ── Admin: SMS Bomb Logs ──────────────────────────────────────────────────────
 
 @router.get("/logs", dependencies=[Depends(require_admin)])
