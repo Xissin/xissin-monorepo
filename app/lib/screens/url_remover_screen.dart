@@ -1,11 +1,12 @@
 // ============================================================
 //  app/lib/screens/url_remover_screen.dart
-//  🔗 URL Remover — 100% local, runs on device, no backend
+//  🔗 URL Remover — 100% local, no backend, offline-safe ads
 // ============================================================
 import 'dart:io';
 import 'dart:isolate';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
 import 'package:path_provider/path_provider.dart';
@@ -32,6 +33,9 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
   double _progress      = 0.0;
   String? _errorMsg;
   File?  _outputFile;
+
+  // ── Connectivity ─────────────────────────────────────────────────────────────
+  bool _isOnline = true;
 
   // ── Local Banner Ad ──────────────────────────────────────────────────────────
   BannerAd? _bannerAd;
@@ -60,7 +64,7 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
     return false;
   }
 
-  // ── Core logic (exact port of your Python bot) ───────────────────────────────
+  // ── Core logic (exact port of Python bot) ────────────────────────────────────
   static List<String> _processLines(List<String> rawLines) {
     final out = <String>[];
     for (final line in rawLines) {
@@ -95,14 +99,39 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
   @override
   void initState() {
     super.initState();
+
     _pulseCtrl = AnimationController(
       vsync: this, duration: const Duration(milliseconds: 900),
     )..repeat(reverse: true);
     _pulseAnim = Tween<double>(begin: 0.6, end: 1.0).animate(
       CurvedAnimation(parent: _pulseCtrl, curve: Curves.easeInOut),
     );
-    _initBanner();
+
+    // Check connectivity once on load
+    _checkConnectivity();
+
+    // Listen for connectivity changes
+    Connectivity().onConnectivityChanged.listen((results) {
+      if (!mounted) return;
+      final online = !results.every((r) => r == ConnectivityResult.none);
+      if (online != _isOnline) {
+        setState(() => _isOnline = online);
+        if (online && !_bannerReady && !AdService.instance.adsRemoved) {
+          _initBanner();
+        }
+      }
+    });
+
     AdService.instance.addListener(_onAdChanged);
+    _initBanner();
+  }
+
+  Future<void> _checkConnectivity() async {
+    final results = await Connectivity().checkConnectivity();
+    if (!mounted) return;
+    setState(() {
+      _isOnline = !results.every((r) => r == ConnectivityResult.none);
+    });
   }
 
   @override
@@ -113,6 +142,8 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
     super.dispose();
   }
 
+  // ── Banner Ad ─────────────────────────────────────────────────────────────────
+
   void _onAdChanged() {
     if (!mounted) return;
     if (AdService.instance.adsRemoved && _bannerAd != null) {
@@ -122,10 +153,12 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
   }
 
   void _initBanner() {
-    if (AdService.instance.adsRemoved) return;
+    // Skip if offline or premium
+    if (!_isOnline || AdService.instance.adsRemoved) return;
     _bannerAd?.dispose();
     _bannerAd    = null;
     _bannerReady = false;
+
     final ad = AdService.instance.createBannerAd(
       onLoaded: () {
         if (!mounted || AdService.instance.adsRemoved) {
@@ -135,8 +168,11 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
       },
       onFailed: () {
         if (mounted) setState(() { _bannerAd = null; _bannerReady = false; });
+        // Retry after 30s only if back online
         Future.delayed(const Duration(seconds: 30), () {
-          if (mounted && !AdService.instance.adsRemoved) _initBanner();
+          if (mounted && _isOnline && !AdService.instance.adsRemoved) {
+            _initBanner();
+          }
         });
       },
     );
@@ -146,7 +182,10 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
   }
 
   Widget _buildBannerAd() {
-    if (AdService.instance.adsRemoved || !_bannerReady || _bannerAd == null) {
+    if (!_isOnline ||
+        AdService.instance.adsRemoved ||
+        !_bannerReady ||
+        _bannerAd == null) {
       return const SizedBox.shrink();
     }
     return SafeArea(
@@ -172,7 +211,10 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
       if (result == null || result.files.isEmpty) return;
       final file  = result.files.first;
       final bytes = file.bytes;
-      if (bytes == null) { setState(() => _errorMsg = 'Could not read file.'); return; }
+      if (bytes == null) {
+        setState(() => _errorMsg = 'Could not read file.');
+        return;
+      }
       setState(() {
         _pickedFileName = file.name;
         _rawContent     = String.fromCharCodes(bytes);
@@ -189,10 +231,20 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
 
   Future<void> _runProcess() async {
     if (_rawContent == null) return;
-    AdService.instance.showInterstitial();
+
+    // Show interstitial only if online and not premium
+    if (_isOnline && !AdService.instance.adsRemoved) {
+      AdService.instance.showInterstitial();
+    }
+
     final lines = _rawContent!.split('\n');
     _originalCount = lines.where((l) => l.trim().isNotEmpty).length;
-    setState(() { _phase = _Phase.processing; _progress = 0.0; _errorMsg = null; });
+
+    setState(() {
+      _phase    = _Phase.processing;
+      _progress = 0.0;
+      _errorMsg = null;
+    });
 
     final ticker = Stream.periodic(const Duration(milliseconds: 120)).listen((_) {
       if (_phase == _Phase.processing && _progress < 0.92) {
@@ -204,10 +256,16 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
       final result  = await _runInIsolate(lines);
       ticker.cancel();
       final dir     = await getTemporaryDirectory();
-      final outName = '${(_pickedFileName ?? 'output').replaceAll(RegExp(r'\.[^.]+$'), '')}_url_removed.txt';
-      final outFile = File('${dir.path}/$outName');
+      final baseName = (_pickedFileName ?? 'output')
+          .replaceAll(RegExp(r'\.[^.]+$'), '');
+      final outFile = File('${dir.path}/${baseName}_url_removed.txt');
       await outFile.writeAsString(result.join('\n'));
-      setState(() { _result = result; _phase = _Phase.done; _progress = 1.0; _outputFile = outFile; });
+      setState(() {
+        _result     = result;
+        _phase      = _Phase.done;
+        _progress   = 1.0;
+        _outputFile = outFile;
+      });
     } catch (e) {
       ticker.cancel();
       setState(() { _phase = _Phase.ready; _errorMsg = 'Processing failed: $e'; });
@@ -217,13 +275,20 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
   Future<void> _shareFile() async {
     if (_outputFile == null) return;
     HapticFeedback.mediumImpact();
-    await Share.shareXFiles([XFile(_outputFile!.path)],
-        subject: 'URL Removed — ${_outputFile!.path.split('/').last}');
+    await Share.shareXFiles(
+      [XFile(_outputFile!.path)],
+      subject: 'URL Removed — ${_outputFile!.path.split('/').last}',
+    );
   }
 
   void _reset() => setState(() {
-    _phase = _Phase.idle; _pickedFileName = null; _rawContent = null;
-    _result = []; _outputFile = null; _progress = 0; _errorMsg = null;
+    _phase          = _Phase.idle;
+    _pickedFileName = null;
+    _rawContent     = null;
+    _result         = [];
+    _outputFile     = null;
+    _progress       = 0;
+    _errorMsg       = null;
   });
 
   // ── Build ─────────────────────────────────────────────────────────────────────
@@ -254,25 +319,53 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
           ),
           const SizedBox(width: 10),
           Text('URL Remover',
-              style: TextStyle(color: c.textPrimary,
-                  fontSize: 17, fontWeight: FontWeight.w700, letterSpacing: 0.4)),
+              style: TextStyle(
+                  color: c.textPrimary, fontSize: 17,
+                  fontWeight: FontWeight.w700, letterSpacing: 0.4)),
         ]),
         centerTitle: true,
+        // Offline pill
+        actions: [
+          if (!_isOnline)
+            Container(
+              margin: const EdgeInsets.only(right: 12),
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(
+                color: const Color(0xFFFF6B6B).withOpacity(0.15),
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(
+                    color: const Color(0xFFFF6B6B).withOpacity(0.4)),
+              ),
+              child: const Row(mainAxisSize: MainAxisSize.min, children: [
+                Icon(Icons.wifi_off_rounded,
+                    color: Color(0xFFFF6B6B), size: 11),
+                SizedBox(width: 4),
+                Text('Offline', style: TextStyle(
+                    color: Color(0xFFFF6B6B), fontSize: 10,
+                    fontWeight: FontWeight.w600)),
+              ]),
+            ),
+        ],
       ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-          _buildInfoCard(c),
-          const SizedBox(height: 16),
-          if (_errorMsg != null) _buildErrorCard(),
-          _buildMainCard(c),
-          const SizedBox(height: 16),
-          if (_phase == _Phase.done) _buildResultCard(c),
-          const SizedBox(height: 40),
-        ]),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            _buildInfoCard(c),
+            const SizedBox(height: 16),
+            if (_errorMsg != null) _buildErrorCard(),
+            _buildMainCard(c),
+            const SizedBox(height: 16),
+            if (_phase == _Phase.done) _buildResultCard(c),
+            const SizedBox(height: 40),
+          ],
+        ),
       ),
     );
   }
+
+  // ── Cards ─────────────────────────────────────────────────────────────────────
 
   Widget _buildInfoCard(XissinColors c) => Container(
     padding: const EdgeInsets.all(16),
@@ -283,19 +376,22 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
     ),
     child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       const Row(children: [
-        Icon(Icons.info_outline_rounded, color: Color(0xFF7B8CDE), size: 16),
+        Icon(Icons.info_outline_rounded,
+            color: Color(0xFF7B8CDE), size: 16),
         SizedBox(width: 8),
-        Text('What does this do?', style: TextStyle(
-            color: Color(0xFF7B8CDE), fontWeight: FontWeight.w700, fontSize: 13)),
+        Text('What does this do?',
+            style: TextStyle(color: Color(0xFF7B8CDE),
+                fontWeight: FontWeight.w700, fontSize: 13)),
       ]),
       const SizedBox(height: 8),
       Text(
         'Strips URLs, domains & protocol fragments from combo lists.\n'
         'Keeps only valid username:password pairs (2+ parts).\n\n'
         '✦  Runs entirely on your device — no internet needed\n'
-        '✦  Supports .txt, .csv, .list, .combo\n'
+        '✦  Supports .txt · .csv · .list · .combo\n'
         '✦  Handles  |  and  \\t  separators automatically',
-        style: TextStyle(color: c.textSecondary, fontSize: 12, height: 1.6),
+        style: TextStyle(
+            color: c.textSecondary, fontSize: 12, height: 1.6),
       ),
     ]),
   );
@@ -309,7 +405,8 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
       border: Border.all(color: const Color(0xFFFF6B6B).withOpacity(0.3)),
     ),
     child: Row(children: [
-      const Icon(Icons.error_outline_rounded, color: Color(0xFFFF6B6B), size: 16),
+      const Icon(Icons.error_outline_rounded,
+          color: Color(0xFFFF6B6B), size: 16),
       const SizedBox(width: 8),
       Expanded(child: Text(_errorMsg!,
           style: const TextStyle(color: Color(0xFFFF6B6B), fontSize: 12))),
@@ -322,22 +419,28 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
       color: c.surface,
       borderRadius: BorderRadius.circular(20),
       border: Border.all(color: c.border),
-      boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.1),
+      boxShadow: [BoxShadow(
+          color: Colors.black.withOpacity(0.1),
           blurRadius: 20, offset: const Offset(0, 8))],
     ),
     child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-      if (_phase == _Phase.idle || _phase == _Phase.ready) _buildPickButton(c),
+      if (_phase == _Phase.idle || _phase == _Phase.ready)
+        _buildPickButton(c),
       if (_pickedFileName != null) ...[
-        const SizedBox(height: 14), _buildFileChip(c),
+        const SizedBox(height: 14),
+        _buildFileChip(c),
       ],
       if (_phase == _Phase.processing) ...[
-        const SizedBox(height: 20), _buildProgressSection(c),
+        const SizedBox(height: 20),
+        _buildProgressSection(c),
       ],
       if (_phase == _Phase.ready) ...[
-        const SizedBox(height: 16), _buildRunButton(),
+        const SizedBox(height: 16),
+        _buildRunButton(),
       ],
       if (_phase == _Phase.done) ...[
-        const SizedBox(height: 14), _buildActionRow(c),
+        const SizedBox(height: 14),
+        _buildActionRow(c),
       ],
     ]),
   );
@@ -356,10 +459,11 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
         Icon(Icons.upload_file_rounded,
             color: const Color(0xFF7B8CDE).withOpacity(0.8), size: 36),
         const SizedBox(height: 10),
-        const Text('Tap to select file', style: TextStyle(
-            color: Color(0xFF7B8CDE), fontWeight: FontWeight.w600, fontSize: 14)),
+        const Text('Tap to select file',
+            style: TextStyle(color: Color(0xFF7B8CDE),
+                fontWeight: FontWeight.w600, fontSize: 14)),
         const SizedBox(height: 4),
-        Text('.txt  •  .csv  •  .list  •  .combo',
+        Text('.txt  ·  .csv  ·  .list  ·  .combo',
             style: TextStyle(color: c.textHint, fontSize: 11)),
       ]),
     ),
@@ -373,12 +477,16 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
       const Icon(Icons.insert_drive_file_rounded,
           color: Color(0xFF7B8CDE), size: 16),
       const SizedBox(width: 8),
-      Expanded(child: Text(_pickedFileName ?? '',
-          style: TextStyle(color: c.textSecondary, fontSize: 12),
-          overflow: TextOverflow.ellipsis)),
+      Expanded(
+        child: Text(_pickedFileName ?? '',
+            style: TextStyle(color: c.textSecondary, fontSize: 12),
+            overflow: TextOverflow.ellipsis),
+      ),
       if (_phase == _Phase.ready)
-        GestureDetector(onTap: _reset,
-            child: Icon(Icons.close_rounded, color: c.textHint, size: 16)),
+        GestureDetector(
+          onTap: _reset,
+          child: Icon(Icons.close_rounded, color: c.textHint, size: 16),
+        ),
     ]),
   );
 
@@ -391,11 +499,12 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
           builder: (_, __) => Opacity(
             opacity: _pulseAnim.value,
             child: const Row(children: [
-              Icon(Icons.link_off_rounded, color: Color(0xFF7B8CDE), size: 14),
+              Icon(Icons.link_off_rounded,
+                  color: Color(0xFF7B8CDE), size: 14),
               SizedBox(width: 6),
-              Text('Removing URLs…', style: TextStyle(
-                  color: Color(0xFF7B8CDE), fontSize: 13,
-                  fontWeight: FontWeight.w600)),
+              Text('Removing URLs…',
+                  style: TextStyle(color: Color(0xFF7B8CDE),
+                      fontSize: 13, fontWeight: FontWeight.w600)),
             ]),
           ),
         ),
@@ -408,7 +517,8 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
         child: LinearProgressIndicator(
           value: _progress, minHeight: 6,
           backgroundColor: c.background,
-          valueColor: const AlwaysStoppedAnimation(Color(0xFF7B8CDE)),
+          valueColor:
+              const AlwaysStoppedAnimation(Color(0xFF7B8CDE)),
         ),
       ),
       const SizedBox(height: 10),
@@ -425,15 +535,21 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
         gradient: const LinearGradient(
             colors: [Color(0xFF7B8CDE), Color(0xFF5B6CBE)]),
         borderRadius: BorderRadius.circular(14),
-        boxShadow: [BoxShadow(color: const Color(0xFF7B8CDE).withOpacity(0.4),
+        boxShadow: [BoxShadow(
+            color: const Color(0xFF7B8CDE).withOpacity(0.4),
             blurRadius: 12, offset: const Offset(0, 4))],
       ),
-      child: const Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-        Icon(Icons.play_arrow_rounded, color: Colors.white, size: 20),
-        SizedBox(width: 8),
-        Text('Remove URLs', style: TextStyle(color: Colors.white,
-            fontSize: 15, fontWeight: FontWeight.w700, letterSpacing: 0.4)),
-      ]),
+      child: const Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.play_arrow_rounded, color: Colors.white, size: 20),
+          SizedBox(width: 8),
+          Text('Remove URLs',
+              style: TextStyle(color: Colors.white,
+                  fontSize: 15, fontWeight: FontWeight.w700,
+                  letterSpacing: 0.4)),
+        ],
+      ),
     ),
   );
 
@@ -444,7 +560,8 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
         child: Container(
           padding: const EdgeInsets.symmetric(vertical: 13),
           decoration: BoxDecoration(
-              color: c.background, borderRadius: BorderRadius.circular(12)),
+              color: c.background,
+              borderRadius: BorderRadius.circular(12)),
           child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
             Icon(Icons.refresh_rounded, color: c.textSecondary, size: 16),
             const SizedBox(width: 6),
@@ -469,12 +586,16 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
                 color: const Color(0xFF56CCF2).withOpacity(0.3),
                 blurRadius: 10, offset: const Offset(0, 3))],
           ),
-          child: const Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-            Icon(Icons.share_rounded, color: Colors.white, size: 16),
-            SizedBox(width: 6),
-            Text('Share Result', style: TextStyle(
-                color: Colors.white, fontSize: 13, fontWeight: FontWeight.w700)),
-          ]),
+          child: const Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(Icons.share_rounded, color: Colors.white, size: 16),
+              SizedBox(width: 6),
+              Text('Share Result',
+                  style: TextStyle(color: Colors.white,
+                      fontSize: 13, fontWeight: FontWeight.w700)),
+            ],
+          ),
         ),
       ),
     ),
@@ -484,28 +605,32 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
     final kept    = _result.length;
     final removed = _originalCount - kept;
     final pct     = _originalCount > 0
-        ? (removed / _originalCount * 100).toStringAsFixed(1) : '0.0';
-
+        ? (removed / _originalCount * 100).toStringAsFixed(1)
+        : '0.0';
     return Container(
       padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
         color: const Color(0xFF2ECC71).withOpacity(0.06),
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: const Color(0xFF2ECC71).withOpacity(0.3)),
+        border: Border.all(
+            color: const Color(0xFF2ECC71).withOpacity(0.3)),
       ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         const Row(children: [
-          Icon(Icons.check_circle_rounded, color: Color(0xFF2ECC71), size: 18),
+          Icon(Icons.check_circle_rounded,
+              color: Color(0xFF2ECC71), size: 18),
           SizedBox(width: 8),
-          Text('Done!', style: TextStyle(color: Color(0xFF2ECC71),
-              fontWeight: FontWeight.w800, fontSize: 15)),
+          Text('Done!',
+              style: TextStyle(color: Color(0xFF2ECC71),
+                  fontWeight: FontWeight.w800, fontSize: 15)),
         ]),
         const SizedBox(height: 14),
         _statRow('Original lines',  '$_originalCount', c.textSecondary),
         const SizedBox(height: 8),
-        _statRow('Clean lines kept', '$kept',           const Color(0xFF2ECC71)),
+        _statRow('Clean lines kept', '$kept', const Color(0xFF2ECC71)),
         const SizedBox(height: 8),
-        _statRow('URLs removed',    '$removed ($pct%)', const Color(0xFFFF6B6B)),
+        _statRow('URLs removed', '$removed ($pct%)',
+            const Color(0xFFFF6B6B)),
         if (_result.isNotEmpty) ...[
           const SizedBox(height: 14),
           Divider(color: c.border),
@@ -515,8 +640,10 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
           const SizedBox(height: 6),
           ..._result.take(5).map((line) => Padding(
             padding: const EdgeInsets.only(bottom: 4),
-            child: Text(line, overflow: TextOverflow.ellipsis,
-                style: TextStyle(color: c.textSecondary, fontSize: 11)),
+            child: Text(line,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                    color: c.textSecondary, fontSize: 11)),
           )),
         ],
       ]),
@@ -527,8 +654,9 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
       Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
         Text(label,
             style: const TextStyle(color: Colors.white54, fontSize: 13)),
-        Text(value, style: TextStyle(color: valueColor,
-            fontSize: 13, fontWeight: FontWeight.w700)),
+        Text(value,
+            style: TextStyle(color: valueColor,
+                fontSize: 13, fontWeight: FontWeight.w700)),
       ]);
 }
 

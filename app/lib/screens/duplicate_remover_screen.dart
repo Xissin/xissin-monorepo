@@ -1,11 +1,12 @@
 // ============================================================
 //  app/lib/screens/duplicate_remover_screen.dart
-//  🗂️ Duplicate Remover — 100% local, runs on device, no backend
+//  🗂️ Duplicate Remover — 100% local, no backend, offline-safe ads
 // ============================================================
 import 'dart:io';
 import 'dart:isolate';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
 import 'package:path_provider/path_provider.dart';
@@ -34,6 +35,9 @@ class _DuplicateRemoverScreenState extends State<DuplicateRemoverScreen>
   String? _errorMsg;
   File?  _outputFile;
 
+  // ── Connectivity ─────────────────────────────────────────────────────────────
+  bool _isOnline = true;
+
   // ── Local Banner Ad ──────────────────────────────────────────────────────────
   BannerAd? _bannerAd;
   bool      _bannerReady = false;
@@ -42,7 +46,7 @@ class _DuplicateRemoverScreenState extends State<DuplicateRemoverScreen>
   late AnimationController _pulseCtrl;
   late Animation<double>   _pulseAnim;
 
-  // ── Core dedup (exact port of your Python _dedup_all) ────────────────────────
+  // ── Core dedup (exact port of Python _dedup_all) ─────────────────────────────
   static List<String> _deduplicateLines(List<String> rawLines) {
     final out  = <String>[];
     final seen = <String>{};
@@ -75,14 +79,37 @@ class _DuplicateRemoverScreenState extends State<DuplicateRemoverScreen>
   @override
   void initState() {
     super.initState();
+
     _pulseCtrl = AnimationController(
       vsync: this, duration: const Duration(milliseconds: 900),
     )..repeat(reverse: true);
     _pulseAnim = Tween<double>(begin: 0.6, end: 1.0).animate(
       CurvedAnimation(parent: _pulseCtrl, curve: Curves.easeInOut),
     );
-    _initBanner();
+
+    _checkConnectivity();
+
+    Connectivity().onConnectivityChanged.listen((results) {
+      if (!mounted) return;
+      final online = !results.every((r) => r == ConnectivityResult.none);
+      if (online != _isOnline) {
+        setState(() => _isOnline = online);
+        if (online && !_bannerReady && !AdService.instance.adsRemoved) {
+          _initBanner();
+        }
+      }
+    });
+
     AdService.instance.addListener(_onAdChanged);
+    _initBanner();
+  }
+
+  Future<void> _checkConnectivity() async {
+    final results = await Connectivity().checkConnectivity();
+    if (!mounted) return;
+    setState(() {
+      _isOnline = !results.every((r) => r == ConnectivityResult.none);
+    });
   }
 
   @override
@@ -93,6 +120,8 @@ class _DuplicateRemoverScreenState extends State<DuplicateRemoverScreen>
     super.dispose();
   }
 
+  // ── Banner Ad ─────────────────────────────────────────────────────────────────
+
   void _onAdChanged() {
     if (!mounted) return;
     if (AdService.instance.adsRemoved && _bannerAd != null) {
@@ -102,10 +131,11 @@ class _DuplicateRemoverScreenState extends State<DuplicateRemoverScreen>
   }
 
   void _initBanner() {
-    if (AdService.instance.adsRemoved) return;
+    if (!_isOnline || AdService.instance.adsRemoved) return;
     _bannerAd?.dispose();
     _bannerAd    = null;
     _bannerReady = false;
+
     final ad = AdService.instance.createBannerAd(
       onLoaded: () {
         if (!mounted || AdService.instance.adsRemoved) {
@@ -116,7 +146,9 @@ class _DuplicateRemoverScreenState extends State<DuplicateRemoverScreen>
       onFailed: () {
         if (mounted) setState(() { _bannerAd = null; _bannerReady = false; });
         Future.delayed(const Duration(seconds: 30), () {
-          if (mounted && !AdService.instance.adsRemoved) _initBanner();
+          if (mounted && _isOnline && !AdService.instance.adsRemoved) {
+            _initBanner();
+          }
         });
       },
     );
@@ -126,7 +158,10 @@ class _DuplicateRemoverScreenState extends State<DuplicateRemoverScreen>
   }
 
   Widget _buildBannerAd() {
-    if (AdService.instance.adsRemoved || !_bannerReady || _bannerAd == null) {
+    if (!_isOnline ||
+        AdService.instance.adsRemoved ||
+        !_bannerReady ||
+        _bannerAd == null) {
       return const SizedBox.shrink();
     }
     return SafeArea(
@@ -152,7 +187,10 @@ class _DuplicateRemoverScreenState extends State<DuplicateRemoverScreen>
       if (result == null || result.files.isEmpty) return;
       final file  = result.files.first;
       final bytes = file.bytes;
-      if (bytes == null) { setState(() => _errorMsg = 'Could not read file.'); return; }
+      if (bytes == null) {
+        setState(() => _errorMsg = 'Could not read file.');
+        return;
+      }
       setState(() {
         _pickedFileName = file.name;
         _rawContent     = String.fromCharCodes(bytes);
@@ -169,10 +207,20 @@ class _DuplicateRemoverScreenState extends State<DuplicateRemoverScreen>
 
   Future<void> _runProcess() async {
     if (_rawContent == null) return;
-    AdService.instance.showInterstitial();
+
+    // Show interstitial only if online and not premium
+    if (_isOnline && !AdService.instance.adsRemoved) {
+      AdService.instance.showInterstitial();
+    }
+
     final lines = _rawContent!.split('\n');
     _originalCount = lines.where((l) => l.trim().isNotEmpty).length;
-    setState(() { _phase = _Phase.processing; _progress = 0.0; _errorMsg = null; });
+
+    setState(() {
+      _phase    = _Phase.processing;
+      _progress = 0.0;
+      _errorMsg = null;
+    });
 
     final ticker = Stream.periodic(const Duration(milliseconds: 150)).listen((_) {
       if (_phase == _Phase.processing && _progress < 0.90) {
@@ -184,10 +232,16 @@ class _DuplicateRemoverScreenState extends State<DuplicateRemoverScreen>
       final result  = await _runInIsolate(lines);
       ticker.cancel();
       final dir     = await getTemporaryDirectory();
-      final outName = '${(_pickedFileName ?? 'output').replaceAll(RegExp(r'\.[^.]+$'), '')}_deduped.txt';
-      final outFile = File('${dir.path}/$outName');
+      final baseName = (_pickedFileName ?? 'output')
+          .replaceAll(RegExp(r'\.[^.]+$'), '');
+      final outFile = File('${dir.path}/${baseName}_deduped.txt');
       await outFile.writeAsString(result.join('\n'));
-      setState(() { _result = result; _phase = _Phase.done; _progress = 1.0; _outputFile = outFile; });
+      setState(() {
+        _result     = result;
+        _phase      = _Phase.done;
+        _progress   = 1.0;
+        _outputFile = outFile;
+      });
     } catch (e) {
       ticker.cancel();
       setState(() { _phase = _Phase.ready; _errorMsg = 'Processing failed: $e'; });
@@ -197,13 +251,20 @@ class _DuplicateRemoverScreenState extends State<DuplicateRemoverScreen>
   Future<void> _shareFile() async {
     if (_outputFile == null) return;
     HapticFeedback.mediumImpact();
-    await Share.shareXFiles([XFile(_outputFile!.path)],
-        subject: 'Deduped — ${_outputFile!.path.split('/').last}');
+    await Share.shareXFiles(
+      [XFile(_outputFile!.path)],
+      subject: 'Deduped — ${_outputFile!.path.split('/').last}',
+    );
   }
 
   void _reset() => setState(() {
-    _phase = _Phase.idle; _pickedFileName = null; _rawContent = null;
-    _result = []; _outputFile = null; _progress = 0; _errorMsg = null;
+    _phase          = _Phase.idle;
+    _pickedFileName = null;
+    _rawContent     = null;
+    _result         = [];
+    _outputFile     = null;
+    _progress       = 0;
+    _errorMsg       = null;
   });
 
   // ── Build ─────────────────────────────────────────────────────────────────────
@@ -234,39 +295,76 @@ class _DuplicateRemoverScreenState extends State<DuplicateRemoverScreen>
           ),
           const SizedBox(width: 10),
           Text('Dup Remover',
-              style: TextStyle(color: c.textPrimary,
-                  fontSize: 17, fontWeight: FontWeight.w700, letterSpacing: 0.4)),
+              style: TextStyle(
+                  color: c.textPrimary, fontSize: 17,
+                  fontWeight: FontWeight.w700, letterSpacing: 0.4)),
         ]),
         centerTitle: true,
+        actions: [
+          if (!_isOnline)
+            Container(
+              margin: const EdgeInsets.only(right: 12),
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(
+                color: const Color(0xFFFF6B6B).withOpacity(0.15),
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(
+                    color: const Color(0xFFFF6B6B).withOpacity(0.4)),
+              ),
+              child: const Row(mainAxisSize: MainAxisSize.min, children: [
+                Icon(Icons.wifi_off_rounded,
+                    color: Color(0xFFFF6B6B), size: 11),
+                SizedBox(width: 4),
+                Text('Offline',
+                    style: TextStyle(
+                        color: Color(0xFFFF6B6B),
+                        fontSize: 10,
+                        fontWeight: FontWeight.w600)),
+              ]),
+            ),
+        ],
       ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-          _buildInfoCard(c),
-          const SizedBox(height: 16),
-          if (_errorMsg != null) _buildErrorCard(),
-          _buildMainCard(c),
-          const SizedBox(height: 16),
-          if (_phase == _Phase.done) _buildResultCard(c),
-          const SizedBox(height: 40),
-        ]),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            _buildInfoCard(c),
+            const SizedBox(height: 16),
+            if (_errorMsg != null) _buildErrorCard(),
+            _buildMainCard(c),
+            const SizedBox(height: 16),
+            if (_phase == _Phase.done) _buildResultCard(c),
+            const SizedBox(height: 40),
+          ],
+        ),
       ),
     );
   }
+
+  // ── Cards ─────────────────────────────────────────────────────────────────────
 
   Widget _buildInfoCard(XissinColors c) => Container(
     padding: const EdgeInsets.all(16),
     decoration: BoxDecoration(
       color: const Color(0xFFFFA94D).withOpacity(0.08),
       borderRadius: BorderRadius.circular(16),
-      border: Border.all(color: const Color(0xFFFFA94D).withOpacity(0.2)),
+      border: Border.all(
+          color: const Color(0xFFFFA94D).withOpacity(0.2)),
     ),
-    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+    child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
       const Row(children: [
-        Icon(Icons.info_outline_rounded, color: Color(0xFFFFA94D), size: 16),
+        Icon(Icons.info_outline_rounded,
+            color: Color(0xFFFFA94D), size: 16),
         SizedBox(width: 8),
-        Text('What does this do?', style: TextStyle(
-            color: Color(0xFFFFA94D), fontWeight: FontWeight.w700, fontSize: 13)),
+        Text('What does this do?',
+            style: TextStyle(
+                color: Color(0xFFFFA94D),
+                fontWeight: FontWeight.w700,
+                fontSize: 13)),
       ]),
       const SizedBox(height: 8),
       Text(
@@ -276,7 +374,8 @@ class _DuplicateRemoverScreenState extends State<DuplicateRemoverScreen>
         '✦  Handles both  :  and  |  separators\n'
         '✦  Runs entirely on your device — no internet needed\n'
         '✦  💡 Tip: Run URL Remover first for best results',
-        style: TextStyle(color: c.textSecondary, fontSize: 12, height: 1.6),
+        style: TextStyle(
+            color: c.textSecondary, fontSize: 12, height: 1.6),
       ),
     ]),
   );
@@ -287,13 +386,17 @@ class _DuplicateRemoverScreenState extends State<DuplicateRemoverScreen>
     decoration: BoxDecoration(
       color: const Color(0xFFFF6B6B).withOpacity(0.1),
       borderRadius: BorderRadius.circular(14),
-      border: Border.all(color: const Color(0xFFFF6B6B).withOpacity(0.3)),
+      border: Border.all(
+          color: const Color(0xFFFF6B6B).withOpacity(0.3)),
     ),
     child: Row(children: [
-      const Icon(Icons.error_outline_rounded, color: Color(0xFFFF6B6B), size: 16),
+      const Icon(Icons.error_outline_rounded,
+          color: Color(0xFFFF6B6B), size: 16),
       const SizedBox(width: 8),
-      Expanded(child: Text(_errorMsg!,
-          style: const TextStyle(color: Color(0xFFFF6B6B), fontSize: 12))),
+      Expanded(
+          child: Text(_errorMsg!,
+              style: const TextStyle(
+                  color: Color(0xFFFF6B6B), fontSize: 12))),
     ]),
   );
 
@@ -303,22 +406,33 @@ class _DuplicateRemoverScreenState extends State<DuplicateRemoverScreen>
       color: c.surface,
       borderRadius: BorderRadius.circular(20),
       border: Border.all(color: c.border),
-      boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.1),
-          blurRadius: 20, offset: const Offset(0, 8))],
+      boxShadow: [
+        BoxShadow(
+            color: Colors.black.withOpacity(0.1),
+            blurRadius: 20,
+            offset: const Offset(0, 8))
+      ],
     ),
-    child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-      if (_phase == _Phase.idle || _phase == _Phase.ready) _buildPickButton(c),
+    child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+      if (_phase == _Phase.idle || _phase == _Phase.ready)
+        _buildPickButton(c),
       if (_pickedFileName != null) ...[
-        const SizedBox(height: 14), _buildFileChip(c),
+        const SizedBox(height: 14),
+        _buildFileChip(c),
       ],
       if (_phase == _Phase.processing) ...[
-        const SizedBox(height: 20), _buildProgressSection(c),
+        const SizedBox(height: 20),
+        _buildProgressSection(c),
       ],
       if (_phase == _Phase.ready) ...[
-        const SizedBox(height: 16), _buildRunButton(),
+        const SizedBox(height: 16),
+        _buildRunButton(),
       ],
       if (_phase == _Phase.done) ...[
-        const SizedBox(height: 14), _buildActionRow(c),
+        const SizedBox(height: 14),
+        _buildActionRow(c),
       ],
     ]),
   );
@@ -331,42 +445,57 @@ class _DuplicateRemoverScreenState extends State<DuplicateRemoverScreen>
         color: const Color(0xFFFFA94D).withOpacity(0.06),
         borderRadius: BorderRadius.circular(14),
         border: Border.all(
-            color: const Color(0xFFFFA94D).withOpacity(0.3), width: 1.5),
+            color: const Color(0xFFFFA94D).withOpacity(0.3),
+            width: 1.5),
       ),
       child: Column(children: [
         Icon(Icons.upload_file_rounded,
-            color: const Color(0xFFFFA94D).withOpacity(0.8), size: 36),
+            color: const Color(0xFFFFA94D).withOpacity(0.8),
+            size: 36),
         const SizedBox(height: 10),
-        const Text('Tap to select file', style: TextStyle(
-            color: Color(0xFFFFA94D), fontWeight: FontWeight.w600, fontSize: 14)),
+        const Text('Tap to select file',
+            style: TextStyle(
+                color: Color(0xFFFFA94D),
+                fontWeight: FontWeight.w600,
+                fontSize: 14)),
         const SizedBox(height: 4),
-        Text('.txt  •  .csv  •  .list  •  .combo',
+        Text('.txt  ·  .csv  ·  .list  ·  .combo',
             style: TextStyle(color: c.textHint, fontSize: 11)),
       ]),
     ),
   );
 
   Widget _buildFileChip(XissinColors c) => Container(
-    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+    padding:
+        const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
     decoration: BoxDecoration(
-        color: c.background, borderRadius: BorderRadius.circular(10)),
+        color: c.background,
+        borderRadius: BorderRadius.circular(10)),
     child: Row(children: [
       const Icon(Icons.insert_drive_file_rounded,
           color: Color(0xFFFFA94D), size: 16),
       const SizedBox(width: 8),
-      Expanded(child: Text(_pickedFileName ?? '',
-          style: TextStyle(color: c.textSecondary, fontSize: 12),
-          overflow: TextOverflow.ellipsis)),
+      Expanded(
+        child: Text(_pickedFileName ?? '',
+            style:
+                TextStyle(color: c.textSecondary, fontSize: 12),
+            overflow: TextOverflow.ellipsis),
+      ),
       if (_phase == _Phase.ready)
-        GestureDetector(onTap: _reset,
-            child: Icon(Icons.close_rounded, color: c.textHint, size: 16)),
+        GestureDetector(
+          onTap: _reset,
+          child: Icon(Icons.close_rounded,
+              color: c.textHint, size: 16),
+        ),
     ]),
   );
 
   Widget _buildProgressSection(XissinColors c) => Column(
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
-      Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+      Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
         AnimatedBuilder(
           animation: _pulseAnim,
           builder: (_, __) => Opacity(
@@ -375,9 +504,11 @@ class _DuplicateRemoverScreenState extends State<DuplicateRemoverScreen>
               Icon(Icons.filter_list_off_rounded,
                   color: Color(0xFFFFA94D), size: 14),
               SizedBox(width: 6),
-              Text('Removing duplicates…', style: TextStyle(
-                  color: Color(0xFFFFA94D), fontSize: 13,
-                  fontWeight: FontWeight.w600)),
+              Text('Removing duplicates…',
+                  style: TextStyle(
+                      color: Color(0xFFFFA94D),
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600)),
             ]),
           ),
         ),
@@ -388,9 +519,11 @@ class _DuplicateRemoverScreenState extends State<DuplicateRemoverScreen>
       ClipRRect(
         borderRadius: BorderRadius.circular(8),
         child: LinearProgressIndicator(
-          value: _progress, minHeight: 6,
+          value: _progress,
+          minHeight: 6,
           backgroundColor: c.background,
-          valueColor: const AlwaysStoppedAnimation(Color(0xFFFFA94D)),
+          valueColor: const AlwaysStoppedAnimation(
+              Color(0xFFFFA94D)),
         ),
       ),
       const SizedBox(height: 10),
@@ -400,22 +533,37 @@ class _DuplicateRemoverScreenState extends State<DuplicateRemoverScreen>
   );
 
   Widget _buildRunButton() => GestureDetector(
-    onTap: () { HapticFeedback.mediumImpact(); _runProcess(); },
+    onTap: () {
+      HapticFeedback.mediumImpact();
+      _runProcess();
+    },
     child: Container(
       padding: const EdgeInsets.symmetric(vertical: 15),
       decoration: BoxDecoration(
         gradient: const LinearGradient(
             colors: [Color(0xFFFFA94D), Color(0xFFE67E22)]),
         borderRadius: BorderRadius.circular(14),
-        boxShadow: [BoxShadow(color: const Color(0xFFFFA94D).withOpacity(0.4),
-            blurRadius: 12, offset: const Offset(0, 4))],
+        boxShadow: [
+          BoxShadow(
+              color: const Color(0xFFFFA94D).withOpacity(0.4),
+              blurRadius: 12,
+              offset: const Offset(0, 4))
+        ],
       ),
-      child: const Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-        Icon(Icons.play_arrow_rounded, color: Colors.white, size: 20),
-        SizedBox(width: 8),
-        Text('Remove Duplicates', style: TextStyle(color: Colors.white,
-            fontSize: 15, fontWeight: FontWeight.w700, letterSpacing: 0.4)),
-      ]),
+      child: const Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.play_arrow_rounded,
+              color: Colors.white, size: 20),
+          SizedBox(width: 8),
+          Text('Remove Duplicates',
+              style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 15,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 0.4)),
+        ],
+      ),
     ),
   );
 
@@ -426,12 +574,17 @@ class _DuplicateRemoverScreenState extends State<DuplicateRemoverScreen>
         child: Container(
           padding: const EdgeInsets.symmetric(vertical: 13),
           decoration: BoxDecoration(
-              color: c.background, borderRadius: BorderRadius.circular(12)),
-          child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-            Icon(Icons.refresh_rounded, color: c.textSecondary, size: 16),
+              color: c.background,
+              borderRadius: BorderRadius.circular(12)),
+          child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+            Icon(Icons.refresh_rounded,
+                color: c.textSecondary, size: 16),
             const SizedBox(width: 6),
             Text('New File',
-                style: TextStyle(color: c.textSecondary, fontSize: 13)),
+                style: TextStyle(
+                    color: c.textSecondary, fontSize: 13)),
           ]),
         ),
       ),
@@ -447,16 +600,26 @@ class _DuplicateRemoverScreenState extends State<DuplicateRemoverScreen>
             gradient: const LinearGradient(
                 colors: [Color(0xFF56CCF2), Color(0xFF2F80ED)]),
             borderRadius: BorderRadius.circular(12),
-            boxShadow: [BoxShadow(
-                color: const Color(0xFF56CCF2).withOpacity(0.3),
-                blurRadius: 10, offset: const Offset(0, 3))],
+            boxShadow: [
+              BoxShadow(
+                  color: const Color(0xFF56CCF2).withOpacity(0.3),
+                  blurRadius: 10,
+                  offset: const Offset(0, 3))
+            ],
           ),
-          child: const Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-            Icon(Icons.share_rounded, color: Colors.white, size: 16),
-            SizedBox(width: 6),
-            Text('Share Result', style: TextStyle(
-                color: Colors.white, fontSize: 13, fontWeight: FontWeight.w700)),
-          ]),
+          child: const Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(Icons.share_rounded,
+                  color: Colors.white, size: 16),
+              SizedBox(width: 6),
+              Text('Share Result',
+                  style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w700)),
+            ],
+          ),
         ),
       ),
     ),
@@ -466,28 +629,38 @@ class _DuplicateRemoverScreenState extends State<DuplicateRemoverScreen>
     final kept  = _result.length;
     final dupes = _originalCount - kept;
     final pct   = _originalCount > 0
-        ? (dupes / _originalCount * 100).toStringAsFixed(1) : '0.0';
-
+        ? (dupes / _originalCount * 100).toStringAsFixed(1)
+        : '0.0';
     return Container(
       padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
         color: const Color(0xFFFFA94D).withOpacity(0.06),
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: const Color(0xFFFFA94D).withOpacity(0.3)),
+        border: Border.all(
+            color: const Color(0xFFFFA94D).withOpacity(0.3)),
       ),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
         const Row(children: [
-          Icon(Icons.check_circle_rounded, color: Color(0xFFFFA94D), size: 18),
+          Icon(Icons.check_circle_rounded,
+              color: Color(0xFFFFA94D), size: 18),
           SizedBox(width: 8),
-          Text('Done!', style: TextStyle(color: Color(0xFFFFA94D),
-              fontWeight: FontWeight.w800, fontSize: 15)),
+          Text('Done!',
+              style: TextStyle(
+                  color: Color(0xFFFFA94D),
+                  fontWeight: FontWeight.w800,
+                  fontSize: 15)),
         ]),
         const SizedBox(height: 14),
-        _statRow('Original lines',     '$_originalCount', c.textSecondary),
+        _statRow('Original lines', '$_originalCount',
+            c.textSecondary),
         const SizedBox(height: 8),
-        _statRow('Unique lines kept',   '$kept',           const Color(0xFF2ECC71)),
+        _statRow('Unique lines kept', '$kept',
+            const Color(0xFF2ECC71)),
         const SizedBox(height: 8),
-        _statRow('Duplicates removed', '$dupes ($pct%)',   const Color(0xFFFF6B6B)),
+        _statRow('Duplicates removed', '$dupes ($pct%)',
+            const Color(0xFFFF6B6B)),
         if (_result.isNotEmpty) ...[
           const SizedBox(height: 14),
           Divider(color: c.border),
@@ -496,21 +669,28 @@ class _DuplicateRemoverScreenState extends State<DuplicateRemoverScreen>
               style: TextStyle(color: c.textHint, fontSize: 11)),
           const SizedBox(height: 6),
           ..._result.take(5).map((line) => Padding(
-            padding: const EdgeInsets.only(bottom: 4),
-            child: Text(line, overflow: TextOverflow.ellipsis,
-                style: TextStyle(color: c.textSecondary, fontSize: 11)),
-          )),
+                padding: const EdgeInsets.only(bottom: 4),
+                child: Text(line,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                        color: c.textSecondary, fontSize: 11)),
+              )),
         ],
       ]),
     );
   }
 
   Widget _statRow(String label, String value, Color valueColor) =>
-      Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+      Row(mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
         Text(label,
-            style: const TextStyle(color: Colors.white54, fontSize: 13)),
-        Text(value, style: TextStyle(color: valueColor,
-            fontSize: 13, fontWeight: FontWeight.w700)),
+            style: const TextStyle(
+                color: Colors.white54, fontSize: 13)),
+        Text(value,
+            style: TextStyle(
+                color: valueColor,
+                fontSize: 13,
+                fontWeight: FontWeight.w700)),
       ]);
 }
 
