@@ -2,8 +2,23 @@
 //  app/lib/screens/url_remover_screen.dart
 //  🔗 URL Remover — 100% local, no backend, offline-safe ads
 //  Interstitial fires: AFTER processing + AFTER share/new file
+//
+//  FIXES v2:
+//   [1] Ticker stored as class field + cancelled in dispose()
+//       → prevents setState-after-dispose crash on back press
+//   [2] utf8.decode(allowMalformed:true) instead of fromCharCodes
+//       → handles Latin-1 / mixed-encoding files safely
+//   [3] Interstitial fires AFTER share completes, not before
+//       → prevents ad blocking the share sheet on Android 11
+//   [4] Empty result guard with SnackBar warning
+//       → user warned instead of silently sharing an empty file
+//   [5] _originalCount moved inside setState
+//       → no desync between count and phase on rapid taps
+//   [6] "Copy All" button added in result card
+//       → quick clipboard copy without opening share sheet
 // ============================================================
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:isolate';
 import 'package:flutter/material.dart';
@@ -39,6 +54,9 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
   // ── Connectivity ─────────────────────────────────────────────────────────────
   bool _isOnline = true;
   StreamSubscription<List<ConnectivityResult>>? _connSub;
+
+  // ── FIX [1]: Ticker stored as class field so dispose() can cancel it ─────────
+  StreamSubscription<int>? _ticker;
 
   // ── Local Banner Ad ──────────────────────────────────────────────────────────
   BannerAd? _bannerAd;
@@ -110,8 +128,6 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
       CurvedAnimation(parent: _pulseCtrl, curve: Curves.easeInOut),
     );
 
-    // ── Kick interstitial preload so it's ready when processing finishes ──────
-    // init() without userId is safe — it just loads the interstitial ad.
     AdService.instance.init();
 
     _checkConnectivity();
@@ -142,6 +158,8 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
   @override
   void dispose() {
     _connSub?.cancel();
+    // FIX [1]: Always cancel ticker to prevent setState-after-dispose crash
+    _ticker?.cancel();
     AdService.instance.removeListener(_onAdChanged);
     _bannerAd?.dispose();
     _pulseCtrl.dispose();
@@ -228,7 +246,9 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
       }
       setState(() {
         _pickedFileName = file.name;
-        _rawContent     = String.fromCharCodes(bytes);
+        // FIX [2]: Use utf8.decode with allowMalformed:true instead of
+        //          String.fromCharCodes — handles Latin-1 / mixed-encoding files
+        _rawContent     = utf8.decode(bytes, allowMalformed: true);
         _phase          = _Phase.ready;
         _errorMsg       = null;
         _result         = [];
@@ -244,15 +264,20 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
     if (_rawContent == null) return;
 
     final lines = _rawContent!.split('\n');
-    _originalCount = lines.where((l) => l.trim().isNotEmpty).length;
 
+    // FIX [5]: _originalCount now inside setState so UI and count are always in sync
     setState(() {
-      _phase    = _Phase.processing;
-      _progress = 0.0;
-      _errorMsg = null;
+      _originalCount = lines.where((l) => l.trim().isNotEmpty).length;
+      _phase         = _Phase.processing;
+      _progress      = 0.0;
+      _errorMsg      = null;
     });
 
-    final ticker = Stream.periodic(const Duration(milliseconds: 120)).listen((_) {
+    // FIX [1]: Store ticker in class field so dispose() can cancel it
+    _ticker?.cancel();
+    _ticker = Stream.periodic(const Duration(milliseconds: 120), (i) => i)
+        .listen((_) {
+      if (!mounted) return;
       if (_phase == _Phase.processing && _progress < 0.92) {
         setState(() => _progress = (_progress + 0.015).clamp(0.0, 0.92));
       }
@@ -260,13 +285,27 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
 
     try {
       final result   = await _runInIsolate(lines);
-      ticker.cancel();
+      _ticker?.cancel();
+      _ticker = null;
+
+      // FIX [4]: Guard against empty result — warn user instead of sharing empty file
+      if (result.isEmpty) {
+        setState(() {
+          _phase    = _Phase.ready;
+          _progress = 0.0;
+          _errorMsg = 'No valid lines found after removing URLs. '
+              'Check that your file has user:pass pairs.';
+        });
+        return;
+      }
+
       final dir      = await getTemporaryDirectory();
       final baseName = (_pickedFileName ?? 'output')
           .replaceAll(RegExp(r'\.[^.]+$'), '');
       final outFile  = File('${dir.path}/${baseName}_url_removed.txt');
       await outFile.writeAsString(result.join('\n'));
 
+      if (!mounted) return;
       setState(() {
         _result     = result;
         _phase      = _Phase.done;
@@ -274,29 +313,67 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
         _outputFile = outFile;
       });
 
-      // ── Show interstitial AFTER processing completes ──────────────────────
-      // Small delay so the result card animates in first before the ad pops
-      Future.delayed(const Duration(milliseconds: 600), _tryShowInterstitial);
+      // Show interstitial AFTER result card renders
+      Future.delayed(
+        const Duration(milliseconds: 600),
+        _tryShowInterstitial,
+      );
 
     } catch (e) {
-      ticker.cancel();
-      setState(() { _phase = _Phase.ready; _errorMsg = 'Processing failed: $e'; });
+      _ticker?.cancel();
+      _ticker = null;
+      if (mounted) {
+        setState(() { _phase = _Phase.ready; _errorMsg = 'Processing failed: $e'; });
+      }
     }
   }
 
+  // FIX [3]: Interstitial fires AFTER share completes, not before.
+  //          Firing before could block the share sheet on Android 11.
   Future<void> _shareFile() async {
     if (_outputFile == null) return;
     HapticFeedback.mediumImpact();
-    // Show interstitial when user taps Share
-    _tryShowInterstitial();
     await Share.shareXFiles(
       [XFile(_outputFile!.path)],
       subject: 'URL Removed — ${_outputFile!.path.split('/').last}',
     );
+    // Small delay then show interstitial AFTER share sheet closes
+    Future.delayed(
+      const Duration(milliseconds: 300),
+      _tryShowInterstitial,
+    );
+  }
+
+  // FIX [6]: Copy all lines to clipboard — fast alternative to share sheet
+  void _copyAll() {
+    if (_result.isEmpty) return;
+    HapticFeedback.mediumImpact();
+    Clipboard.setData(ClipboardData(text: _result.join('\n')));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        behavior:        SnackBarBehavior.floating,
+        backgroundColor: context.c.surface,
+        shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(AppRadius.md)),
+        margin:   const EdgeInsets.fromLTRB(16, 0, 16, 16),
+        duration: const Duration(seconds: 2),
+        content: Row(children: [
+          const Icon(Icons.check_circle_rounded,
+              color: Color(0xFF2ECC71), size: 16),
+          const SizedBox(width: 8),
+          Text('${_result.length} lines copied to clipboard!',
+              style: TextStyle(
+                  color: context.c.textPrimary,
+                  fontWeight: FontWeight.w600,
+                  fontSize: 13)),
+        ]),
+      ),
+    );
+    Future.delayed(const Duration(milliseconds: 300), _tryShowInterstitial);
   }
 
   void _reset() {
-    // Show interstitial when user taps New File (starts next job)
     _tryShowInterstitial();
     setState(() {
       _phase          = _Phase.idle;
@@ -306,6 +383,7 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
       _outputFile     = null;
       _progress       = 0;
       _errorMsg       = null;
+      _originalCount  = 0;
     });
   }
 
@@ -576,7 +654,9 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
     ),
   );
 
+  // FIX [6]: Action row now has 3 buttons: New File | Copy All | Share Result
   Widget _buildActionRow(XissinColors c) => Row(children: [
+    // New File button
     Expanded(
       child: GestureDetector(
         onTap: _reset,
@@ -594,9 +674,37 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
         ),
       ),
     ),
-    const SizedBox(width: 10),
+    const SizedBox(width: 8),
+    // Copy All button
     Expanded(
-      flex: 2,
+      child: GestureDetector(
+        onTap: _copyAll,
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 13),
+          decoration: BoxDecoration(
+            gradient: const LinearGradient(
+                colors: [Color(0xFF2ECC71), Color(0xFF27AE60)]),
+            borderRadius: BorderRadius.circular(12),
+            boxShadow: [BoxShadow(
+                color: const Color(0xFF2ECC71).withOpacity(0.3),
+                blurRadius: 10, offset: const Offset(0, 3))],
+          ),
+          child: const Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(Icons.copy_rounded, color: Colors.white, size: 16),
+              SizedBox(width: 6),
+              Text('Copy All',
+                  style: TextStyle(color: Colors.white,
+                      fontSize: 13, fontWeight: FontWeight.w700)),
+            ],
+          ),
+        ),
+      ),
+    ),
+    const SizedBox(width: 8),
+    // Share Result button
+    Expanded(
       child: GestureDetector(
         onTap: _shareFile,
         child: Container(
@@ -614,7 +722,7 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
             children: [
               Icon(Icons.share_rounded, color: Colors.white, size: 16),
               SizedBox(width: 6),
-              Text('Share Result',
+              Text('Share',
                   style: TextStyle(color: Colors.white,
                       fontSize: 13, fontWeight: FontWeight.w700)),
             ],
@@ -667,6 +775,15 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
             child: Text(line, overflow: TextOverflow.ellipsis,
                 style: TextStyle(color: c.textSecondary, fontSize: 11)),
           )),
+          const SizedBox(height: 10),
+          // FIX [6]: Quick hint text so user knows about Copy All option
+          Row(children: [
+            Icon(Icons.info_outline_rounded,
+                color: c.textHint, size: 12),
+            const SizedBox(width: 6),
+            Text('Use "Copy All" for clipboard or "Share" to save as file',
+                style: TextStyle(color: c.textHint, fontSize: 10)),
+          ]),
         ],
       ]),
     );
