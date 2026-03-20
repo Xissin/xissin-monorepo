@@ -8,6 +8,9 @@ from utils.theme import inject_theme, status_badge
 st.set_page_config(page_title="Xissin Admin", page_icon="⚡", layout="wide", initial_sidebar_state="expanded")
 inject_theme()
 
+# FIX: Use raw GitHub URL instead of Google Drive thumbnail (which gets blocked by browsers)
+_LOGO_URL = "https://raw.githubusercontent.com/Xissin/xissin-monorepo/main/app/assets/icon/icon.png"
+
 st.markdown("""
 <style>
 /* ── Hide sidebar dropdown arrow ─────────────────────────── */
@@ -82,7 +85,7 @@ if not st.session_state.authenticated and params.get("ak"):
 def show_login():
     _, col, _ = st.columns([1, 1.1, 1])
     with col:
-        st.markdown("""
+        st.markdown(f"""
         <div style='text-align:center;padding:50px 0 28px;animation:fadeUp .6s ease both'>
             <div style='position:relative;display:inline-block;padding:12px'>
                 <div style='position:absolute;top:-4px;left:-4px;width:22px;height:22px;
@@ -97,7 +100,7 @@ def show_login():
                 <div style='position:absolute;bottom:-4px;right:-4px;width:22px;height:22px;
                     border-bottom:2px solid rgba(168,85,247,.5);border-right:2px solid rgba(168,85,247,.5);
                     animation:cornerScan 2s ease-in-out 1.5s infinite'></div>
-                <img src='https://drive.google.com/thumbnail?id=1ONwQUQiD8IRGA2ganJpaZ5brALtcOWMF'
+                <img src='{_LOGO_URL}'
                     style='width:80px;height:80px;border-radius:20px;
                     animation:logoGlow 3s ease-in-out infinite;
                     box-shadow:0 0 24px rgba(0,229,255,.4)' />
@@ -174,15 +177,14 @@ def show_login():
 # ──────────────────────────────────────────────────────────────────────────────
 def show_app():
     with st.sidebar:
-        st.markdown("""
+        st.markdown(f"""
         <div style='padding:12px 4px 14px;animation:slideIn .4s ease'>
             <div style='display:flex;align-items:center;gap:10px;margin-bottom:14px'>
-                <div style='width:36px;height:36px;border-radius:10px;
-                    background:linear-gradient(135deg,rgba(0,229,255,.15),rgba(168,85,247,.15));
+                <img src='{_LOGO_URL}'
+                    style='width:36px;height:36px;border-radius:10px;
                     border:1px solid rgba(0,229,255,.3);
-                    display:flex;align-items:center;justify-content:center;
-                    font-size:17px;box-shadow:0 0 14px rgba(0,229,255,.2);
-                    animation:logoGlow 3s ease-in-out infinite'>⚡</div>
+                    box-shadow:0 0 14px rgba(0,229,255,.2);
+                    animation:logoGlow 3s ease-in-out infinite'/>
                 <div>
                     <div style='font-family:"Exo 2",sans-serif;font-weight:900;font-size:15px;
                         background:linear-gradient(135deg,#00e5ff,#a855f7);
@@ -219,9 +221,9 @@ def show_app():
             st.rerun()
 
     # ── Command center home page ───────────────────────────────────────────────
-    st.markdown("""
+    st.markdown(f"""
     <div style='text-align:center;padding:60px 20px 30px;animation:fadeUp .6s ease'>
-        <img src='https://drive.google.com/thumbnail?id=1ONwQUQiD8IRGA2ganJpaZ5brALtcOWMF'
+        <img src='{_LOGO_URL}'
             style='width:90px;height:90px;border-radius:22px;margin-bottom:20px;
             animation:logoGlow 3s ease-in-out infinite;
             box-shadow:0 0 32px rgba(0,229,255,.5)' />
@@ -235,7 +237,6 @@ def show_app():
     """, unsafe_allow_html=True)
 
     # ── Module badges — 2 rows ─────────────────────────────────────────────────
-    # Row 1: Core modules
     st.markdown("""
     <div style='display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin-bottom:10px'>
         <span style='background:rgba(0,229,255,.07);border:1px solid rgba(0,229,255,.2);border-radius:6px;padding:5px 12px;font-family:"Share Tech Mono",monospace;font-size:10px;color:#00e5ff;letter-spacing:1px'>📊 DASHBOARD</span>
@@ -247,7 +248,6 @@ def show_app():
     </div>
     """, unsafe_allow_html=True)
 
-    # Row 2: New tool modules
     st.markdown("""
     <div style='display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin-bottom:32px'>
         <span style='background:rgba(126,231,193,.07);border:1px solid rgba(126,231,193,.2);border-radius:6px;padding:5px 12px;font-family:"Share Tech Mono",monospace;font-size:10px;color:#7EE7C1;letter-spacing:1px'>🌐 IP TRACKER</span>

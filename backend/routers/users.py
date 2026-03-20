@@ -103,6 +103,17 @@ def get_logs(limit: int = 50):
     return {"logs": db.get_logs(limit=limit)}
 
 
+@router.get("/sms-stats", dependencies=[Depends(require_admin)])
+def get_all_sms_stats():
+    """Admin: get SMS send counts for all users — used by dashboard & users page."""
+    stats = db.get_all_sms_stats()
+    total = sum(stats.values())
+    return {
+        "sms_stats":  stats,
+        "total_sms":  total,
+    }
+
+
 @router.get("/devices", dependencies=[Depends(require_admin)])
 def get_all_devices():
     """Admin: get device info for all registered users."""

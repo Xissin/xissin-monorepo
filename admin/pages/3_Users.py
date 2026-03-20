@@ -1,10 +1,10 @@
 """
 pages/3_Users.py — View, search, ban/unban users
 Fixes & improvements:
+  - FIX: SMS Sent column now loads from /api/users/sms-stats (not user object)
   - IMPROVEMENT: Validate that ban target user_id actually exists before calling API
   - IMPROVEMENT: Premium badge shown in user table
   - IMPROVEMENT: Last Seen column added
-  - IMPROVEMENT: Key column added (shows key tier)
   - IMPROVEMENT: Sort users by join date (newest first) by default
   - IMPROVEMENT: Added "Copy User ID" tip in ban section
 """
@@ -37,12 +37,23 @@ with col_c:
 @st.cache_data(ttl=30, show_spinner=False)
 def load_users():
     users = get("/api/users/list").get("users", [])
+
+    # NGL map
     ngl_map = {}
     try:
         ngl_stats = get("/api/ngl/stats").get("by_user", [])
         ngl_map   = {x["user_id"]: x["total"] for x in ngl_stats}
     except Exception:
         pass
+
+    # FIX: SMS map — stored separately from user objects in sms_stats Redis key
+    sms_map = {}
+    try:
+        sms_map = get("/api/users/sms-stats").get("sms_stats", {})
+    except Exception:
+        pass
+
+    # Premium users
     premium_uids = set()
     try:
         premium_uids = set(
@@ -50,27 +61,32 @@ def load_users():
         )
     except Exception:
         pass
-    return users, ngl_map, premium_uids
+
+    return users, ngl_map, sms_map, premium_uids
 
 
 with st.spinner("Loading users..."):
-    users, ngl_map, premium_uids = load_users()
+    users, ngl_map, sms_map, premium_uids = load_users()
 
 for u in users:
-    u["ngl_total"] = ngl_map.get(u.get("user_id", ""), 0)
+    uid = u.get("user_id", "")
+    u["ngl_total"] = ngl_map.get(uid, 0)
+    u["sms_total"] = sms_map.get(uid, 0)
 
 total     = len(users)
 banned    = sum(1 for u in users if u.get("banned"))
 premium   = len(premium_uids)
 total_ngl = sum(u.get("ngl_total", 0) for u in users)
+total_sms = sum(u.get("sms_total", 0) for u in users)
 
 # ── Metric cards ───────────────────────────────────────────────────────────────
-c1, c2, c3, c4 = st.columns(4)
+c1, c2, c3, c4, c5 = st.columns(5)
 for col, icon, label, value, color, delay in [
-    (c1, "👥", "TOTAL USERS", total,   "#00e5ff", 0.0),
-    (c2, "🚫", "BANNED",      banned,  "#ff4757", 0.08),
-    (c3, "⭐", "PREMIUM",     premium, "#FFD700", 0.12),
-    (c4, "💬", "TOTAL NGL",   total_ngl, "#f472b6", 0.16),
+    (c1, "👥", "TOTAL USERS", total,     "#00e5ff", 0.0),
+    (c2, "🚫", "BANNED",      banned,    "#ff4757", 0.08),
+    (c3, "⭐", "PREMIUM",     premium,   "#FFD700", 0.12),
+    (c4, "📱", "TOTAL SMS",   total_sms, "#ff9500", 0.16),
+    (c5, "💬", "TOTAL NGL",   total_ngl, "#f472b6", 0.20),
 ]:
     with col:
         st.markdown(f"""<div style='background:linear-gradient(135deg,{color}0d,transparent);
@@ -115,10 +131,10 @@ if filtered:
             "Username": u.get("username") or "-",
             "Premium":  "⭐ Yes" if uid in premium_uids else "—",
             "Status":   "🚫 Banned" if u.get("banned") else "✅ Active",
-            "Key Tier": u.get("key_tier") or u.get("tier") or "-",
-            "SMS Sent": u.get("total_sms", 0),
+            "SMS Sent": u.get("sms_total", 0),
             "NGL Sent": u.get("ngl_total", 0),
             "Joined":   (u.get("joined_at") or "-")[:10],
+            "Last Seen":(u.get("last_seen") or "-")[:10],
         })
     df = pd.DataFrame(rows)
     df.index = range(1, len(df) + 1)
@@ -152,7 +168,6 @@ with st.container(border=True):
             if not target_uid.strip():
                 st.error("Enter a User ID.")
             elif target_uid.strip() not in known_uids:
-                # FIX: validate user exists before calling API
                 st.error(
                     f"❌ User ID `{target_uid.strip()}` not found. "
                     "Double-check the ID from the table above."

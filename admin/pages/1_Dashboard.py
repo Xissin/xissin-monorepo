@@ -3,6 +3,7 @@ pages/1_Dashboard.py — Overview stats, server status, top NGL users, recent lo
 Fixes & improvements:
   - BUG FIX: Unclosed HTML div nesting in server status section
   - BUG FIX: App Version metric now shows "—" cleanly instead of raw dict value
+  - BUG FIX: SMS total now loaded from dedicated /api/users/sms-stats endpoint
   - IMPROVEMENT: Added SMS Bomber top senders widget
   - IMPROVEMENT: Announcement count badge added to sidebar
   - IMPROVEMENT: Active users (24h) metric added
@@ -34,20 +35,23 @@ with col_r:
 @st.cache_data(ttl=30, show_spinner=False)
 def load_dashboard_data():
     results = {}
-    try: results["users"]    = get("/api/users/list").get("users", [])
+    try: results["users"]      = get("/api/users/list").get("users", [])
     except Exception: results["users"] = []
-    try: results["status"]   = get_public("/api/status")
+    try: results["status"]     = get_public("/api/status")
     except Exception: results["status"] = {}
-    try: results["ngl"]      = get("/api/ngl/stats")
+    try: results["ngl"]        = get("/api/ngl/stats")
     except Exception: results["ngl"] = {}
-    try: results["logs"]     = get("/api/users/logs/recent", {"limit": 12}).get("logs", [])
+    try: results["logs"]       = get("/api/users/logs/recent", {"limit": 12}).get("logs", [])
     except Exception: results["logs"] = []
-    try: results["ann"]      = get_public("/api/announcements")
+    try: results["ann"]        = get_public("/api/announcements")
     except Exception: results["ann"] = []
-    # ── NEW: IP Tracker stats ──────────────────────────────────────────────────
-    try: results["ip_stats"] = get("/api/ip-tracker/stats")
+    # SMS stats — stored separately from user objects
+    try: results["sms_stats"]  = get("/api/users/sms-stats")
+    except Exception: results["sms_stats"] = {}
+    # IP Tracker stats
+    try: results["ip_stats"]   = get("/api/ip-tracker/stats")
     except Exception: results["ip_stats"] = {}
-    # ── NEW: Username Tracker stats ───────────────────────────────────────────
+    # Username Tracker stats
     try: results["uname_stats"] = get("/api/username-tracker/stats")
     except Exception: results["uname_stats"] = {}
     return results
@@ -60,13 +64,18 @@ status      = data["status"]
 ngl         = data["ngl"]
 logs        = data["logs"]
 ann_list    = data["ann"]
+sms_data    = data["sms_stats"]
 ip_stats    = data["ip_stats"]
 uname_stats = data["uname_stats"]
 now_utc     = datetime.now(timezone.utc)
 
 banned_users = sum(1 for u in users if u.get("banned"))
-total_sms    = sum(u.get("total_sms", 0) for u in users)
+# FIX: total_sms now comes from dedicated sms_stats endpoint, not user object
+total_sms    = sms_data.get("total_sms", 0)
 total_ngl    = ngl.get("total_ngl_sent", 0)
+
+# Build SMS map for per-user display
+sms_map: dict = sms_data.get("sms_stats", {})
 
 # Active users: seen in last 24h
 def _is_recent(u):
@@ -86,8 +95,8 @@ active_24h = sum(1 for u in users if _is_recent(u))
 app_version_raw = status.get("latest_app_version", "—")
 app_version = app_version_raw if isinstance(app_version_raw, str) else "—"
 
-# ── NEW: Tool counters ─────────────────────────────────────────────────────────
-total_ip_lookups  = ip_stats.get("total_lookups", 0)
+# Tool counters
+total_ip_lookups     = ip_stats.get("total_lookups", 0)
 total_uname_searches = uname_stats.get("total_searches", 0)
 
 # ── Animated metric cards ──────────────────────────────────────────────────────
@@ -134,7 +143,7 @@ for col, (icon, label, value, color, delay) in zip(cols, metrics):
 
 st.markdown("<br>", unsafe_allow_html=True)
 
-# ── NEW: Tool Usage Summary ────────────────────────────────────────────────────
+# ── Tool Usage Summary ────────────────────────────────────────────────────────
 st.markdown("""
 <div style='font-family:"Share Tech Mono",monospace;font-size:11px;
     color:#2a4a6a;letter-spacing:3px;text-transform:uppercase;margin-bottom:12px'>
@@ -144,9 +153,9 @@ st.markdown("""
 
 tc1, tc2, tc3, tc4 = st.columns(4)
 tool_cards = [
-    (tc1, "🔗", "URL REMOVER",       "Local only — no logs",          "#7B8CDE", "Client-side tool"),
-    (tc2, "🗂️", "DUP REMOVER",       "Local only — no logs",          "#FFA94D", "Client-side tool"),
-    (tc3, "🌐", "IP TRACKER",        f"{total_ip_lookups} lookups",   "#7EE7C1", "Backend logged"),
+    (tc1, "🔗", "URL REMOVER",       "Local only — no logs",             "#7B8CDE", "Client-side tool"),
+    (tc2, "🗂️", "DUP REMOVER",       "Local only — no logs",             "#FFA94D", "Client-side tool"),
+    (tc3, "🌐", "IP TRACKER",        f"{total_ip_lookups} lookups",      "#7EE7C1", "Backend logged"),
     (tc4, "🔍", "USERNAME TRACKER",  f"{total_uname_searches} searches", "#FFA726", "Backend logged"),
 ]
 for col, icon, name, stat, color, badge in tool_cards:
@@ -224,7 +233,7 @@ with col_left:
                 f"<span style='font-family:\"Share Tech Mono\",monospace;font-size:10px;"
                 f"color:#5a7a9a;letter-spacing:1px'>{k}</span>"
                 f"<span style='font-family:\"Share Tech Mono\",monospace;font-size:10px;"
-                f"color:{c};font-weight:700'>{v}</span></div>",
+                f"color:{c}'>{v}</span></div>",
                 unsafe_allow_html=True,
             )
 
@@ -274,17 +283,16 @@ with col_left:
         ◈ TOP SMS SENDERS
     </div>
     """, unsafe_allow_html=True)
-    top_sms = sorted(
-        [u for u in users if u.get("total_sms", 0) > 0],
-        key=lambda x: x.get("total_sms", 0),
-        reverse=True,
-    )[:5]
-    if top_sms:
-        for i, u in enumerate(top_sms):
-            name  = u.get("username") or u.get("user_id", "?")
-            total = u.get("total_sms", 0)
-            max_v = top_sms[0].get("total_sms", 1)
-            pct   = int((total / max(max_v, 1)) * 100)
+
+    # FIX: build top SMS from sms_map (separate from user objects)
+    top_sms_raw = sorted(sms_map.items(), key=lambda x: x[1], reverse=True)[:5]
+    if top_sms_raw:
+        max_sms = top_sms_raw[0][1] if top_sms_raw else 1
+        for i, (uid, count) in enumerate(top_sms_raw):
+            # Try to get username from users list
+            user_obj = next((u for u in users if u.get("user_id") == uid), {})
+            name  = user_obj.get("username") or uid
+            pct   = int((count / max(max_sms, 1)) * 100)
             colors = ["#ff9500", "#ff4757", "#f472b6", "#a855f7", "#00e5ff"]
             c = colors[i % len(colors)]
             st.markdown(f"""
@@ -293,7 +301,7 @@ with col_left:
                     <span style='font-family:"Exo 2",sans-serif;font-weight:700;
                         font-size:13px;color:#c8d8f0'>#{i+1} {name}</span>
                     <span style='font-family:"Share Tech Mono",monospace;
-                        font-size:13px;color:{c};font-weight:700'>{total}</span>
+                        font-size:13px;color:{c};font-weight:700'>{count}</span>
                 </div>
                 <div style='background:rgba(255,255,255,.05);border-radius:4px;height:5px'>
                     <div style='background:linear-gradient(90deg,{c},{c}88);
@@ -315,7 +323,6 @@ with col_right:
     </div>
     """, unsafe_allow_html=True)
 
-    # ── NEW: ip_lookup + username_search added ────────────────────────────────
     LOG_CFG = {
         "user_registered":      ("#00e5ff", "👤"),
         "user_banned":          ("#ff4757", "🚫"),
