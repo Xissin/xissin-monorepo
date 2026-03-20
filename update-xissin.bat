@@ -1,12 +1,12 @@
 @echo off
 setlocal enabledelayedexpansion
-title Xissin App Updater v2.2
+title Xissin App Updater v2.3
 color 0A
 
 :: ============================================================
-::  XISSIN APP UPDATER v2.2
+::  XISSIN APP UPDATER v2.3
 ::  Full release flow — pubspec → GitHub → Drive → Admin Panel
-::  v2.2: Also updates Railway env vars automatically
+::  v2.3: Fixed STEP6G dead code, remote tag cleanup, version trim, safer SHA-256
 :: ============================================================
 
 set "PUBSPEC=C:\Users\Nathaniel\Desktop\xissin-monorepo\app\pubspec.yaml"
@@ -29,7 +29,7 @@ for /f "tokens=1,2 delims=+" %%a in ("!CURRENT_VERSION_FULL!") do (
 cls
 echo.
 echo  +====================================================+
-echo  ^|          XISSIN APP UPDATER v2.2                  ^|
+echo  ^|          XISSIN APP UPDATER v2.3                  ^|
 echo  +====================================================+
 echo.
 echo  Current App Version : v!CURRENT_VERSION!
@@ -76,6 +76,9 @@ echo  ^|  Major redesign     --^>  1.0.0  becomes  2.0.0   ^|
 echo  +----------------------------------------------------+
 echo.
 set /p "NEW_VERSION=  Enter new version (e.g. 1.0.1): "
+
+:: Trim any accidental trailing spaces from input
+for /f "tokens=*" %%a in ("!NEW_VERSION!") do set "NEW_VERSION=%%a"
 
 if "!NEW_VERSION!"=="" (
     echo.
@@ -195,8 +198,9 @@ echo.
 
 cd /d "%REPO%"
 
-:: Delete local tag first if it already exists (safe retry)
+:: Delete local and remote tag first if they already exist (safe retry)
 git tag -d v!NEW_VERSION! 2>nul
+git push origin --delete v!NEW_VERSION! 2>nul
 
 echo  ^> git tag v!NEW_VERSION!
 git tag v!NEW_VERSION!
@@ -304,7 +308,7 @@ echo  Please wait...
 echo.
 
 :: Use PowerShell to get SHA-256 hash and capture it cleanly
-for /f "usebackq delims=" %%H in (`powershell -NoProfile -Command "(Get-FileHash [char]34+'!APK_PATH!'+[char]34 -Algorithm SHA256).Hash.ToLower()"`) do (
+for /f "usebackq delims=" %%H in (`powershell -NoProfile -Command "$h = Get-FileHash '!APK_PATH!' -Algorithm SHA256; $h.Hash.ToLower()"`) do (
     set "APK_SHA256=%%H"
 )
 
@@ -549,7 +553,7 @@ echo  --------------------------------------------------
 echo.
 :STEP6F_CONFIRM
 set /p "DONE6F=  Have you clicked SAVE ALL SETTINGS? (Y/N): "
-if /i "!DONE6F!" equ "Y" goto DONE
+if /i "!DONE6F!" equ "Y" goto STEP6G
 if /i "!DONE6F!" equ "N" (
     echo.
     echo  Please save before continuing!
@@ -574,6 +578,10 @@ echo  1. LATEST_APP_VERSION  --^> set to: !NEW_VERSION!
 echo  2. LATEST_APK_SHA256   --^> set to: !APK_SHA256!
 echo.
 echo  (SHA-256 is still in your clipboard from Step 4b)
+echo.
+:: Re-copy SHA-256 to clipboard in case it was overwritten
+powershell -Command "Set-Clipboard -Value '!APK_SHA256!'"
+echo  [OK] SHA-256 re-copied to clipboard.
 echo.
 echo  Opening Railway in browser...
 start "" "https://railway.app"

@@ -1,157 +1,134 @@
-# ══════════════════════════════════════════════════════════════════════════════
-# Xissin App — proguard-rules.pro
-# ══════════════════════════════════════════════════════════════════════════════
+# ─────────────────────────────────────────────────────────────────────────────
+#  proguard-rules.pro — Xissin App
+#  Applied during: flutter build apk --release
+#  Combined with:  proguard-android-optimize.txt (from getDefaultProguardFile)
+#  Also use:       --obfuscate flag to rename Dart symbols
+# ─────────────────────────────────────────────────────────────────────────────
 
-# ── 1. Optimisation passes ────────────────────────────────────────────────────
--optimizationpasses 5
--dontusemixedcaseclassnames
--dontskipnonpubliclibraryclasses
--dontskipnonpubliclibraryclassmembers
--verbose
--allowaccessmodification
-
-# FIX 1: Removed backslash line continuation — R8 does NOT support multi-line
-# -optimizations rules. One single line only.
--optimizations !code/simplification/cast,!field/*,!class/merging/*
-
-# FIX 2: Removed -mergeinterfacesaggressively — causes crashes with Flutter plugins
-
-# ── 2. Keep Flutter engine ────────────────────────────────────────────────────
+# ── Flutter engine (never obfuscate) ─────────────────────────────────────────
 -keep class io.flutter.** { *; }
 -keep class io.flutter.embedding.** { *; }
 -keep class io.flutter.plugin.** { *; }
--keep class io.flutter.util.** { *; }
 -keep class io.flutter.view.** { *; }
--keep class io.flutter.app.** { *; }
+-keep class io.flutter.util.** { *; }
+-dontwarn io.flutter.**
 
-# ── 3. Keep your app entry point ─────────────────────────────────────────────
--keep class com.xissin.app.MainActivity { *; }
--keep class com.xissin.app.** { *; }
+# ── Flutter secure storage ────────────────────────────────────────────────────
+-keep class com.it_nomads.fluttersecurestorage.** { *; }
+-dontwarn com.it_nomads.fluttersecurestorage.**
 
-# ── 4. Keep Kotlin metadata ───────────────────────────────────────────────────
--keepattributes *Annotation*
--keepattributes Signature
--keepattributes InnerClasses
--keepattributes EnclosingMethod
--keepattributes Exceptions
+# ── Google Mobile Ads (AdMob) ─────────────────────────────────────────────────
+-keep class com.google.android.gms.ads.** { *; }
+-keep class com.google.ads.** { *; }
+-dontwarn com.google.android.gms.ads.**
 
+# ── Google Play Services ──────────────────────────────────────────────────────
+-keep class com.google.android.gms.** { *; }
+-dontwarn com.google.android.gms.**
+
+# ── OkHttp / networking ───────────────────────────────────────────────────────
+-keep class okhttp3.** { *; }
+-keep interface okhttp3.** { *; }
+-dontwarn okhttp3.**
+-dontwarn okio.**
+
+# ── Kotlin ────────────────────────────────────────────────────────────────────
+-keep class kotlin.** { *; }
 -keep class kotlin.Metadata { *; }
--keep class kotlin.reflect.** { *; }
 -dontwarn kotlin.**
-
-# ── 5. Android components ─────────────────────────────────────────────────────
--keep public class * extends android.app.Activity
--keep public class * extends android.app.Application
--keep public class * extends android.app.Service
--keep public class * extends android.content.BroadcastReceiver
--keep public class * extends android.content.ContentProvider
--keep public class * extends android.preference.Preference
--keep public class * extends android.view.View
--keep public class * extends androidx.** { *; }
--keep class androidx.lifecycle.** { *; }
-
-# ── 6. Serialisation ──────────────────────────────────────────────────────────
--keepclassmembers class * {
-    @com.google.gson.annotations.SerializedName <fields>;
-}
--keep class * implements java.io.Serializable {
-    private static final java.io.ObjectStreamField[] serialPersistentFields;
-    private void writeObject(java.io.ObjectOutputStream);
-    private void readObject(java.io.ObjectInputStream);
-    java.lang.Object readResolve();
-    java.lang.Object writeReplace();
+-keepclassmembers class **$WhenMappings {
+    <fields>;
 }
 
-# ── 7. Native methods ─────────────────────────────────────────────────────────
--keepclasseswithmembernames class * {
-    native <methods>;
-}
+# ── AndroidX / Support ────────────────────────────────────────────────────────
+-keep class androidx.** { *; }
+-dontwarn androidx.**
+-keep class android.support.** { *; }
+-dontwarn android.support.**
 
-# ── 8. Enum classes ───────────────────────────────────────────────────────────
+# ── Geolocator ────────────────────────────────────────────────────────────────
+-keep class com.baseflow.geolocator.** { *; }
+-dontwarn com.baseflow.geolocator.**
+
+# ── Permission handler ────────────────────────────────────────────────────────
+-keep class com.baseflow.permissionhandler.** { *; }
+-dontwarn com.baseflow.permissionhandler.**
+
+# ── Package info ──────────────────────────────────────────────────────────────
+-keep class dev.fluttercommunity.plus.packageinfo.** { *; }
+-dontwarn dev.fluttercommunity.plus.packageinfo.**
+
+# ── Device info ───────────────────────────────────────────────────────────────
+-keep class dev.fluttercommunity.plus.device_info.** { *; }
+-dontwarn dev.fluttercommunity.plus.device_info.**
+
+# ── Connectivity ─────────────────────────────────────────────────────────────
+-keep class dev.fluttercommunity.plus.connectivity.** { *; }
+-dontwarn dev.fluttercommunity.plus.connectivity.**
+
+# ── Battery ───────────────────────────────────────────────────────────────────
+-keep class dev.fluttercommunity.plus.battery.** { *; }
+-dontwarn dev.fluttercommunity.plus.battery.**
+
+# ── URL launcher ─────────────────────────────────────────────────────────────
+-keep class io.flutter.plugins.urllauncher.** { *; }
+-dontwarn io.flutter.plugins.urllauncher.**
+
+# ── WebView ───────────────────────────────────────────────────────────────────
+-keep class io.flutter.plugins.webviewflutter.** { *; }
+-dontwarn io.flutter.plugins.webviewflutter.**
+
+# ── File picker ───────────────────────────────────────────────────────────────
+-keep class com.mr.flutter.plugin.filepicker.** { *; }
+-dontwarn com.mr.flutter.plugin.filepicker.**
+
+# ── Share plus ────────────────────────────────────────────────────────────────
+-keep class dev.fluttercommunity.plus.share.** { *; }
+-dontwarn dev.fluttercommunity.plus.share.**
+
+# ── Open file ─────────────────────────────────────────────────────────────────
+-keep class com.crazecoder.openfile.** { *; }
+-dontwarn com.crazecoder.openfile.**
+
+# ── Crypto (JVM) ─────────────────────────────────────────────────────────────
+-keep class javax.crypto.** { *; }
+-keep class java.security.** { *; }
+
+# ── Enum classes (needed for correct behaviour) ───────────────────────────────
 -keepclassmembers enum * {
     public static **[] values();
     public static ** valueOf(java.lang.String);
 }
 
-# ── 9. Parcelable ─────────────────────────────────────────────────────────────
--keep class * implements android.os.Parcelable {
-    public static final android.os.Parcelable$Creator *;
+# ── Parcelable ────────────────────────────────────────────────────────────────
+-keepclassmembers class * implements android.os.Parcelable {
+    public static final android.os.Parcelable$Creator CREATOR;
 }
 
-# ── 10. okhttp3 / http ────────────────────────────────────────────────────────
--keep class okhttp3.** { *; }
--keep interface okhttp3.** { *; }
--dontwarn okhttp3.**
--dontwarn okio.**
--keep class okio.** { *; }
+# ── Serialization ─────────────────────────────────────────────────────────────
+-keepclassmembers class * implements java.io.Serializable {
+    private static final java.io.ObjectStreamField[] serialPersistentFields;
+    private void writeObject(java.io.ObjectOutputStream);
+    private void readObject(java.io.ObjectInputStream);
+    java.lang.Object writeReplace();
+    java.lang.Object readResolve();
+}
 
-# ── 11. Google Play / billing ─────────────────────────────────────────────────
--keep class com.google.android.gms.** { *; }
--keep class com.android.billingclient.** { *; }
--dontwarn com.google.android.gms.**
+# ── Native methods ────────────────────────────────────────────────────────────
+-keepclasseswithmembernames class * {
+    native <methods>;
+}
 
-# ── 12. WebView ───────────────────────────────────────────────────────────────
--keep class android.webkit.** { *; }
--keep class * extends android.webkit.WebViewClient { *; }
--keep class * extends android.webkit.WebChromeClient { *; }
+# ── Remove logging in release ─────────────────────────────────────────────────
+-assumenosideeffects class android.util.Log {
+    public static *** d(...);
+    public static *** v(...);
+    public static *** i(...);
+}
 
-# ── 13. Flutter Secure Storage ────────────────────────────────────────────────
--keep class com.it_nomads.fluttersecurestorage.** { *; }
-
-# ── 14. Package info plugin ───────────────────────────────────────────────────
--keep class dev.fluttercommunity.plus.packageinfo.** { *; }
-
-# ── 15. Device info plugin ────────────────────────────────────────────────────
--keep class dev.fluttercommunity.plus.device_info.** { *; }
-
-# ── 16. Connectivity plus ─────────────────────────────────────────────────────
--keep class dev.fluttercommunity.plus.connectivity.** { *; }
-
-# ── 17. Geolocator ────────────────────────────────────────────────────────────
--keep class com.baseflow.geolocator.** { *; }
-
-# ── 18. Suppress known harmless warnings ──────────────────────────────────────
--dontwarn javax.annotation.**
+# ── Suppress common harmless warnings ────────────────────────────────────────
+-dontwarn java.lang.invoke.**
+-dontwarn **$$serializer
 -dontwarn org.conscrypt.**
 -dontwarn org.bouncycastle.**
 -dontwarn org.openjsse.**
--dontwarn sun.misc.**
--dontwarn java.lang.invoke.**
--dontwarn java.lang.reflect.**
-
-# ── 19. Strip debug logging in release ────────────────────────────────────────
--assumenosideeffects class android.util.Log {
-    public static boolean isLoggable(java.lang.String, int);
-    public static int v(...);
-    public static int i(...);
-    public static int w(...);
-    public static int d(...);
-    public static int e(...);
-}
--assumenosideeffects class java.io.PrintStream {
-    public void println(...);
-    public void print(...);
-}
-
-# ── 20. Repackage obfuscation ─────────────────────────────────────────────────
-# FIX 3: Removed inline comment after -repackageclasses — R8 does not support it
-# FIX 4: Removed -flattenpackagehierarchy — conflicts with -repackageclasses
--repackageclasses 'x'
-
-# FIX 5: Removed -obfuscationdictionary lines — proguard-dict.txt does not exist
-# in the repo, causes FileNotFoundException crash on build
-
-# ── 21. FIX: Google Play Core Split Install — R8 missing class errors ─────────
-# These classes are referenced by Flutter's deferred component manager but are
-# not shipped unless you use Play Store dynamic delivery. Safe to suppress.
--dontwarn com.google.android.play.core.splitcompat.SplitCompatApplication
--dontwarn com.google.android.play.core.splitinstall.SplitInstallException
--dontwarn com.google.android.play.core.splitinstall.SplitInstallManager
--dontwarn com.google.android.play.core.splitinstall.SplitInstallManagerFactory
--dontwarn com.google.android.play.core.splitinstall.SplitInstallRequest$Builder
--dontwarn com.google.android.play.core.splitinstall.SplitInstallRequest
--dontwarn com.google.android.play.core.splitinstall.SplitInstallSessionState
--dontwarn com.google.android.play.core.splitinstall.SplitInstallStateUpdatedListener
--dontwarn com.google.android.play.core.tasks.OnFailureListener
--dontwarn com.google.android.play.core.tasks.OnSuccessListener
--dontwarn com.google.android.play.core.tasks.Task

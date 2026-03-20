@@ -60,6 +60,12 @@ try:
 except ImportError:
     _HAS_USERNAME_TRACKER = False
 
+try:
+    from routers import session as session_router
+    _HAS_SESSION = True
+except ImportError:
+    _HAS_SESSION = False
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s"
@@ -71,7 +77,7 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     port = int(os.environ.get("PORT", 8000))
     logger.info("=" * 55)
-    logger.info("🚀  XISSIN BACKEND  v2.0.0  —  STARTING UP")
+    logger.info("🚀  XISSIN BACKEND  v2.1.0  —  STARTING UP")
     logger.info("=" * 55)
     logger.info(f"🌐  Listening on  0.0.0.0:{port}")
     logger.info(f"🔧  Environment : {os.environ.get('ENVIRONMENT', 'production')}")
@@ -94,6 +100,7 @@ async def lifespan(app: FastAPI):
     logger.info(f"    {'✅' if _HAS_CRASH_REPORT        else '❌'}  /api/crash-report     — Crash Reports")
     logger.info(f"    {'✅' if _HAS_IP_TRACKER          else '❌'}  /api/ip-tracker       — IP Tracker")
     logger.info(f"    {'✅' if _HAS_USERNAME_TRACKER    else '❌'}  /api/username-tracker — Username Tracker")
+    logger.info(f"    {'✅' if _HAS_SESSION              else '❌'}  /api/auth/session     — Session Tokens")
 
     logger.info("=" * 55)
     logger.info("✅  Xissin Backend is ONLINE and ready!")
@@ -107,7 +114,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Xissin App API",
     description="Backend API for the Xissin Multi-Tool Flutter App",
-    version="2.0.0",
+    version="2.1.0",
     lifespan=lifespan,
 )
 
@@ -181,6 +188,10 @@ if _HAS_USERNAME_TRACKER:
     app.include_router(username_tracker_router.router,
                        prefix="/api/username-tracker", tags=["Username Tracker"])
 
+if _HAS_SESSION:
+    app.include_router(session_router.router,
+                       prefix="/api/auth", tags=["Auth"])
+
 
 # ── Base routes ───────────────────────────────────────────────────────────────
 @app.get("/")
@@ -188,7 +199,7 @@ def root():
     return {
         "status":  "online",
         "app":     "Xissin Multi-Tool API",
-        "version": "2.0.0",
+        "version": "2.1.0",
     }
 
 @app.get("/health")
@@ -221,7 +232,7 @@ def api_status():
                        os.environ.get("LATEST_APK_NOTES", ""))
 
     return {
-        "api_version":        "2.0.0",
+        "api_version":        "2.1.0",
         "min_app_version":    min_ver,
         "latest_app_version": lat_ver,
         "apk_download_url":   apk_url,

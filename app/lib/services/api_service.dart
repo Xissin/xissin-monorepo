@@ -16,6 +16,13 @@ import 'package:http/http.dart' as http;
 
 import 'security_service.dart';
 
+// ── Pinned HTTP client (singleton) ────────────────────────────────────────────
+// All requests go through this client which validates:
+//   • Hostname must be our Railway backend
+//   • TLS cert must be issued by Let's Encrypt
+// Created once, reused for all requests.
+final http.Client _pinnedClient = SecurityService.createPinnedClient();
+
 // ── Exception ─────────────────────────────────────────────────────────────────
 
 class ApiException implements Exception {
@@ -77,6 +84,44 @@ class ApiService {
   static String? _cachedUserId;
   static void cacheUserId(String id) => _cachedUserId = id;
 
+  // ── Session token cache ───────────────────────────────────────────────────
+  // Set once on app launch by calling ApiService.initSession()
+  // All _signedHeaders() calls use this automatically
+  static String? _sessionToken;
+  static void cacheSessionToken(String token) => _sessionToken = token;
+
+  /// Called from splash screen BEFORE any other API call.
+  /// Retrieves or creates a session token via SecurityService.
+  static Future<void> initSession({
+    required String userId,
+    String? deviceModel,
+    String? osVersion,
+  }) async {
+    final fingerprint = SecurityService.generateDeviceFingerprint(
+      userId:    userId,
+      model:     deviceModel,
+      osVersion: osVersion,
+    );
+    final token = await SecurityService.initSession(
+      deviceFingerprint: fingerprint,
+    );
+    if (token != null) {
+      _sessionToken = token;
+    }
+  }
+
+  /// Force-refreshes the session (called when backend returns 401)
+  static Future<void> _refreshSession() async {
+    if (_cachedUserId == null) return;
+    final fingerprint = SecurityService.generateDeviceFingerprint(
+      userId: _cachedUserId!,
+    );
+    final token = await SecurityService.refreshSession(
+      deviceFingerprint: fingerprint,
+    );
+    if (token != null) _sessionToken = token;
+  }
+
   // ── Headers ───────────────────────────────────────────────────────────────
 
   static Map<String, String> get _baseHeaders => {
@@ -85,18 +130,12 @@ class ApiService {
   };
 
   static Map<String, String> _signedHeaders({String? userId}) {
-    final ts  = SecurityService.nowSeconds;
-    final uid = userId ?? _cachedUserId ?? 'anonymous';
-    final tok = SecurityService.generateRequestToken(
-      userId:           uid,
-      timestampSeconds: ts,
-    );
-    return {
-      ..._baseHeaders,
-      'X-App-Timestamp': ts.toString(),
-      'X-App-Token':     tok,
-      'X-App-Id':        'com.xissin.app',
-    };
+    // Use session token (server-side validated, not derivable from APK secrets)
+    if (_sessionToken != null) {
+      return SecurityService.buildHeaders(sessionToken: _sessionToken!);
+    }
+    // Fallback: no session yet — send app ID only (backend will 401 if needed)
+    return SecurityService.buildUnauthHeaders();
   }
 
   // ── Cache helpers ─────────────────────────────────────────────────────────
@@ -166,6 +205,14 @@ class ApiService {
             ?? 'Request failed (${res.statusCode})';
 
         // 4xx = don't retry
+        // Auto-refresh session on 401 and retry once
+        if (res.statusCode == 401) {
+          if (attempt == 1) {
+            await _refreshSession();
+            continue; // retry with new session
+          }
+          throw ApiException(message: msg, statusCode: res.statusCode);
+        }
         if (res.statusCode >= 400 && res.statusCode < 500) {
           throw ApiException(message: msg, statusCode: res.statusCode);
         }
@@ -206,7 +253,7 @@ class ApiService {
     // Always make a fresh request — no dedup, no cache interference
     // (splash screen calls this at most once per retry cycle)
     return _requestWithRetry(
-      (t) => http
+      (t) => _pinnedClient
           .get(Uri.parse('$_base/api/status'), headers: _baseHeaders)
           .timeout(t),
       coldStart: true,
@@ -230,7 +277,7 @@ class ApiService {
         attempt++;
         final timeout = Duration(seconds: 10 + (attempt * 2));
         try {
-          final res = await http
+          final res = await _pinnedClient
               .get(Uri.parse('$_base/api/announcements'),
                    headers: _baseHeaders)
               .timeout(timeout);
@@ -268,7 +315,7 @@ class ApiService {
 
     return _dedupe(cacheKey, () async {
       try {
-        final res = await http
+        final res = await _pinnedClient
             .get(
               Uri.parse('$_base/api/status'),
               headers: _baseHeaders,
@@ -303,7 +350,7 @@ class ApiService {
   }) async {
     ApiService.cacheUserId(userId);
     return _requestWithRetry(
-      (t) => http
+      (t) => _pinnedClient
           .post(
             Uri.parse('$_base/api/users/register'),
             headers: _signedHeaders(userId: userId),
@@ -321,7 +368,7 @@ class ApiService {
 
   static Future<Map<String, dynamic>> checkUser(String userId) async {
     return _requestWithRetry(
-      (t) => http
+      (t) => _pinnedClient
           .get(
             Uri.parse('$_base/api/users/check/$userId'),
             headers: _signedHeaders(userId: userId),
@@ -339,7 +386,7 @@ class ApiService {
     int rounds = 1,
   }) async {
     return _requestWithRetry(
-      (t) => http
+      (t) => _pinnedClient
           .post(
             Uri.parse('$_base/api/sms/bomb'),
             headers: _signedHeaders(userId: userId),
@@ -367,7 +414,7 @@ class ApiService {
     required List<Map<String, dynamic>> results,
   }) async {
     try {
-      await http
+      await _pinnedClient
           .post(
             Uri.parse('$_base/api/sms/log'),
             headers: _signedHeaders(userId: userId),
@@ -392,7 +439,7 @@ class ApiService {
     if (cached != null) return cached;
 
     final result = await _requestWithRetry(
-      (t) => http
+      (t) => _pinnedClient
           .get(Uri.parse('$_base/api/sms/services'), headers: _baseHeaders)
           .timeout(t),
     );
@@ -409,7 +456,7 @@ class ApiService {
     required int    quantity,
   }) async {
     return _requestWithRetry(
-      (t) => http
+      (t) => _pinnedClient
           .post(
             Uri.parse('$_base/api/ngl/send'),
             headers: _signedHeaders(userId: userId),
@@ -428,7 +475,7 @@ class ApiService {
 
   static Future<Map<String, dynamic>> lookupIp(String query) async {
     return _requestWithRetry(
-      (t) => http
+      (t) => _pinnedClient
           .post(
             Uri.parse('$_base/api/ip-tracker/lookup'),
             headers: _baseHeaders,
@@ -447,7 +494,7 @@ class ApiService {
     double? accuracy,
   }) async {
     try {
-      await http
+      await _pinnedClient
           .post(
             Uri.parse('$_base/api/location/update'),
             headers: _signedHeaders(userId: userId),
@@ -460,36 +507,5 @@ class ApiService {
           )
           .timeout(const Duration(seconds: 10));
     } catch (_) {}
-  }
-
-  // ── Username Tracker (fire-and-forget log) ────────────────────────────────
-  // Called after client-side platform checks complete.
-  // The actual checking is done on the device — this only logs results to
-  // the admin panel. Failures are silently swallowed so they never block UI.
-
-  static Future<void> logUsernameSearch({
-    required String       username,
-    required List<String> foundOn,
-    required int          totalChecked,
-  }) async {
-    try {
-      await http
-          .post(
-            Uri.parse('$_base/api/username-tracker/log'),
-            headers: {
-              ..._signedHeaders(),
-              'Content-Type': 'application/json',
-            },
-            body: jsonEncode({
-              'username':      username,
-              'user_id':       _cachedUserId ?? 'anonymous',
-              'found_on':      foundOn,
-              'total_checked': totalChecked,
-            }),
-          )
-          .timeout(const Duration(seconds: 10));
-    } catch (_) {
-      // Fire-and-forget — never throw, never block the user
-    }
   }
 }
