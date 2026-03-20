@@ -17,13 +17,19 @@ class _Platform {
   final String name;
   final String urlTemplate; // {u} replaced with the username
   final String category;
-  final String? notFoundBody; // body substring → means NOT found (200 sites)
+  final String? notFoundBody;   // body substring → NOT found (200-always sites)
+  final List<String> notFoundBodyAny; // any of these → NOT found
+  final Duration timeout;       // per-platform timeout
+  final bool mobileCheck;       // use mobile URL variant
 
   const _Platform({
     required this.name,
     required this.urlTemplate,
     required this.category,
     this.notFoundBody,
+    this.notFoundBodyAny = const [],
+    this.timeout = const Duration(seconds: 10),
+    this.mobileCheck = false,
   });
 }
 
@@ -75,42 +81,76 @@ class _UsernameTrackerScreenState extends State<UsernameTrackerScreen> {
       urlTemplate: 'https://www.instagram.com/{u}/',
       category: 'Social',
       notFoundBody: "Sorry, this page isn't available",
+      timeout: Duration(seconds: 12),
     ),
     _Platform(
       name: 'TikTok',
       urlTemplate: 'https://www.tiktok.com/@{u}',
       category: 'Social',
       notFoundBody: 'user-not-found',
+      timeout: Duration(seconds: 12),
     ),
     _Platform(
+      // Twitter/X: 404 = not found, 200 = found (profile page)
       name: 'Twitter / X',
       urlTemplate: 'https://twitter.com/{u}',
       category: 'Social',
+      timeout: Duration(seconds: 12),
     ),
     _Platform(
+      // Facebook: use mobile site — faster, less bot-blocking, longer timeout
+      // 200 + no "not found" markers → profile exists (public or locked)
+      // Redirects to login (302) → inconclusive, shown as Timeout
       name: 'Facebook',
-      urlTemplate: 'https://www.facebook.com/{u}',
+      urlTemplate: 'https://m.facebook.com/{u}',
       category: 'Social',
+      notFoundBodyAny: [
+        "isn't available",
+        'Page Not Found',
+        'This content isn',
+        'not available',
+        'page you requested cannot be found',
+        'profile is unavailable',
+      ],
+      timeout: Duration(seconds: 18),
+      mobileCheck: true,
     ),
     _Platform(
       name: 'Pinterest',
       urlTemplate: 'https://www.pinterest.com/{u}/',
       category: 'Social',
+      notFoundBodyAny: [
+        "Sorry! We couldn",
+        "This page doesn",
+        "Hmm...we couldn",
+        "couldn't find that page",
+      ],
+      timeout: Duration(seconds: 12),
     ),
     _Platform(
       name: 'Tumblr',
       urlTemplate: 'https://{u}.tumblr.com/',
       category: 'Social',
+      notFoundBodyAny: ['There's nothing here.', 'Not Found'],
+      timeout: Duration(seconds: 10),
     ),
     _Platform(
       name: 'Reddit',
       urlTemplate: 'https://www.reddit.com/user/{u}',
       category: 'Social',
+      notFoundBodyAny: ['page not found', 'Sorry, nobody on Reddit goes by that name'],
+      timeout: Duration(seconds: 10),
     ),
     _Platform(
       name: 'Snapchat',
       urlTemplate: 'https://www.snapchat.com/add/{u}',
       category: 'Social',
+      notFoundBodyAny: [
+        'Sorry, we can't find that page',
+        'Page Not Found',
+        'not found',
+      ],
+      timeout: Duration(seconds: 12),
     ),
     // ── Video ─────────────────────────────────────────────────────────────────
     _Platform(
@@ -341,34 +381,99 @@ class _UsernameTrackerScreenState extends State<UsernameTrackerScreen> {
   }
 
   Future<void> _checkPlatform(_Result result, String username) async {
-    final url = result.platform.urlTemplate.replaceAll('{u}', username);
-    result.profileUrl = url;
+    // Use the canonical profile URL for display/copy (always desktop)
+    final displayUrl = result.platform.urlTemplate
+        .replaceAll('{u}', username)
+        .replaceAll('m.facebook.com', 'www.facebook.com');
+    result.profileUrl = displayUrl;
+
+    // Actual request URL (may be mobile variant for Facebook)
+    final requestUrl = result.platform.urlTemplate.replaceAll('{u}', username);
+
+    // ── User-Agent: look like a real Android phone ──────────────────────────
+    final headers = {
+      'User-Agent':
+          'Mozilla/5.0 (Linux; Android 11; Infinix X689B) '
+          'AppleWebKit/537.36 (KHTML, like Gecko) '
+          'Chrome/120.0.6099.144 Mobile Safari/537.36',
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Accept':
+          'text/html,application/xhtml+xml,application/xml;q=0.9,'
+          'image/avif,image/webp,*/*;q=0.8',
+      'Accept-Encoding': 'gzip, deflate',
+      'Connection':      'keep-alive',
+      if (result.platform.mobileCheck) ...{
+        // Mobile-specific headers help avoid Facebook bot detection
+        'X-Requested-With': 'com.facebook.katana',
+        'Sec-Fetch-Dest':   'document',
+        'Sec-Fetch-Mode':   'navigate',
+      },
+    };
 
     try {
-      final response = await http.get(
-        Uri.parse(url),
-        headers: {
-          'User-Agent':
-              'Mozilla/5.0 (Linux; Android 11; Infinix Hot11s) '
-              'AppleWebKit/537.36 (KHTML, like Gecko) '
-              'Chrome/120.0.0.0 Mobile Safari/537.36',
-          'Accept-Language': 'en-US,en;q=0.9',
-          'Accept':
-              'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        },
-      ).timeout(const Duration(seconds: 9));
+      final response = await http
+          .get(Uri.parse(requestUrl), headers: headers)
+          .timeout(result.platform.timeout);
 
-      if (response.statusCode == 200) {
-        final notFound = result.platform.notFoundBody;
-        if (notFound != null && response.body.contains(notFound)) {
+      final body      = response.body;
+      final code      = response.statusCode;
+
+      if (code == 200) {
+        // Check single notFoundBody first
+        final nf = result.platform.notFoundBody;
+        if (nf != null && body.contains(nf)) {
           result.status = _Status.notFound;
-        } else {
-          result.status = _Status.found;
+          return;
         }
-      } else if (response.statusCode == 404 || response.statusCode == 410) {
+        // Check any of notFoundBodyAny
+        final anyList = result.platform.notFoundBodyAny;
+        if (anyList.isNotEmpty) {
+          final bodyLower = body.toLowerCase();
+          final isNotFound = anyList.any(
+            (s) => bodyLower.contains(s.toLowerCase()),
+          );
+          if (isNotFound) {
+            result.status = _Status.notFound;
+            return;
+          }
+        }
+        result.status = _Status.found;
+
+      } else if (code == 302 || code == 301) {
+        // Redirect — for Facebook this usually means logged-out wall
+        // but the username DOES exist (FB redirects unknown users to /login).
+        // We'll check the Location header:
+        final location = response.headers['location'] ?? '';
+        if (result.platform.mobileCheck) {
+          // FB: redirect to /login.php or /r.php → user MIGHT exist but
+          // we can't confirm without auth → show as error (inconclusive)
+          if (location.contains('login') || location.contains('/r.php')) {
+            result.status = _Status.error;
+          } else {
+            result.status = _Status.found;
+          }
+        } else {
+          result.status = _Status.error;
+        }
+
+      } else if (code == 404 || code == 410) {
         result.status = _Status.notFound;
+
+      } else if (code == 429) {
+        // Rate limited — try once more after a short delay
+        await Future.delayed(const Duration(seconds: 3));
+        try {
+          final retry = await http
+              .get(Uri.parse(requestUrl), headers: headers)
+              .timeout(result.platform.timeout);
+          result.status = retry.statusCode == 200
+              ? _Status.found
+              : (retry.statusCode == 404 ? _Status.notFound : _Status.error);
+        } catch (_) {
+          result.status = _Status.error;
+        }
+
       } else {
-        // 302, 403, 429, etc. — treat as error (inconclusive)
         result.status = _Status.error;
       }
     } catch (_) {
