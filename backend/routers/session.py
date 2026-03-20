@@ -17,6 +17,10 @@ Why this is safer than the old approach:
   - Session tokens are random (unforgeable without calling this endpoint)
   - Tokens expire after 24h and auto-refresh
   - Each session is tied to a device fingerprint
+
+FIXES (v2):
+  - BUG 1: redis_set() called with ex= keyword — corrected to ttl_seconds=
+  - BUG 2: redis_set/redis_get/redis_incr are SYNC functions — removed await
 """
 
 import hashlib
@@ -35,16 +39,11 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # ── Bootstrap secret ──────────────────────────────────────────────────────────
-# This is DIFFERENT from the old _APP_SALT.
-# It's only used to authenticate the session-creation endpoint.
-# Even if extracted from the APK, it only lets someone request a session
-# (rate-limited to 5/hour per device fingerprint).
 _BOOTSTRAP_SALT = os.environ.get("BOOTSTRAP_SALT", "xis-boot-2024")
 _APP_ID         = "com.xissin.app"
-_TOKEN_WINDOW   = 30   # seconds
+_TOKEN_WINDOW   = 30     # seconds
 _SESSION_TTL    = 86400  # 24 hours
 
-# Rate limit tracking — in Redis
 _MAX_SESSION_REQUESTS_PER_HOUR = 5
 
 
@@ -84,25 +83,26 @@ def _verify_bootstrap(device_fp: str, timestamp: int, token: str) -> bool:
     return hmac.compare_digest(expected, token)
 
 
-async def _check_rate_limit(device_fp: str) -> bool:
+def _check_rate_limit(device_fp: str) -> bool:
     """
     Allow max 5 session requests per device per hour.
     Uses Redis to track count.
+    NOTE: Uses sync db calls — no await needed.
     """
     try:
         import database as db
         rate_key = f"sess_rate:{device_fp}"
-        count    = await db.redis_get(rate_key)
+        count    = db.redis_get(rate_key)  # ← sync, no await
 
         if count is None:
-            await db.redis_set(rate_key, "1", ex=3600)
+            db.redis_set(rate_key, "1", ttl_seconds=3600)  # ← fixed: ttl_seconds not ex
             return True
 
         if int(count) >= _MAX_SESSION_REQUESTS_PER_HOUR:
             logger.warning(f"Session rate limit hit for device: {device_fp[:16]}...")
             return False
 
-        await db.redis_incr(rate_key)
+        db.redis_incr(rate_key)  # ← sync, no await
         return True
     except Exception as e:
         logger.warning(f"Rate limit check failed (allowing): {e}")
@@ -139,8 +139,8 @@ async def create_session(payload: SessionRequest, request: Request):
         )
         raise HTTPException(status_code=401, detail="Invalid bootstrap token")
 
-    # 4. Rate limit check
-    if not await _check_rate_limit(payload.device_fingerprint):
+    # 4. Rate limit check — sync function, no await
+    if not _check_rate_limit(payload.device_fingerprint):
         raise HTTPException(
             status_code=429,
             detail="Too many session requests. Try again later.",
@@ -149,18 +149,18 @@ async def create_session(payload: SessionRequest, request: Request):
     # 5. Generate cryptographically random session token
     session_token = secrets.token_hex(32)  # 256-bit random token
 
-    # 6. Store in Redis with TTL
+    # 6. Store in Redis with TTL — sync call, no await, correct kwarg
     try:
         import database as db
         session_data = {
-            "device_fp": payload.device_fingerprint,
+            "device_fp":  payload.device_fingerprint,
             "created_at": int(time.time()),
-            "ip": client_ip,
+            "ip":         client_ip,
         }
-        await db.redis_set(
+        db.redis_set(                        # ← sync, no await
             f"sess:{session_token}",
             str(session_data),
-            ex=_SESSION_TTL,
+            ttl_seconds=_SESSION_TTL,        # ← fixed: ttl_seconds not ex
         )
         logger.info(
             f"Session created: device={payload.device_fingerprint[:16]}... "
@@ -184,14 +184,13 @@ async def revoke_session(
     """
     Revokes the current session token (logout / re-auth).
     """
-    from fastapi import Header
     token = request.headers.get("X-Session-Token")
     if not token:
         return {"revoked": False, "reason": "No token provided"}
 
     try:
         import database as db
-        deleted = await db.redis_delete(f"sess:{token}")
-        return {"revoked": deleted > 0}
+        deleted = db.redis_delete(f"sess:{token}")  # ← sync, no await
+        return {"revoked": bool(deleted)}
     except Exception:
         return {"revoked": False}
