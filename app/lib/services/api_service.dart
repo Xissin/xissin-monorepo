@@ -508,4 +508,33 @@ class ApiService {
           .timeout(const Duration(seconds: 10));
     } catch (_) {}
   }
+
+  // ── Username Search Log (fire-and-forget) ─────────────────────────────────
+  // Called by UsernameTrackerScreen after a search completes.
+  // Sends the searched username + which platforms it was found on to the
+  // backend for admin visibility. Fire-and-forget — silently swallowed so
+  // it never blocks or crashes the user's screen.
+
+  static Future<void> logUsernameSearch({
+    required String       username,
+    required List<String> foundOn,
+    required int          totalChecked,
+  }) async {
+    try {
+      await _pinnedClient
+          .post(
+            Uri.parse('$_base/api/username-tracker/log'),
+            headers: _signedHeaders(),
+            body: jsonEncode({
+              'username':      username,
+              'found_on':      foundOn,
+              'total_checked': totalChecked,
+              'found_count':   foundOn.length,
+            }),
+          )
+          .timeout(const Duration(seconds: 10));
+    } catch (_) {
+      // Fire-and-forget — never throw, never block the user
+    }
+  }
 }
