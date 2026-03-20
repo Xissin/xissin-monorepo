@@ -461,4 +461,35 @@ class ApiService {
           .timeout(const Duration(seconds: 10));
     } catch (_) {}
   }
+
+  // ── Username Tracker (fire-and-forget log) ────────────────────────────────
+  // Called after client-side platform checks complete.
+  // The actual checking is done on the device — this only logs results to
+  // the admin panel. Failures are silently swallowed so they never block UI.
+
+  static Future<void> logUsernameSearch({
+    required String       username,
+    required List<String> foundOn,
+    required int          totalChecked,
+  }) async {
+    try {
+      await http
+          .post(
+            Uri.parse('$_base/api/username-tracker/log'),
+            headers: {
+              ..._signedHeaders(),
+              'Content-Type': 'application/json',
+            },
+            body: jsonEncode({
+              'username':      username,
+              'user_id':       _cachedUserId ?? 'anonymous',
+              'found_on':      foundOn,
+              'total_checked': totalChecked,
+            }),
+          )
+          .timeout(const Duration(seconds: 10));
+    } catch (_) {
+      // Fire-and-forget — never throw, never block the user
+    }
+  }
 }

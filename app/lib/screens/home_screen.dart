@@ -20,6 +20,7 @@ import 'ngl_screen.dart';
 import 'url_remover_screen.dart';
 import 'duplicate_remover_screen.dart';
 import 'ip_tracker_screen.dart';
+import 'username_tracker_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   final String userId;
@@ -158,6 +159,13 @@ class _HomeScreenState extends State<HomeScreen> {
     HapticFeedback.mediumImpact();
     AdService.instance.showInterstitial();
     _pushSlide(const IpTrackerScreen());
+  }
+
+  // ── NEW: Username Tracker ──────────────────────────────────────────────────
+  void _goToUsernameTracker() {
+    HapticFeedback.mediumImpact();
+    AdService.instance.showInterstitial();
+    _pushSlide(const UsernameTrackerScreen());
   }
 
   void _showComingSoon(String name) {
@@ -444,9 +452,9 @@ class _HomeScreenState extends State<HomeScreen> {
                           borderRadius: BorderRadius.circular(AppRadius.full),
                         ),
                         child: Text(
-                          // 6 active tools: SMS, NGL, URL Remover,
-                          // Dup Remover, IP Tracker, About
-                          '6',
+                          // 7 active tools: SMS, NGL, URL Remover,
+                          // Dup Remover, IP Tracker, Username Tracker, About
+                          '7',
                           style: TextStyle(
                             color:      c.primary,
                             fontSize:   11,
@@ -532,6 +540,19 @@ class _HomeScreenState extends State<HomeScreen> {
                       glowColor: const Color(0xFF00B4D8),
                       onTap:     _goToIpTracker,
                       index:     5,
+                    ),
+                    // ── 6: Username Tracker (NEW) ─────────────────────────────
+                    _FeatureCard(
+                      icon:      Icons.manage_accounts_rounded,
+                      title:     'User Tracker',
+                      subtitle:  '30+ Platforms',
+                      gradient:  const [
+                        Color(0xFF9B59B6),
+                        Color(0xFF6C3483),
+                      ],
+                      glowColor: const Color(0xFF9B59B6),
+                      onTap:     _goToUsernameTracker,
+                      index:     6,
                     ),
                   ]),
                   gridDelegate:
