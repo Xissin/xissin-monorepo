@@ -2,7 +2,7 @@
 pages/7_Settings.py — Server control: maintenance, versioning, feature flags,
                        APK hosting, and Remove Ads product settings
 """
-import re  # ← moved to top-level (was buried inside a conditional block)
+import re
 
 import streamlit as st
 from utils.api import get, post
@@ -20,18 +20,11 @@ def load_settings():
     return get("/api/settings/")
 
 
-def _convert_drive_url(url: str) -> str:
-    """Convert a Google Drive share link to a direct download URL."""
+def _validate_github_url(url: str) -> bool:
+    """Check if the URL looks like a valid GitHub Releases direct download link."""
     if not url:
-        return url
-    if "uc?export=download" in url:
-        return url
-    m = re.search(r"/file/d/([a-zA-Z0-9_-]+)", url)
-    if not m:
-        m = re.search(r"[?&]id=([a-zA-Z0-9_-]+)", url)
-    if m:
-        return f"https://drive.google.com/uc?export=download&id={m.group(1)}"
-    return url
+        return False
+    return "github.com" in url and "/releases/download/" in url
 
 
 col_refresh, _ = st.columns([1, 5])
@@ -101,13 +94,13 @@ with col_right:
     st.markdown("### 🚀 APK Download (Auto-Update)")
     with st.container(border=True):
         st.caption(
-            "Paste any Google Drive share link — the backend will auto-convert "
-            "it to a direct download URL when saved."
+            "Paste the GitHub Releases direct download URL. "
+            "SHA-256 will always match — no Google Drive needed."
         )
         raw_apk_url = st.text_input(
-            "Google Drive APK Link",
+            "GitHub Release APK URL",
             value=s.get("apk_download_url", ""),
-            placeholder="https://drive.google.com/file/d/YOUR_FILE_ID/view?usp=sharing",
+            placeholder="https://github.com/Xissin/xissin-monorepo/releases/download/v1.5.2/Xissin-v1.5.2.apk",
         )
         apk_version_notes = st.text_area(
             "Version Notes (shown in update dialog)",
@@ -121,17 +114,24 @@ with col_right:
             placeholder="e.g. a3f1c9e2b847d605...",
             help="SHA-256 hash of the APK file. The app checks this before installing to prevent tampering.",
         )
+
+        # SHA-256 validation
         if apk_sha256:
             if len(apk_sha256.strip()) == 64 and all(c in "0123456789abcdefABCDEF" for c in apk_sha256.strip()):
                 st.success("✅ Valid SHA-256 hash (64 hex characters)")
             else:
                 st.error("❌ Invalid hash — must be exactly 64 hex characters")
+
+        # GitHub URL validation
         if raw_apk_url:
-            converted = _convert_drive_url(raw_apk_url)
-            if converted != raw_apk_url:
-                st.success(f"✅ Will be saved as:\n`{converted}`")
+            if _validate_github_url(raw_apk_url):
+                st.success(f"✅ Valid GitHub Releases URL.")
             else:
-                st.info("🔗 Already a direct download URL.")
+                st.warning(
+                    "⚠️ This doesn't look like a GitHub Releases URL.\n\n"
+                    "Expected format:\n"
+                    "`https://github.com/Xissin/xissin-monorepo/releases/download/vX.X.X/Xissin-vX.X.X.apk`"
+                )
 
 st.divider()
 
