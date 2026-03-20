@@ -141,12 +141,14 @@ class _HomeScreenState extends State<HomeScreen> {
   // ── NEW: URL Remover ───────────────────────────────────────────────────────
   void _goToUrlRemover() {
     HapticFeedback.mediumImpact();
+    AdService.instance.showInterstitial(); // same pattern as SMS/NGL
     _pushSlide(const UrlRemoverScreen());
   }
 
   // ── NEW: Duplicate Remover ─────────────────────────────────────────────────
   void _goToDupRemover() {
     HapticFeedback.mediumImpact();
+    AdService.instance.showInterstitial(); // same pattern as SMS/NGL
     _pushSlide(const DuplicateRemoverScreen());
   }
 
