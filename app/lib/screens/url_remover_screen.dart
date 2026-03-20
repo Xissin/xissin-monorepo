@@ -1,7 +1,9 @@
 // ============================================================
 //  app/lib/screens/url_remover_screen.dart
 //  🔗 URL Remover — 100% local, no backend, offline-safe ads
+//  Interstitial fires: AFTER processing + AFTER share/new file
 // ============================================================
+import 'dart:async';
 import 'dart:io';
 import 'dart:isolate';
 import 'package:flutter/material.dart';
@@ -36,6 +38,7 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
 
   // ── Connectivity ─────────────────────────────────────────────────────────────
   bool _isOnline = true;
+  StreamSubscription<List<ConnectivityResult>>? _connSub;
 
   // ── Local Banner Ad ──────────────────────────────────────────────────────────
   BannerAd? _bannerAd;
@@ -107,11 +110,13 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
       CurvedAnimation(parent: _pulseCtrl, curve: Curves.easeInOut),
     );
 
-    // Check connectivity once on load
+    // ── Kick interstitial preload so it's ready when processing finishes ──────
+    // init() without userId is safe — it just loads the interstitial ad.
+    AdService.instance.init();
+
     _checkConnectivity();
 
-    // Listen for connectivity changes
-    Connectivity().onConnectivityChanged.listen((results) {
+    _connSub = Connectivity().onConnectivityChanged.listen((results) {
       if (!mounted) return;
       final online = !results.every((r) => r == ConnectivityResult.none);
       if (online != _isOnline) {
@@ -136,6 +141,7 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
 
   @override
   void dispose() {
+    _connSub?.cancel();
     AdService.instance.removeListener(_onAdChanged);
     _bannerAd?.dispose();
     _pulseCtrl.dispose();
@@ -153,12 +159,10 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
   }
 
   void _initBanner() {
-    // Skip if offline or premium
     if (!_isOnline || AdService.instance.adsRemoved) return;
     _bannerAd?.dispose();
     _bannerAd    = null;
     _bannerReady = false;
-
     final ad = AdService.instance.createBannerAd(
       onLoaded: () {
         if (!mounted || AdService.instance.adsRemoved) {
@@ -168,7 +172,6 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
       },
       onFailed: () {
         if (mounted) setState(() { _bannerAd = null; _bannerReady = false; });
-        // Retry after 30s only if back online
         Future.delayed(const Duration(seconds: 30), () {
           if (mounted && _isOnline && !AdService.instance.adsRemoved) {
             _initBanner();
@@ -197,6 +200,14 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
         child:  AdWidget(ad: _bannerAd!),
       ),
     );
+  }
+
+  // ── Interstitial helper ───────────────────────────────────────────────────────
+
+  void _tryShowInterstitial() {
+    if (_isOnline && !AdService.instance.adsRemoved) {
+      AdService.instance.showInterstitial();
+    }
   }
 
   // ── Actions ──────────────────────────────────────────────────────────────────
@@ -232,11 +243,6 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
   Future<void> _runProcess() async {
     if (_rawContent == null) return;
 
-    // Show interstitial only if online and not premium
-    if (_isOnline && !AdService.instance.adsRemoved) {
-      AdService.instance.showInterstitial();
-    }
-
     final lines = _rawContent!.split('\n');
     _originalCount = lines.where((l) => l.trim().isNotEmpty).length;
 
@@ -253,19 +259,25 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
     });
 
     try {
-      final result  = await _runInIsolate(lines);
+      final result   = await _runInIsolate(lines);
       ticker.cancel();
-      final dir     = await getTemporaryDirectory();
+      final dir      = await getTemporaryDirectory();
       final baseName = (_pickedFileName ?? 'output')
           .replaceAll(RegExp(r'\.[^.]+$'), '');
-      final outFile = File('${dir.path}/${baseName}_url_removed.txt');
+      final outFile  = File('${dir.path}/${baseName}_url_removed.txt');
       await outFile.writeAsString(result.join('\n'));
+
       setState(() {
         _result     = result;
         _phase      = _Phase.done;
         _progress   = 1.0;
         _outputFile = outFile;
       });
+
+      // ── Show interstitial AFTER processing completes ──────────────────────
+      // Small delay so the result card animates in first before the ad pops
+      Future.delayed(const Duration(milliseconds: 600), _tryShowInterstitial);
+
     } catch (e) {
       ticker.cancel();
       setState(() { _phase = _Phase.ready; _errorMsg = 'Processing failed: $e'; });
@@ -275,21 +287,27 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
   Future<void> _shareFile() async {
     if (_outputFile == null) return;
     HapticFeedback.mediumImpact();
+    // Show interstitial when user taps Share
+    _tryShowInterstitial();
     await Share.shareXFiles(
       [XFile(_outputFile!.path)],
       subject: 'URL Removed — ${_outputFile!.path.split('/').last}',
     );
   }
 
-  void _reset() => setState(() {
-    _phase          = _Phase.idle;
-    _pickedFileName = null;
-    _rawContent     = null;
-    _result         = [];
-    _outputFile     = null;
-    _progress       = 0;
-    _errorMsg       = null;
-  });
+  void _reset() {
+    // Show interstitial when user taps New File (starts next job)
+    _tryShowInterstitial();
+    setState(() {
+      _phase          = _Phase.idle;
+      _pickedFileName = null;
+      _rawContent     = null;
+      _result         = [];
+      _outputFile     = null;
+      _progress       = 0;
+      _errorMsg       = null;
+    });
+  }
 
   // ── Build ─────────────────────────────────────────────────────────────────────
 
@@ -324,7 +342,6 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
                   fontWeight: FontWeight.w700, letterSpacing: 0.4)),
         ]),
         centerTitle: true,
-        // Offline pill
         actions: [
           if (!_isOnline)
             Container(
@@ -340,9 +357,9 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
                 Icon(Icons.wifi_off_rounded,
                     color: Color(0xFFFF6B6B), size: 11),
                 SizedBox(width: 4),
-                Text('Offline', style: TextStyle(
-                    color: Color(0xFFFF6B6B), fontSize: 10,
-                    fontWeight: FontWeight.w600)),
+                Text('Offline',
+                    style: TextStyle(color: Color(0xFFFF6B6B),
+                        fontSize: 10, fontWeight: FontWeight.w600)),
               ]),
             ),
         ],
@@ -365,7 +382,7 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
     );
   }
 
-  // ── Cards ─────────────────────────────────────────────────────────────────────
+  // ── Info Card ─────────────────────────────────────────────────────────────────
 
   Widget _buildInfoCard(XissinColors c) => Container(
     padding: const EdgeInsets.all(16),
@@ -396,22 +413,28 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
     ]),
   );
 
+  // ── Error Card ────────────────────────────────────────────────────────────────
+
   Widget _buildErrorCard() => Container(
     margin: const EdgeInsets.only(bottom: 12),
     padding: const EdgeInsets.all(14),
     decoration: BoxDecoration(
       color: const Color(0xFFFF6B6B).withOpacity(0.1),
       borderRadius: BorderRadius.circular(14),
-      border: Border.all(color: const Color(0xFFFF6B6B).withOpacity(0.3)),
+      border: Border.all(
+          color: const Color(0xFFFF6B6B).withOpacity(0.3)),
     ),
     child: Row(children: [
       const Icon(Icons.error_outline_rounded,
           color: Color(0xFFFF6B6B), size: 16),
       const SizedBox(width: 8),
       Expanded(child: Text(_errorMsg!,
-          style: const TextStyle(color: Color(0xFFFF6B6B), fontSize: 12))),
+          style: const TextStyle(
+              color: Color(0xFFFF6B6B), fontSize: 12))),
     ]),
   );
+
+  // ── Main Card ─────────────────────────────────────────────────────────────────
 
   Widget _buildMainCard(XissinColors c) => Container(
     padding: const EdgeInsets.all(20),
@@ -601,6 +624,8 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
     ),
   ]);
 
+  // ── Result Card ───────────────────────────────────────────────────────────────
+
   Widget _buildResultCard(XissinColors c) {
     final kept    = _result.length;
     final removed = _originalCount - kept;
@@ -625,12 +650,11 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
                   fontWeight: FontWeight.w800, fontSize: 15)),
         ]),
         const SizedBox(height: 14),
-        _statRow('Original lines',  '$_originalCount', c.textSecondary),
+        _statRow('Original lines',   '$_originalCount', c.textSecondary),
         const SizedBox(height: 8),
-        _statRow('Clean lines kept', '$kept', const Color(0xFF2ECC71)),
+        _statRow('Clean lines kept', '$kept',           const Color(0xFF2ECC71)),
         const SizedBox(height: 8),
-        _statRow('URLs removed', '$removed ($pct%)',
-            const Color(0xFFFF6B6B)),
+        _statRow('URLs removed',     '$removed ($pct%)', const Color(0xFFFF6B6B)),
         if (_result.isNotEmpty) ...[
           const SizedBox(height: 14),
           Divider(color: c.border),
@@ -640,10 +664,8 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
           const SizedBox(height: 6),
           ..._result.take(5).map((line) => Padding(
             padding: const EdgeInsets.only(bottom: 4),
-            child: Text(line,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                    color: c.textSecondary, fontSize: 11)),
+            child: Text(line, overflow: TextOverflow.ellipsis,
+                style: TextStyle(color: c.textSecondary, fontSize: 11)),
           )),
         ],
       ]),
@@ -654,9 +676,8 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
       Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
         Text(label,
             style: const TextStyle(color: Colors.white54, fontSize: 13)),
-        Text(value,
-            style: TextStyle(color: valueColor,
-                fontSize: 13, fontWeight: FontWeight.w700)),
+        Text(value, style: TextStyle(color: valueColor,
+            fontSize: 13, fontWeight: FontWeight.w700)),
       ]);
 }
 

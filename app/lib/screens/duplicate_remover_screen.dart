@@ -1,7 +1,9 @@
 // ============================================================
 //  app/lib/screens/duplicate_remover_screen.dart
 //  🗂️ Duplicate Remover — 100% local, no backend, offline-safe ads
+//  Interstitial fires: AFTER processing + AFTER share/new file
 // ============================================================
+import 'dart:async';
 import 'dart:io';
 import 'dart:isolate';
 import 'package:flutter/material.dart';
@@ -37,6 +39,7 @@ class _DuplicateRemoverScreenState extends State<DuplicateRemoverScreen>
 
   // ── Connectivity ─────────────────────────────────────────────────────────────
   bool _isOnline = true;
+  StreamSubscription<List<ConnectivityResult>>? _connSub;
 
   // ── Local Banner Ad ──────────────────────────────────────────────────────────
   BannerAd? _bannerAd;
@@ -87,9 +90,12 @@ class _DuplicateRemoverScreenState extends State<DuplicateRemoverScreen>
       CurvedAnimation(parent: _pulseCtrl, curve: Curves.easeInOut),
     );
 
+    // ── Kick interstitial preload so it's ready when processing finishes ──────
+    AdService.instance.init();
+
     _checkConnectivity();
 
-    Connectivity().onConnectivityChanged.listen((results) {
+    _connSub = Connectivity().onConnectivityChanged.listen((results) {
       if (!mounted) return;
       final online = !results.every((r) => r == ConnectivityResult.none);
       if (online != _isOnline) {
@@ -114,6 +120,7 @@ class _DuplicateRemoverScreenState extends State<DuplicateRemoverScreen>
 
   @override
   void dispose() {
+    _connSub?.cancel();
     AdService.instance.removeListener(_onAdChanged);
     _bannerAd?.dispose();
     _pulseCtrl.dispose();
@@ -135,7 +142,6 @@ class _DuplicateRemoverScreenState extends State<DuplicateRemoverScreen>
     _bannerAd?.dispose();
     _bannerAd    = null;
     _bannerReady = false;
-
     final ad = AdService.instance.createBannerAd(
       onLoaded: () {
         if (!mounted || AdService.instance.adsRemoved) {
@@ -175,6 +181,14 @@ class _DuplicateRemoverScreenState extends State<DuplicateRemoverScreen>
     );
   }
 
+  // ── Interstitial helper ───────────────────────────────────────────────────────
+
+  void _tryShowInterstitial() {
+    if (_isOnline && !AdService.instance.adsRemoved) {
+      AdService.instance.showInterstitial();
+    }
+  }
+
   // ── Actions ──────────────────────────────────────────────────────────────────
 
   Future<void> _pickFile() async {
@@ -208,11 +222,6 @@ class _DuplicateRemoverScreenState extends State<DuplicateRemoverScreen>
   Future<void> _runProcess() async {
     if (_rawContent == null) return;
 
-    // Show interstitial only if online and not premium
-    if (_isOnline && !AdService.instance.adsRemoved) {
-      AdService.instance.showInterstitial();
-    }
-
     final lines = _rawContent!.split('\n');
     _originalCount = lines.where((l) => l.trim().isNotEmpty).length;
 
@@ -229,19 +238,25 @@ class _DuplicateRemoverScreenState extends State<DuplicateRemoverScreen>
     });
 
     try {
-      final result  = await _runInIsolate(lines);
+      final result   = await _runInIsolate(lines);
       ticker.cancel();
-      final dir     = await getTemporaryDirectory();
+      final dir      = await getTemporaryDirectory();
       final baseName = (_pickedFileName ?? 'output')
           .replaceAll(RegExp(r'\.[^.]+$'), '');
-      final outFile = File('${dir.path}/${baseName}_deduped.txt');
+      final outFile  = File('${dir.path}/${baseName}_deduped.txt');
       await outFile.writeAsString(result.join('\n'));
+
       setState(() {
         _result     = result;
         _phase      = _Phase.done;
         _progress   = 1.0;
         _outputFile = outFile;
       });
+
+      // ── Show interstitial AFTER processing completes ──────────────────────
+      // Small delay so the result card renders before the ad pops up
+      Future.delayed(const Duration(milliseconds: 600), _tryShowInterstitial);
+
     } catch (e) {
       ticker.cancel();
       setState(() { _phase = _Phase.ready; _errorMsg = 'Processing failed: $e'; });
@@ -251,21 +266,27 @@ class _DuplicateRemoverScreenState extends State<DuplicateRemoverScreen>
   Future<void> _shareFile() async {
     if (_outputFile == null) return;
     HapticFeedback.mediumImpact();
+    // Show interstitial when user taps Share
+    _tryShowInterstitial();
     await Share.shareXFiles(
       [XFile(_outputFile!.path)],
       subject: 'Deduped — ${_outputFile!.path.split('/').last}',
     );
   }
 
-  void _reset() => setState(() {
-    _phase          = _Phase.idle;
-    _pickedFileName = null;
-    _rawContent     = null;
-    _result         = [];
-    _outputFile     = null;
-    _progress       = 0;
-    _errorMsg       = null;
-  });
+  void _reset() {
+    // Show interstitial when user taps New File (starts next job)
+    _tryShowInterstitial();
+    setState(() {
+      _phase          = _Phase.idle;
+      _pickedFileName = null;
+      _rawContent     = null;
+      _result         = [];
+      _outputFile     = null;
+      _progress       = 0;
+      _errorMsg       = null;
+    });
+  }
 
   // ── Build ─────────────────────────────────────────────────────────────────────
 
@@ -343,7 +364,7 @@ class _DuplicateRemoverScreenState extends State<DuplicateRemoverScreen>
     );
   }
 
-  // ── Cards ─────────────────────────────────────────────────────────────────────
+  // ── Info Card ─────────────────────────────────────────────────────────────────
 
   Widget _buildInfoCard(XissinColors c) => Container(
     padding: const EdgeInsets.all(16),
@@ -380,6 +401,8 @@ class _DuplicateRemoverScreenState extends State<DuplicateRemoverScreen>
     ]),
   );
 
+  // ── Error Card ────────────────────────────────────────────────────────────────
+
   Widget _buildErrorCard() => Container(
     margin: const EdgeInsets.only(bottom: 12),
     padding: const EdgeInsets.all(14),
@@ -400,18 +423,17 @@ class _DuplicateRemoverScreenState extends State<DuplicateRemoverScreen>
     ]),
   );
 
+  // ── Main Card ─────────────────────────────────────────────────────────────────
+
   Widget _buildMainCard(XissinColors c) => Container(
     padding: const EdgeInsets.all(20),
     decoration: BoxDecoration(
       color: c.surface,
       borderRadius: BorderRadius.circular(20),
       border: Border.all(color: c.border),
-      boxShadow: [
-        BoxShadow(
-            color: Colors.black.withOpacity(0.1),
-            blurRadius: 20,
-            offset: const Offset(0, 8))
-      ],
+      boxShadow: [BoxShadow(
+          color: Colors.black.withOpacity(0.1),
+          blurRadius: 20, offset: const Offset(0, 8))],
     ),
     child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -543,12 +565,10 @@ class _DuplicateRemoverScreenState extends State<DuplicateRemoverScreen>
         gradient: const LinearGradient(
             colors: [Color(0xFFFFA94D), Color(0xFFE67E22)]),
         borderRadius: BorderRadius.circular(14),
-        boxShadow: [
-          BoxShadow(
-              color: const Color(0xFFFFA94D).withOpacity(0.4),
-              blurRadius: 12,
-              offset: const Offset(0, 4))
-        ],
+        boxShadow: [BoxShadow(
+            color: const Color(0xFFFFA94D).withOpacity(0.4),
+            blurRadius: 12,
+            offset: const Offset(0, 4))],
       ),
       child: const Row(
         mainAxisAlignment: MainAxisAlignment.center,
@@ -600,12 +620,10 @@ class _DuplicateRemoverScreenState extends State<DuplicateRemoverScreen>
             gradient: const LinearGradient(
                 colors: [Color(0xFF56CCF2), Color(0xFF2F80ED)]),
             borderRadius: BorderRadius.circular(12),
-            boxShadow: [
-              BoxShadow(
-                  color: const Color(0xFF56CCF2).withOpacity(0.3),
-                  blurRadius: 10,
-                  offset: const Offset(0, 3))
-            ],
+            boxShadow: [BoxShadow(
+                color: const Color(0xFF56CCF2).withOpacity(0.3),
+                blurRadius: 10,
+                offset: const Offset(0, 3))],
           ),
           child: const Row(
             mainAxisAlignment: MainAxisAlignment.center,
@@ -624,6 +642,8 @@ class _DuplicateRemoverScreenState extends State<DuplicateRemoverScreen>
       ),
     ),
   ]);
+
+  // ── Result Card ───────────────────────────────────────────────────────────────
 
   Widget _buildResultCard(XissinColors c) {
     final kept  = _result.length;
@@ -653,14 +673,11 @@ class _DuplicateRemoverScreenState extends State<DuplicateRemoverScreen>
                   fontSize: 15)),
         ]),
         const SizedBox(height: 14),
-        _statRow('Original lines', '$_originalCount',
-            c.textSecondary),
+        _statRow('Original lines',      '$_originalCount', c.textSecondary),
         const SizedBox(height: 8),
-        _statRow('Unique lines kept', '$kept',
-            const Color(0xFF2ECC71)),
+        _statRow('Unique lines kept',    '$kept',           const Color(0xFF2ECC71)),
         const SizedBox(height: 8),
-        _statRow('Duplicates removed', '$dupes ($pct%)',
-            const Color(0xFFFF6B6B)),
+        _statRow('Duplicates removed',  '$dupes ($pct%)',   const Color(0xFFFF6B6B)),
         if (_result.isNotEmpty) ...[
           const SizedBox(height: 14),
           Divider(color: c.border),
