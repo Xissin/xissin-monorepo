@@ -7,6 +7,7 @@
 //  network_security_config.xml allows HTTP for ip-api.com only.
 //
 //  Special: empty query → ip-api.com returns caller's own IP
+//  Logging: fire-and-forget to backend after every lookup
 // ============================================================
 import 'dart:convert';
 import 'dart:async';
@@ -17,6 +18,7 @@ import 'package:http/http.dart' as http;
 import 'package:google_mobile_ads/google_mobile_ads.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../services/ad_service.dart';
+import '../services/api_service.dart';
 import '../theme/app_theme.dart';
 
 class IpTrackerScreen extends StatefulWidget {
@@ -159,19 +161,42 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
     HapticFeedback.mediumImpact();
     setState(() { _myIpLoading = true; _myIp = null; _error = null; });
     try {
-      // Empty query = ip-api returns caller's own IP automatically
       final data = await _callApi('');
       if (data['status'] == 'fail') {
         setState(() {
           _myIpLoading = false;
           _error = data['message'] as String? ?? 'Could not fetch your IP.';
         });
+        // Log failed lookup
+        ApiService.logIpLookup(
+          query:      '',
+          resolvedIp: '',
+          country:    '',
+          city:       '',
+          isp:        '',
+          lat:        0.0,
+          lon:        0.0,
+          success:    false,
+        );
         return;
       }
       setState(() {
         _myIp        = data['query'] as String? ?? '';
         _myIpLoading = false;
       });
+
+      // Fire-and-forget log to backend
+      ApiService.logIpLookup(
+        query:      '',
+        resolvedIp: data['query']   as String? ?? '',
+        country:    data['country'] as String? ?? '',
+        city:       data['city']    as String? ?? '',
+        isp:        data['isp']     as String? ?? '',
+        lat:        (data['lat'] as num?)?.toDouble() ?? 0.0,
+        lon:        (data['lon'] as num?)?.toDouble() ?? 0.0,
+        success:    true,
+      );
+
     } on SocketException {
       setState(() {
         _myIpLoading = false;
@@ -214,10 +239,33 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
           _loading = false;
           _error   = data['message'] as String? ?? 'Invalid IP or domain.';
         });
+        // Log failed lookup
+        ApiService.logIpLookup(
+          query:      query,
+          resolvedIp: query,
+          country:    '',
+          city:       '',
+          isp:        '',
+          lat:        0.0,
+          lon:        0.0,
+          success:    false,
+        );
         return;
       }
 
       setState(() { _loading = false; _result = data; });
+
+      // Fire-and-forget log to backend
+      ApiService.logIpLookup(
+        query:      query,
+        resolvedIp: data['query']   as String? ?? query,
+        country:    data['country'] as String? ?? '',
+        city:       data['city']    as String? ?? '',
+        isp:        data['isp']     as String? ?? '',
+        lat:        (data['lat'] as num?)?.toDouble() ?? 0.0,
+        lon:        (data['lon'] as num?)?.toDouble() ?? 0.0,
+        success:    true,
+      );
 
       // Interstitial after successful result
       Future.delayed(const Duration(milliseconds: 600), () {

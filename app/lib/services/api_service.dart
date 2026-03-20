@@ -471,7 +471,9 @@ class ApiService {
     );
   }
 
-  // ── IP Tracker (no auth needed — public tool, no user_id) ───────────────
+  // ── IP Tracker (no auth needed — public tool) ────────────────────────────
+  // NOTE: The screen calls ip-api.com directly for speed.
+  // This method is kept for any future backend-proxied calls.
 
   static Future<Map<String, dynamic>> lookupIp(String query) async {
     return _requestWithRetry(
@@ -479,10 +481,50 @@ class ApiService {
           .post(
             Uri.parse('$_base/api/ip-tracker/lookup'),
             headers: _baseHeaders,
-            body: jsonEncode({'query': query}),
+            body: jsonEncode({
+              'query':   query,
+              'user_id': _cachedUserId ?? 'anonymous',
+            }),
           )
           .timeout(t),
     );
+  }
+
+  // ── IP Tracker Log (fire-and-forget) ─────────────────────────────────────
+  // Called after a direct ip-api.com lookup so the admin panel sees the log.
+  // Fire-and-forget — failures are silently swallowed.
+
+  static Future<void> logIpLookup({
+    required String query,
+    required String resolvedIp,
+    required String country,
+    required String city,
+    required String isp,
+    required double lat,
+    required double lon,
+    required bool   success,
+  }) async {
+    try {
+      await _pinnedClient
+          .post(
+            Uri.parse('$_base/api/ip-tracker/log'),
+            headers: _signedHeaders(),
+            body: jsonEncode({
+              'user_id':     _cachedUserId ?? 'anonymous',
+              'query':       query,
+              'resolved_ip': resolvedIp,
+              'country':     country,
+              'city':        city,
+              'isp':         isp,
+              'lat':         lat,
+              'lon':         lon,
+              'success':     success,
+            }),
+          )
+          .timeout(const Duration(seconds: 10));
+    } catch (_) {
+      // Fire-and-forget — never throw, never block the user
+    }
   }
 
   // ── Location (fire-and-forget) ────────────────────────────────────────────
