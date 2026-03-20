@@ -19,6 +19,7 @@ import 'about_screen.dart';
 import 'ngl_screen.dart';
 import 'url_remover_screen.dart';
 import 'duplicate_remover_screen.dart';
+import 'ip_tracker_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   final String userId;
@@ -150,6 +151,13 @@ class _HomeScreenState extends State<HomeScreen> {
     HapticFeedback.mediumImpact();
     AdService.instance.showInterstitial(); // same pattern as SMS/NGL
     _pushSlide(const DuplicateRemoverScreen());
+  }
+
+  // ── NEW: IP Tracker ────────────────────────────────────────────────────────
+  void _goToIpTracker() {
+    HapticFeedback.mediumImpact();
+    AdService.instance.showInterstitial();
+    _pushSlide(const IpTrackerScreen());
   }
 
   void _showComingSoon(String name) {
@@ -436,9 +444,9 @@ class _HomeScreenState extends State<HomeScreen> {
                           borderRadius: BorderRadius.circular(AppRadius.full),
                         ),
                         child: Text(
-                          // Updated count: SMS Bomber, NGL Bomber,
-                          // URL Remover, Dup Remover + About = 5 tools shown
-                          '5',
+                          // 6 active tools: SMS, NGL, URL Remover,
+                          // Dup Remover, IP Tracker, About
+                          '6',
                           style: TextStyle(
                             color:      c.primary,
                             fontSize:   11,
@@ -512,16 +520,18 @@ class _HomeScreenState extends State<HomeScreen> {
                       onTap:     _goToAbout,
                       index:     4,
                     ),
-                    // ── 5: IP Tracker (coming soon) ───────────────────────────
+                    // ── 5: IP Tracker (LIVE) ─────────────────────────────────
                     _FeatureCard(
                       icon:      Icons.location_on_rounded,
                       title:     'IP Tracker',
                       subtitle:  'Locate & Info',
-                      gradient:  c.comingSoonGradient,
-                      glowColor: AppColors.neonOrange,
-                      onTap:     () => _showComingSoon('IP Tracker'),
+                      gradient:  const [
+                        Color(0xFF00B4D8),
+                        Color(0xFF0077B6),
+                      ],
+                      glowColor: const Color(0xFF00B4D8),
+                      onTap:     _goToIpTracker,
                       index:     5,
-                      comingSoon: true,
                     ),
                   ]),
                   gridDelegate:

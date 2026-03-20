@@ -48,6 +48,12 @@ try:
 except ImportError:
     _HAS_CRASH_REPORT = False
 
+try:
+    from routers import ip_tracker as ip_tracker_router
+    _HAS_IP_TRACKER = True
+except ImportError:
+    _HAS_IP_TRACKER = False
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s"
@@ -59,7 +65,7 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     port = int(os.environ.get("PORT", 8000))
     logger.info("=" * 55)
-    logger.info("🚀  XISSIN BACKEND  v1.8.0  —  STARTING UP")
+    logger.info("🚀  XISSIN BACKEND  v1.9.0  —  STARTING UP")
     logger.info("=" * 55)
     logger.info(f"🌐  Listening on  0.0.0.0:{port}")
     logger.info(f"🔧  Environment : {os.environ.get('ENVIRONMENT', 'production')}")
@@ -74,12 +80,13 @@ async def lifespan(app: FastAPI):
     logger.info("📦  Routers loaded:")
     logger.info("    ✅  /api/users        — Users")
     logger.info("    ✅  /api/sms          — SMS Bomber")
-    logger.info(f"    {'✅' if _HAS_NGL              else '❌'}  /api/ngl         — NGL Bomber")
-    logger.info(f"    {'✅' if _HAS_ANNOUNCEMENTS    else '❌'}  /api/announcements")
-    logger.info(f"    {'✅' if _HAS_SETTINGS         else '❌'}  /api/settings")
-    logger.info(f"    {'✅' if _HAS_LOCATION         else '❌'}  /api/location    — User Map")
-    logger.info(f"    {'✅' if _HAS_PAYMENTS         else '❌'}  /api/payments    — Remove Ads")
-    logger.info(f"    {'✅' if _HAS_CRASH_REPORT     else '❌'}  /api/crash-report — Crash Reports")
+    logger.info(f"    {'✅' if _HAS_NGL           else '❌'}  /api/ngl           — NGL Bomber")
+    logger.info(f"    {'✅' if _HAS_ANNOUNCEMENTS  else '❌'}  /api/announcements")
+    logger.info(f"    {'✅' if _HAS_SETTINGS       else '❌'}  /api/settings")
+    logger.info(f"    {'✅' if _HAS_LOCATION       else '❌'}  /api/location      — User Map")
+    logger.info(f"    {'✅' if _HAS_PAYMENTS       else '❌'}  /api/payments      — Remove Ads")
+    logger.info(f"    {'✅' if _HAS_CRASH_REPORT   else '❌'}  /api/crash-report  — Crash Reports")
+    logger.info(f"    {'✅' if _HAS_IP_TRACKER     else '❌'}  /api/ip-tracker    — IP Tracker")
 
     logger.info("=" * 55)
     logger.info("✅  Xissin Backend is ONLINE and ready!")
@@ -93,7 +100,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Xissin App API",
     description="Backend API for the Xissin Multi-Tool Flutter App",
-    version="1.8.0",
+    version="1.9.0",
     lifespan=lifespan,
 )
 
@@ -159,6 +166,10 @@ if _HAS_CRASH_REPORT:
     app.include_router(crash_report_router.router,
                        prefix="/api", tags=["Crash Reports"])
 
+if _HAS_IP_TRACKER:
+    app.include_router(ip_tracker_router.router,
+                       prefix="/api/ip-tracker", tags=["IP Tracker"])
+
 
 # ── Base routes ───────────────────────────────────────────────────────────────
 @app.get("/")
@@ -166,7 +177,7 @@ def root():
     return {
         "status":  "online",
         "app":     "Xissin Multi-Tool API",
-        "version": "1.8.0",
+        "version": "1.9.0",
     }
 
 @app.get("/health")
@@ -199,7 +210,7 @@ def api_status():
                        os.environ.get("LATEST_APK_NOTES", ""))
 
     return {
-        "api_version":        "1.8.0",
+        "api_version":        "1.9.0",
         "min_app_version":    min_ver,
         "latest_app_version": lat_ver,
         "apk_download_url":   apk_url,
@@ -210,6 +221,7 @@ def api_status():
         "features": {
             "sms_bomber":    s.get("feature_sms", True),
             "ngl_bomber":    s.get("feature_ngl", True),
+            "ip_tracker":    _HAS_IP_TRACKER,
             "announcements": _HAS_ANNOUNCEMENTS,
             "remove_ads":    _HAS_PAYMENTS,
         },
