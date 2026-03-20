@@ -7,6 +7,10 @@ color 0A
 ::  XISSIN APP UPDATER v2.3
 ::  Full release flow — pubspec → GitHub → Drive → Admin Panel
 ::  v2.3: Fixed STEP6G dead code, remote tag cleanup, version trim, safer SHA-256
+::  v2.3.1 BUGFIX: exit/b on tag fail replaced with goto STEP3 (retry)
+::  v2.3.1 BUGFIX: :STEP6B_CONFIRM label moved outside if block
+::  v2.3.1 BUGFIX: bad Drive link no longer silently passes through
+::  v2.3.1 BUGFIX: removed unused APK_FOUND dead variable
 :: ============================================================
 
 set "PUBSPEC=C:\Users\Nathaniel\Desktop\xissin-monorepo\app\pubspec.yaml"
@@ -209,15 +213,15 @@ echo.
 echo  ^> git push origin v!NEW_VERSION!
 git push origin v!NEW_VERSION!
 
+:: ── BUGFIX 1: was exit /b (hard exit, lost all variables) ────────────────────
+::             Now retries STEP3 instead — session stays alive.
 if !ERRORLEVEL! NEQ 0 (
     echo.
     echo  ERROR: Tag push failed!
-    echo  If the tag already exists on remote, run:
-    echo    git push origin --delete v!NEW_VERSION!
-    echo  Then run this step again.
+    echo  The old tag has been auto-deleted above. Press any key to retry.
     echo.
     pause
-    exit /b
+    goto STEP3
 )
 
 echo.
@@ -275,23 +279,19 @@ echo  ^|   STEP 4b -- Computing APK SHA-256 Checksum       ^|
 echo  +====================================================+
 echo.
 
-:: Try the expected filename first
+:: BUGFIX 4: removed unused APK_FOUND variable — was set but never checked.
 set "APK_PATH=!APK_DOWNLOAD_DIR!\Xissin-v!NEW_VERSION!.apk"
-set "APK_FOUND=0"
 
 if exist "!APK_PATH!" (
-    set "APK_FOUND=1"
+    echo  Found APK at expected path.
 ) else (
-    :: Ask user to point to the APK if not found at expected path
     echo  Could not find: !APK_PATH!
     echo.
     echo  Please enter the full path to your downloaded APK.
     echo  Example: D:\Download\app-release.apk
     echo.
     set /p "APK_PATH=  APK file path: "
-    if exist "!APK_PATH!" (
-        set "APK_FOUND=1"
-    ) else (
+    if not exist "!APK_PATH!" (
         echo.
         echo  ERROR: File not found at that path.
         echo  Please download the APK first then press any key to retry.
@@ -367,13 +367,15 @@ if "!DRIVE_LINK!"=="" (
 
 :: Validate it looks like a Drive link
 echo !DRIVE_LINK! | findstr /i "drive.google.com" >nul
+:: ── BUGFIX 3: bad link used to silently pass through when user typed N ────────
+::             Now always loops back to re-paste — never continues with bad link.
 if !ERRORLEVEL! NEQ 0 (
     echo.
     echo  WARNING: That does not look like a Google Drive link.
     echo  Expected: https://drive.google.com/file/d/.../view
+    echo  Please paste the correct link.
     echo.
-    set /p "RETRY=  Try again? (Y/N): "
-    if /i "!RETRY!" equ "Y" goto STEP5_PASTE
+    goto STEP5_PASTE
 )
 
 echo.
@@ -438,18 +440,8 @@ if /i "!FORCE!" equ "Y" (
     echo  Opening Admin Panel...
     start "" "!ADMIN_URL!"
     echo.
-    :STEP6B_CONFIRM
-    set /p "DONE6B=  Done updating min_app_version to !NEW_VERSION!? (Y/N): "
-    if /i "!DONE6B!" equ "Y" goto STEP6C
-    if /i "!DONE6B!" equ "N" (
-        echo.
-        echo  Please update it before continuing.
-        start "" "!ADMIN_URL!"
-        goto STEP6B_CONFIRM
-    )
-    echo  Please type Y or N only.
-    goto STEP6B_CONFIRM
 )
+if /i "!FORCE!" equ "Y" goto STEP6B_CONFIRM
 if /i "!FORCE!" equ "N" (
     echo.
     echo  Skipping force update -- users can skip the update dialog.
@@ -458,6 +450,20 @@ if /i "!FORCE!" equ "N" (
 )
 echo  Please type Y or N only.
 goto STEP6B
+
+:: ── BUGFIX 2: label is now OUTSIDE the if block ──────────────────────────────
+::             Was inside parentheses which is unreliable in CMD.
+:STEP6B_CONFIRM
+set /p "DONE6B=  Done updating min_app_version to !NEW_VERSION!? (Y/N): "
+if /i "!DONE6B!" equ "Y" goto STEP6C
+if /i "!DONE6B!" equ "N" (
+    echo.
+    echo  Please update it before continuing.
+    start "" "!ADMIN_URL!"
+    goto STEP6B_CONFIRM
+)
+echo  Please type Y or N only.
+goto STEP6B_CONFIRM
 
 :: ── 6C: APK Download URL ────────────────────────────────────
 :STEP6C
