@@ -1,9 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths>
-    <external-files-path
-        name="apk_downloads"
-        path="Downloads/"/>
+    <!-- Internal app files dir — matches getApplicationDocumentsDirectory() -->
+    <files-path
+        name="apk_internal"
+        path="."/>
+
+    <!-- Cache dir — kept as fallback -->
     <cache-path
         name="apk_cache"
         path="apk/"/>
+
+    <!-- External files dir — kept as fallback -->
+    <external-files-path
+        name="apk_downloads"
+        path="Downloads/"/>
 </paths>
