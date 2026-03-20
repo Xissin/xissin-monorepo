@@ -7,6 +7,7 @@
 //   ✅ APK is deleted and install aborted if checksum does not match
 //   ✅ Uses app-internal storage (getApplicationDocumentsDirectory)
 //      so READ_EXTERNAL_STORAGE / WRITE_EXTERNAL_STORAGE are not needed
+//   ✅ Android 8+ runtime check for REQUEST_INSTALL_PACKAGES permission
 
 import 'dart:convert';
 import 'dart:io';
@@ -15,20 +16,49 @@ import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:open_file/open_file.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 class UpdateService {
   static final Dio _dio = Dio();
+
+  // ── Request Android 8+ "Install unknown apps" permission ─────────────────
+  static Future<bool> _ensureInstallPermission(BuildContext context) async {
+    // Only needed on Android 8.0+ (API 26+)
+    if (!Platform.isAndroid) return true;
+
+    final status = await Permission.requestInstallPackages.status;
+    if (status.isGranted) return true;
+
+    // Ask the user
+    final result = await Permission.requestInstallPackages.request();
+    if (result.isGranted) return true;
+
+    // Still denied — open settings so user can flip the toggle
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: const Text(
+            '⚠️  Please enable "Install unknown apps" for Xissin in Settings, then try updating again.',
+          ),
+          backgroundColor: Colors.orange,
+          duration: const Duration(seconds: 6),
+          action: SnackBarAction(
+            label: 'Open Settings',
+            textColor: Colors.white,
+            onPressed: () => openAppSettings(),
+          ),
+        ),
+      );
+    }
+    return false;
+  }
 
   // ── Download + verify + install ───────────────────────────────────────────
   static Future<void> downloadAndInstall({
     required BuildContext context,
     required String apkUrl,
     required String latestVersion,
-
-    // SHA-256 hex string expected from your backend /api/status response.
-    // If null or empty, install is BLOCKED — we never install unverified APKs.
     required String? expectedSha256,
-
     String? versionNotes,
   }) async {
     // 0. Require checksum — no checksum = no install
@@ -47,9 +77,13 @@ class UpdateService {
       return;
     }
 
-    // 1. Show progress dialog
-    double progress   = 0;
-    bool   cancelled  = false;
+    // 1. Check install permission FIRST (Android 8+)
+    final hasPermission = await _ensureInstallPermission(context);
+    if (!hasPermission) return;
+
+    // 2. Show progress dialog
+    double progress  = 0;
+    bool   cancelled = false;
     final  cancelToken = CancelToken();
 
     if (context.mounted) {
@@ -102,11 +136,11 @@ class UpdateService {
       );
     }
 
-    // 2. Download to app-internal storage (no external storage permission needed)
+    // 3. Download to app-internal storage
     String? savePath;
     try {
-      final dir  = await getApplicationDocumentsDirectory();
-      savePath   = '${dir.path}/xissin_update_v$latestVersion.apk';
+      final dir = await getApplicationDocumentsDirectory();
+      savePath  = '${dir.path}/xissin_update_v$latestVersion.apk';
 
       await _dio.download(
         apkUrl,
@@ -122,12 +156,12 @@ class UpdateService {
         return;
       }
 
-      // 3. Close progress dialog
+      // 4. Close progress dialog
       if (context.mounted) {
         Navigator.of(context, rootNavigator: true).pop();
       }
 
-      // 4. Verify SHA-256 checksum BEFORE opening installer
+      // 5. Verify SHA-256 checksum
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -156,7 +190,7 @@ class UpdateService {
         return;
       }
 
-      // 5. Checksum OK — open Android installer
+      // 6. Checksum OK — open Android installer
       final result = await OpenFile.open(
         savePath,
         type: 'application/vnd.android.package-archive',
@@ -189,7 +223,6 @@ class UpdateService {
   }
 
   // ── SHA-256 verification ──────────────────────────────────────────────────
-
   static Future<bool> _verifySha256(
       String filePath, String expectedHex) async {
     try {
@@ -211,13 +244,13 @@ class UpdateService {
     } catch (_) {}
   }
 
-  // ── Show update dialog ─────────────────────────────────────────────────────
+  // ── Show update dialog ────────────────────────────────────────────────────
   static void showUpdateDialog({
     required BuildContext context,
     required String currentVersion,
     required String latestVersion,
     required String apkUrl,
-    required String? expectedSha256,   // ← pass this from /api/status
+    required String? expectedSha256,
     String? versionNotes,
     bool forceUpdate = false,
   }) {
