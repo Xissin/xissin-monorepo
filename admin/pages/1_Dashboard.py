@@ -7,6 +7,9 @@ Fixes & improvements:
   - IMPROVEMENT: Announcement count badge added to sidebar
   - IMPROVEMENT: Active users (24h) metric added
   - IMPROVEMENT: Auto-refresh indicator shows time since last load
+  - NEW: IP Tracker + Username Tracker stats added to metrics row
+  - NEW: ip_lookup + username_search added to activity feed config
+  - NEW: Tool usage summary section (IP Tracker & Username Tracker)
 """
 
 import streamlit as st
@@ -31,33 +34,41 @@ with col_r:
 @st.cache_data(ttl=30, show_spinner=False)
 def load_dashboard_data():
     results = {}
-    try: results["users"]   = get("/api/users/list").get("users", [])
+    try: results["users"]    = get("/api/users/list").get("users", [])
     except Exception: results["users"] = []
-    try: results["status"]  = get_public("/api/status")
+    try: results["status"]   = get_public("/api/status")
     except Exception: results["status"] = {}
-    try: results["ngl"]     = get("/api/ngl/stats")
+    try: results["ngl"]      = get("/api/ngl/stats")
     except Exception: results["ngl"] = {}
-    try: results["logs"]    = get("/api/users/logs/recent", {"limit": 12}).get("logs", [])
+    try: results["logs"]     = get("/api/users/logs/recent", {"limit": 12}).get("logs", [])
     except Exception: results["logs"] = []
-    try: results["ann"]     = get_public("/api/announcements")
+    try: results["ann"]      = get_public("/api/announcements")
     except Exception: results["ann"] = []
+    # ── NEW: IP Tracker stats ──────────────────────────────────────────────────
+    try: results["ip_stats"] = get("/api/ip-tracker/stats")
+    except Exception: results["ip_stats"] = {}
+    # ── NEW: Username Tracker stats ───────────────────────────────────────────
+    try: results["uname_stats"] = get("/api/username-tracker/stats")
+    except Exception: results["uname_stats"] = {}
     return results
 
 with st.spinner("Loading command center..."):
     data = load_dashboard_data()
 
-users    = data["users"]
-status   = data["status"]
-ngl      = data["ngl"]
-logs     = data["logs"]
-ann_list = data["ann"]
-now_utc  = datetime.now(timezone.utc)
+users       = data["users"]
+status      = data["status"]
+ngl         = data["ngl"]
+logs        = data["logs"]
+ann_list    = data["ann"]
+ip_stats    = data["ip_stats"]
+uname_stats = data["uname_stats"]
+now_utc     = datetime.now(timezone.utc)
 
 banned_users = sum(1 for u in users if u.get("banned"))
 total_sms    = sum(u.get("total_sms", 0) for u in users)
 total_ngl    = ngl.get("total_ngl_sent", 0)
 
-# Active users: seen in last 24h (based on user record if available)
+# Active users: seen in last 24h
 def _is_recent(u):
     ts = u.get("last_seen") or u.get("updated_at") or ""
     try:
@@ -75,6 +86,10 @@ active_24h = sum(1 for u in users if _is_recent(u))
 app_version_raw = status.get("latest_app_version", "—")
 app_version = app_version_raw if isinstance(app_version_raw, str) else "—"
 
+# ── NEW: Tool counters ─────────────────────────────────────────────────────────
+total_ip_lookups  = ip_stats.get("total_lookups", 0)
+total_uname_searches = uname_stats.get("total_searches", 0)
+
 # ── Animated metric cards ──────────────────────────────────────────────────────
 st.markdown("""
 <div style='font-family:"Share Tech Mono",monospace;font-size:11px;
@@ -83,15 +98,17 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-cols = st.columns(7)
+cols = st.columns(9)
 metrics = [
-    ("👥", "USERS",        len(users),    "#00e5ff", 0.0),
-    ("🟢", "ACTIVE (24H)", active_24h,    "#00ff9d", 0.04),
-    ("🚫", "BANNED",       banned_users,  "#ff4757", 0.08),
-    ("📱", "SMS SENT",     total_sms,     "#ff9500", 0.12),
-    ("💬", "NGL SENT",     total_ngl,     "#f472b6", 0.16),
-    ("📢", "ANNOUNCES",    len(ann_list), "#00b8d4", 0.20),
-    ("📦", "APP VERSION",  app_version,   "#a855f7", 0.24),
+    ("👥", "USERS",           len(users),            "#00e5ff", 0.0),
+    ("🟢", "ACTIVE (24H)",    active_24h,             "#00ff9d", 0.04),
+    ("🚫", "BANNED",          banned_users,           "#ff4757", 0.08),
+    ("📱", "SMS SENT",        total_sms,              "#ff9500", 0.12),
+    ("💬", "NGL SENT",        total_ngl,              "#f472b6", 0.16),
+    ("📢", "ANNOUNCES",       len(ann_list),          "#00b8d4", 0.20),
+    ("📦", "APP VERSION",     app_version,            "#a855f7", 0.24),
+    ("🌐", "IP LOOKUPS",      total_ip_lookups,       "#7EE7C1", 0.28),
+    ("🔍", "USER SEARCHES",   total_uname_searches,   "#FFA726", 0.32),
 ]
 for col, (icon, label, value, color, delay) in zip(cols, metrics):
     with col:
@@ -108,10 +125,45 @@ for col, (icon, label, value, color, delay) in zip(cols, metrics):
             <div style='font-family:"Share Tech Mono",monospace;font-size:9px;
                 color:{color}99;letter-spacing:2px;margin-bottom:8px;
                 text-transform:uppercase'>{icon} {label}</div>
-            <div style='font-family:"Exo 2",sans-serif;font-weight:900;font-size:24px;
+            <div style='font-family:"Exo 2",sans-serif;font-weight:900;font-size:22px;
                 color:{color};line-height:1;animation:countUp .6s ease {delay}s both'>
                 {value}
             </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+st.markdown("<br>", unsafe_allow_html=True)
+
+# ── NEW: Tool Usage Summary ────────────────────────────────────────────────────
+st.markdown("""
+<div style='font-family:"Share Tech Mono",monospace;font-size:11px;
+    color:#2a4a6a;letter-spacing:3px;text-transform:uppercase;margin-bottom:12px'>
+    ◈ TOOL USAGE SUMMARY
+</div>
+""", unsafe_allow_html=True)
+
+tc1, tc2, tc3, tc4 = st.columns(4)
+tool_cards = [
+    (tc1, "🔗", "URL REMOVER",       "Local only — no logs",          "#7B8CDE", "Client-side tool"),
+    (tc2, "🗂️", "DUP REMOVER",       "Local only — no logs",          "#FFA94D", "Client-side tool"),
+    (tc3, "🌐", "IP TRACKER",        f"{total_ip_lookups} lookups",   "#7EE7C1", "Backend logged"),
+    (tc4, "🔍", "USERNAME TRACKER",  f"{total_uname_searches} searches", "#FFA726", "Backend logged"),
+]
+for col, icon, name, stat, color, badge in tool_cards:
+    with col:
+        st.markdown(f"""
+        <div style='background:linear-gradient(135deg,{color}0d,transparent);
+            border:1px solid {color}33;border-radius:12px;padding:14px;
+            position:relative;overflow:hidden'>
+            <div style='position:absolute;top:0;left:0;right:0;height:2px;
+                background:linear-gradient(90deg,transparent,{color},transparent)'></div>
+            <div style='font-family:"Share Tech Mono",monospace;font-size:9px;
+                color:{color}99;letter-spacing:2px;margin-bottom:6px'>{icon} {name}</div>
+            <div style='font-family:"Exo 2",sans-serif;font-weight:800;font-size:16px;
+                color:{color};margin-bottom:6px'>{stat}</div>
+            <span style='background:{color}22;border:1px solid {color}44;border-radius:4px;
+                padding:2px 8px;font-family:"Share Tech Mono",monospace;
+                font-size:9px;color:{color}'>{badge}</span>
         </div>
         """, unsafe_allow_html=True)
 
@@ -132,7 +184,6 @@ with col_left:
     </div>
     """, unsafe_allow_html=True)
 
-    # FIX: Build status block cleanly without raw HTML nesting (was missing closing divs)
     status_color  = "#ff4757" if maint else "#00ff9d"
     status_bg     = "rgba(255,71,87,.08)" if maint else "rgba(0,255,157,.06)"
     status_border = "rgba(255,71,87,.3)"  if maint else "rgba(0,255,157,.25)"
@@ -150,7 +201,6 @@ with col_left:
     </div>
     """, unsafe_allow_html=True)
 
-    # Status rows rendered via Streamlit (avoids HTML nesting issues)
     info_rows = [
         ("API VERSION",     status.get("api_version", "—"),         "#00e5ff"),
         ("MIN APP VERSION", status.get("min_app_version", "—"),      "#a855f7"),
@@ -161,6 +211,10 @@ with col_left:
         ("NGL BOMBER",
          "✓ ENABLED" if features.get("ngl_bomber") else "✗ DISABLED",
          "#00ff9d" if features.get("ngl_bomber") else "#ff4757"),
+        ("IP TRACKER",      "✓ AVAILABLE",  "#7EE7C1"),
+        ("USERNAME TRACKER","✓ AVAILABLE",  "#FFA726"),
+        ("URL REMOVER",     "✓ LOCAL ONLY", "#7B8CDE"),
+        ("DUP REMOVER",     "✓ LOCAL ONLY", "#FFA94D"),
     ]
     with st.container(border=True):
         for k, v, c in info_rows:
@@ -261,6 +315,7 @@ with col_right:
     </div>
     """, unsafe_allow_html=True)
 
+    # ── NEW: ip_lookup + username_search added ────────────────────────────────
     LOG_CFG = {
         "user_registered":      ("#00e5ff", "👤"),
         "user_banned":          ("#ff4757", "🚫"),
@@ -269,6 +324,8 @@ with col_right:
         "ngl_sent":             ("#f472b6", "💬"),
         "settings_updated":     ("#00b8d4", "⚙️"),
         "announcement_created": ("#ff9500", "📢"),
+        "ip_lookup":            ("#7EE7C1", "🌐"),
+        "username_search":      ("#FFA726", "🔍"),
     }
 
     with st.container(border=True):

@@ -54,13 +54,9 @@ if "authenticated" not in st.session_state: st.session_state.authenticated = Fal
 if "admin_key"     not in st.session_state: st.session_state.admin_key     = ""
 
 # ── JS: inject localStorage read/write helpers ─────────────────────────────────
-# Stores the key in localStorage so it survives page refresh on desktop.
-# NOTE: The key also temporarily appears in the URL (?ak=...) to survive Streamlit
-# reruns.  Clear browser history after use on shared machines.
 st.markdown("""
 <script>
 (function() {
-    // On load: if localStorage has the key but URL doesn't, restore it
     const stored = localStorage.getItem('xissin_ak');
     if (stored) {
         const url = new URL(window.location.href);
@@ -222,8 +218,9 @@ def show_app():
             """, unsafe_allow_html=True)
             st.rerun()
 
+    # ── Command center home page ───────────────────────────────────────────────
     st.markdown("""
-    <div style='text-align:center;padding:80px 20px;animation:fadeUp .6s ease'>
+    <div style='text-align:center;padding:60px 20px 30px;animation:fadeUp .6s ease'>
         <img src='https://drive.google.com/thumbnail?id=1ONwQUQiD8IRGA2ganJpaZ5brALtcOWMF'
             style='width:90px;height:90px;border-radius:22px;margin-bottom:20px;
             animation:logoGlow 3s ease-in-out infinite;
@@ -233,13 +230,30 @@ def show_app():
             -webkit-background-clip:text;-webkit-text-fill-color:transparent;
             letter-spacing:4px;text-transform:uppercase;margin-bottom:8px'>COMMAND CENTER</h2>
         <p style='font-family:"Share Tech Mono",monospace;font-size:11px;
-            color:#3a5a7a;letter-spacing:3px;margin-bottom:24px'>SELECT A MODULE FROM THE SIDEBAR</p>
-        <div style='display:inline-flex;gap:8px;flex-wrap:wrap;justify-content:center'>
-            <span style='background:rgba(0,229,255,.07);border:1px solid rgba(0,229,255,.2);border-radius:6px;padding:5px 12px;font-family:"Share Tech Mono",monospace;font-size:10px;color:#00e5ff;letter-spacing:1px'>📊 DASHBOARD</span>
-            <span style='background:rgba(244,114,182,.07);border:1px solid rgba(244,114,182,.2);border-radius:6px;padding:5px 12px;font-family:"Share Tech Mono",monospace;font-size:10px;color:#f472b6;letter-spacing:1px'>👥 USERS</span>
-            <span style='background:rgba(0,255,157,.07);border:1px solid rgba(0,255,157,.2);border-radius:6px;padding:5px 12px;font-family:"Share Tech Mono",monospace;font-size:10px;color:#00ff9d;letter-spacing:1px'>💣 SMS LOGS</span>
-            <span style='background:rgba(255,149,0,.07);border:1px solid rgba(255,149,0,.2);border-radius:6px;padding:5px 12px;font-family:"Share Tech Mono",monospace;font-size:10px;color:#ff9500;letter-spacing:1px'>📍 MAP</span>
-        </div>
+            color:#3a5a7a;letter-spacing:3px;margin-bottom:28px'>SELECT A MODULE FROM THE SIDEBAR</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ── Module badges — 2 rows ─────────────────────────────────────────────────
+    # Row 1: Core modules
+    st.markdown("""
+    <div style='display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin-bottom:10px'>
+        <span style='background:rgba(0,229,255,.07);border:1px solid rgba(0,229,255,.2);border-radius:6px;padding:5px 12px;font-family:"Share Tech Mono",monospace;font-size:10px;color:#00e5ff;letter-spacing:1px'>📊 DASHBOARD</span>
+        <span style='background:rgba(244,114,182,.07);border:1px solid rgba(244,114,182,.2);border-radius:6px;padding:5px 12px;font-family:"Share Tech Mono",monospace;font-size:10px;color:#f472b6;letter-spacing:1px'>💬 NGL LOGS</span>
+        <span style='background:rgba(100,210,180,.07);border:1px solid rgba(100,210,180,.2);border-radius:6px;padding:5px 12px;font-family:"Share Tech Mono",monospace;font-size:10px;color:#7EE7C1;letter-spacing:1px'>👥 USERS</span>
+        <span style='background:rgba(0,255,157,.07);border:1px solid rgba(0,255,157,.2);border-radius:6px;padding:5px 12px;font-family:"Share Tech Mono",monospace;font-size:10px;color:#00ff9d;letter-spacing:1px'>💣 SMS LOGS</span>
+        <span style='background:rgba(255,149,0,.07);border:1px solid rgba(255,149,0,.2);border-radius:6px;padding:5px 12px;font-family:"Share Tech Mono",monospace;font-size:10px;color:#ff9500;letter-spacing:1px'>📍 MAP</span>
+        <span style='background:rgba(255,215,0,.07);border:1px solid rgba(255,215,0,.2);border-radius:6px;padding:5px 12px;font-family:"Share Tech Mono",monospace;font-size:10px;color:#FFD700;letter-spacing:1px'>⭐ PREMIUM</span>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Row 2: New tool modules
+    st.markdown("""
+    <div style='display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin-bottom:32px'>
+        <span style='background:rgba(126,231,193,.07);border:1px solid rgba(126,231,193,.2);border-radius:6px;padding:5px 12px;font-family:"Share Tech Mono",monospace;font-size:10px;color:#7EE7C1;letter-spacing:1px'>🌐 IP TRACKER</span>
+        <span style='background:rgba(255,167,38,.07);border:1px solid rgba(255,167,38,.2);border-radius:6px;padding:5px 12px;font-family:"Share Tech Mono",monospace;font-size:10px;color:#FFA726;letter-spacing:1px'>🔍 USERNAME TRACKER</span>
+        <span style='background:rgba(123,140,222,.07);border:1px solid rgba(123,140,222,.2);border-radius:6px;padding:5px 12px;font-family:"Share Tech Mono",monospace;font-size:10px;color:#7B8CDE;letter-spacing:1px'>🔗 URL REMOVER (LOCAL)</span>
+        <span style='background:rgba(255,169,77,.07);border:1px solid rgba(255,169,77,.2);border-radius:6px;padding:5px 12px;font-family:"Share Tech Mono",monospace;font-size:10px;color:#FFA94D;letter-spacing:1px'>🗂️ DUP REMOVER (LOCAL)</span>
     </div>
     """, unsafe_allow_html=True)
 

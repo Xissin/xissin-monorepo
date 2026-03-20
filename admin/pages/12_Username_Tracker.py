@@ -1,133 +1,228 @@
 """
-admin/pages/12_Username_Tracker.py
-Streamlit admin page — shows username search logs from the backend.
+pages/12_Username_Tracker.py — Username search logs & popular usernames
+  - REWRITE: Now uses inject_theme / auth_guard / page_header (matches all other pages)
+  - REWRITE: Uses utils/api.get() instead of raw requests (consistent auth headers)
+  - NEW: Metric cards styled to match the rest of the panel
+  - NEW: Per-platform hit frequency bar chart
+  - NEW: CSV export for recent searches
+  - NEW: Search filter by username
 """
-
 import streamlit as st
-import requests
-import os
-from datetime import datetime
+import pandas as pd
+from utils.api import get
+from utils.theme import inject_theme, page_header, auth_guard
 
-# ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="Username Tracker — Xissin Admin",
+    page_title="Username Tracker · Xissin Admin",
     page_icon="🔍",
     layout="wide",
 )
+inject_theme()
+auth_guard()
+page_header("🔍", "Username Tracker", "SEARCH LOGS · POPULAR USERNAMES · PLATFORM HITS")
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ── Controls ──────────────────────────────────────────────────────────────────
+col_search, col_limit, col_refresh = st.columns([3, 1, 1])
+with col_search:
+    search = st.text_input(
+        "🔍 Filter", placeholder="Filter by username or user ID...",
+        label_visibility="collapsed",
+    )
+with col_limit:
+    limit = st.selectbox("Show last", [25, 50, 100, 200], index=1,
+                         label_visibility="collapsed")
+with col_refresh:
+    if st.button("↺  REFRESH", use_container_width=True):
+        st.cache_data.clear()
+        st.rerun()
 
-BACKEND = os.environ.get(
-    "BACKEND_URL",
-    "https://xissin-app-backend-production.up.railway.app",
-).rstrip("/")
-
-ADMIN_KEY = os.environ.get("ADMIN_API_KEY", "")
-
-
-def _headers():
-    return {"X-Admin-Key": ADMIN_KEY} if ADMIN_KEY else {}
-
-
-def _get(path: str):
+# ── Fetch ──────────────────────────────────────────────────────────────────────
+@st.cache_data(ttl=20, show_spinner=False)
+def load_recent(limit):
     try:
-        r = requests.get(f"{BACKEND}{path}", headers=_headers(), timeout=8)
-        r.raise_for_status()
-        return r.json()
-    except Exception as exc:
-        st.error(f"Backend error: {exc}")
-        return None
-
-
-def _fmt_ts(ts_str: str) -> str:
-    try:
-        return datetime.utcfromtimestamp(int(ts_str)).strftime("%Y-%m-%d %H:%M UTC")
+        return get(f"/api/username-tracker/recent", {"limit": limit}).get("searches", [])
     except Exception:
-        return ts_str or "—"
+        return []
 
+@st.cache_data(ttl=20, show_spinner=False)
+def load_popular(pop_limit):
+    try:
+        return get(f"/api/username-tracker/popular", {"limit": pop_limit}).get("popular", [])
+    except Exception:
+        return []
 
-# ── Page ──────────────────────────────────────────────────────────────────────
+@st.cache_data(ttl=20, show_spinner=False)
+def load_stats():
+    try:
+        return get("/api/username-tracker/stats")
+    except Exception:
+        return {}
 
-st.title("🔍 Username Tracker")
-st.caption("Shows all username searches made through the Xissin app.")
+with st.spinner("Loading username tracker data..."):
+    searches = load_recent(limit)
+    stats    = load_stats()
 
-tab_recent, tab_popular = st.tabs(["📋 Recent Searches", "🔥 Popular Usernames"])
+# ── Apply filter ───────────────────────────────────────────────────────────────
+if search.strip():
+    q = search.strip().lower()
+    searches = [
+        s for s in searches
+        if q in (s.get("username") or "").lower()
+        or q in (s.get("user_id") or "").lower()
+    ]
+
+# ── Metrics ────────────────────────────────────────────────────────────────────
+total_searches  = stats.get("total_searches", len(searches))
+unique_names    = len({s.get("username", "") for s in searches})
+avg_found       = (
+    sum(len((s.get("found_on") or "").split(",")) if s.get("found_on") else 0
+        for s in searches) / max(len(searches), 1)
+)
+most_searched   = stats.get("most_searched", "—")
+
+c1, c2, c3, c4 = st.columns(4)
+for col, icon, label, value, color, delay in [
+    (c1, "🔍", "TOTAL SEARCHES",   total_searches,             "#FFA726", 0.0),
+    (c2, "👤", "UNIQUE USERNAMES", unique_names,               "#00e5ff", 0.08),
+    (c3, "🎯", "AVG PLATFORMS HIT",f"{avg_found:.1f}",         "#00ff9d", 0.16),
+    (c4, "🔥", "MOST SEARCHED",    f"@{most_searched}" if most_searched != "—" else "—",
+                                                                "#f472b6", 0.24),
+]:
+    with col:
+        st.markdown(f"""
+        <div style='background:linear-gradient(135deg,{color}0d,transparent);
+            border:1px solid {color}33;border-radius:12px;padding:16px;
+            position:relative;overflow:hidden;animation:cardFadeIn .5s ease {delay}s both'>
+            <div style='position:absolute;top:0;left:0;right:0;height:2px;
+                background:linear-gradient(90deg,transparent,{color},transparent)'></div>
+            <div style='font-family:"Share Tech Mono",monospace;font-size:9px;
+                color:{color}88;letter-spacing:2px;margin-bottom:8px'>{icon} {label}</div>
+            <div style='font-family:"Exo 2",sans-serif;font-weight:900;font-size:26px;
+                color:{color}'>{value}</div>
+        </div>""", unsafe_allow_html=True)
+
+st.markdown("<br>", unsafe_allow_html=True)
+
+# ── Tabs ───────────────────────────────────────────────────────────────────────
+tab_recent, tab_popular, tab_platforms = st.tabs([
+    "📋 Recent Searches",
+    "🔥 Popular Usernames",
+    "📊 Platform Hit Rate",
+])
 
 # ─── Recent searches ──────────────────────────────────────────────────────────
 with tab_recent:
-    col_refresh, col_limit = st.columns([1, 2])
-    with col_refresh:
-        refresh = st.button("🔄 Refresh", key="refresh_recent")
-    with col_limit:
-        limit = st.slider("Max rows", 10, 200, 50, step=10)
+    if not searches:
+        st.info("No username searches logged yet.")
+        st.stop()
 
-    if refresh or True:  # always load on first render
-        data = _get(f"/api/username-tracker/recent?limit={limit}")
-        if data:
-            searches = data.get("searches", [])
-            if not searches:
-                st.info("No username searches logged yet.")
-            else:
-                # Build display rows
-                rows = []
-                for s in searches:
-                    found_on   = s.get("found_on", "")
-                    found_list = [x.strip() for x in found_on.split(",") if x.strip()] if found_on else []
-                    rows.append({
-                        "Time (UTC)":   _fmt_ts(s.get("ts", "")),
-                        "Username":     f"@{s.get('username', '—')}",
-                        "Found On":     len(found_list),
-                        "Total":        s.get("total", "30"),
-                        "Platforms":    ", ".join(found_list) if found_list else "—",
-                        "User ID":      s.get("user_id", "—"),
-                    })
+    rows = []
+    for s in searches:
+        found_on   = s.get("found_on", "") or ""
+        found_list = [x.strip() for x in found_on.split(",") if x.strip()]
+        ts_raw     = s.get("ts", "") or ""
+        try:
+            from datetime import datetime
+            ts_fmt = datetime.utcfromtimestamp(int(ts_raw)).strftime("%Y-%m-%d %H:%M")
+        except Exception:
+            ts_fmt = str(ts_raw)[:16]
+        rows.append({
+            "Time (UTC)":    ts_fmt,
+            "Username":      f"@{s.get('username', '—')}",
+            "Found On #":    len(found_list),
+            "Total Checked": s.get("total_checked", s.get("total", 30)),
+            "Platforms":     ", ".join(found_list) if found_list else "—",
+            "User ID":       s.get("user_id", "—"),
+        })
 
-                # Summary metrics
-                mc1, mc2, mc3 = st.columns(3)
-                mc1.metric("Total Searches Shown", len(rows))
-                avg_found = (
-                    sum(r["Found On"] for r in rows) / len(rows)
-                    if rows else 0
-                )
-                mc2.metric("Avg Platforms Found", f"{avg_found:.1f}")
-                unique_users = len({r["Username"] for r in rows})
-                mc3.metric("Unique Usernames", unique_users)
+    df = pd.DataFrame(rows)
+    df.index = range(1, len(df) + 1)
+    st.dataframe(df, use_container_width=True)
 
-                st.divider()
-                st.dataframe(rows, use_container_width=True, hide_index=True)
+    # CSV export
+    csv = df.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        "⬇️ Download as CSV",
+        data=csv,
+        file_name="xissin_username_searches.csv",
+        mime="text/csv",
+    )
 
 # ─── Popular usernames ────────────────────────────────────────────────────────
 with tab_popular:
-    col_r2, col_lim2 = st.columns([1, 2])
-    with col_r2:
-        st.button("🔄 Refresh", key="refresh_popular")
-    with col_lim2:
-        pop_limit = st.slider("Top N", 5, 50, 20, step=5)
+    pop_limit = st.slider("Top N", 5, 50, 20, step=5)
 
-    pop_data = _get(f"/api/username-tracker/popular?limit={pop_limit}")
-    if pop_data:
-        popular = pop_data.get("popular", [])
-        if not popular:
-            st.info("No popular usernames yet.")
-        else:
-            # Bar chart
-            chart_data = {
-                "Username": [f"@{p['username']}" for p in popular],
-                "Searches": [p["count"] for p in popular],
-            }
-            st.bar_chart(
-                data={row["Username"]: row["Searches"]
-                      for row in
-                      [{"Username": f"@{p['username']}", "Searches": p["count"]}
-                       for p in popular]},
-            )
+    with st.spinner("Loading popular usernames..."):
+        popular = load_popular(pop_limit)
 
-            # Table
-            st.dataframe(
-                [{"Rank": i + 1,
-                  "Username": f"@{p['username']}",
-                  "Total Searches": p["count"]}
-                 for i, p in enumerate(popular)],
-                use_container_width=True,
-                hide_index=True,
-            )
+    if not popular:
+        st.info("No popular username data yet.")
+    else:
+        max_count = popular[0]["count"] if popular else 1
+        for i, p in enumerate(popular):
+            uname = p.get("username", "?")
+            count = p.get("count", 0)
+            pct   = int((count / max(max_count, 1)) * 100)
+            colors = ["#FFA726","#f472b6","#a855f7","#00e5ff","#00ff9d",
+                      "#ff9500","#ff4757","#00b8d4","#7EE7C1","#FFA94D"]
+            c = colors[i % len(colors)]
+            st.markdown(f"""
+            <div style='margin-bottom:10px'>
+                <div style='display:flex;justify-content:space-between;margin-bottom:4px'>
+                    <span style='font-family:"Share Tech Mono",monospace;
+                        font-size:12px;color:#c8d8f0'>#{i+1} @{uname}</span>
+                    <span style='font-family:"Share Tech Mono",monospace;
+                        font-size:12px;color:{c};font-weight:700'>{count}x</span>
+                </div>
+                <div style='background:rgba(255,255,255,.04);border-radius:3px;height:5px'>
+                    <div style='background:{c};width:{pct}%;height:100%;
+                        border-radius:3px;box-shadow:0 0 6px {c}66'></div>
+                </div>
+            </div>""", unsafe_allow_html=True)
+
+# ─── Platform hit rate ────────────────────────────────────────────────────────
+with tab_platforms:
+    st.caption("Shows how many times each platform appeared in search results as 'found'.")
+
+    # Build platform frequency from recent search data
+    platform_hits: dict = {}
+    for s in searches:
+        found_on = s.get("found_on", "") or ""
+        for plat in found_on.split(","):
+            plat = plat.strip()
+            if plat:
+                platform_hits[plat] = platform_hits.get(plat, 0) + 1
+
+    if not platform_hits:
+        st.info("No platform hit data yet. Run some username searches first.")
+    else:
+        sorted_hits = dict(sorted(platform_hits.items(),
+                                  key=lambda x: x[1], reverse=True)[:20])
+        max_hits = max(sorted_hits.values())
+
+        for i, (plat, count) in enumerate(sorted_hits.items()):
+            pct = int((count / max_hits) * 100)
+            colors = ["#00e5ff","#a855f7","#f472b6","#00ff9d","#ff9500",
+                      "#FFA726","#7EE7C1","#ff4757","#00b8d4","#FFA94D"]
+            c = colors[i % len(colors)]
+            st.markdown(f"""
+            <div style='margin-bottom:10px'>
+                <div style='display:flex;justify-content:space-between;margin-bottom:4px'>
+                    <span style='font-family:"Share Tech Mono",monospace;
+                        font-size:12px;color:#c8d8f0'>{plat}</span>
+                    <span style='font-family:"Share Tech Mono",monospace;
+                        font-size:12px;color:{c};font-weight:700'>{count} hits</span>
+                </div>
+                <div style='background:rgba(255,255,255,.04);border-radius:3px;height:5px'>
+                    <div style='background:{c};width:{pct}%;height:100%;
+                        border-radius:3px;box-shadow:0 0 6px {c}66'></div>
+                </div>
+            </div>""", unsafe_allow_html=True)
+
+        # Also show as dataframe for easy sorting
+        st.markdown("<br>", unsafe_allow_html=True)
+        df_plat = pd.DataFrame([
+            {"Platform": k, "Hit Count": v}
+            for k, v in sorted_hits.items()
+        ])
+        st.dataframe(df_plat, use_container_width=True, hide_index=True)

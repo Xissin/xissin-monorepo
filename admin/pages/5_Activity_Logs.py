@@ -1,4 +1,7 @@
-"""pages/5_Activity_Logs.py — Full activity log with action type filter"""
+"""pages/5_Activity_Logs.py — Full activity log with action type filter
+  - NEW: ip_lookup + username_search added to action filter dropdown
+  - NEW: ip_lookup + username_search added to timeline color/icon config
+"""
 import streamlit as st
 import pandas as pd
 from utils.api import get
@@ -10,12 +13,20 @@ page_header("📋", "Activity Logs", "ALL BACKEND ACTIONS · FILTERED · SEARCHA
 
 col_a, col_b, col_c, col_d = st.columns([2, 1, 1, 1])
 with col_a:
-    search = st.text_input("🔍 Search", placeholder="Filter by user ID, target, key...")
+    search = st.text_input("🔍 Search", placeholder="Filter by user ID, target, key, query...")
 with col_b:
     action_filter = st.selectbox("Action Type", [
-        "All", "ngl_sent", "sms_bomb",
-        "user_registered", "user_banned", "user_unbanned",
-        "settings_updated", "announcement_created",
+        "All",
+        "ngl_sent",
+        "sms_bomb",
+        "user_registered",
+        "user_banned",
+        "user_unbanned",
+        "settings_updated",
+        "announcement_created",
+        # ── NEW ──────────────────────────────────────────────────────────────
+        "ip_lookup",
+        "username_search",
     ])
 with col_c:
     limit = st.selectbox("Show last", [25, 50, 100, 200, 500], index=1)
@@ -40,10 +51,12 @@ if action_filter != "All":
 if search.strip():
     q = search.strip().lower()
     logs = [l for l in logs if
-            q in str(l.get("user_id", "")).lower() or
-            q in str(l.get("target", "")).lower() or
-            q in str(l.get("key", "")).lower() or
-            q in str(l.get("phone", "")).lower()]
+            q in str(l.get("user_id",  "")).lower() or
+            q in str(l.get("target",   "")).lower() or
+            q in str(l.get("key",      "")).lower() or
+            q in str(l.get("phone",    "")).lower() or
+            q in str(l.get("query",    "")).lower() or   # IP Tracker query
+            q in str(l.get("username", "")).lower()]     # Username Tracker
 
 st.markdown(f'''<div style='font-family:"Share Tech Mono",monospace;font-size:10px;
     color:#5a7a9a;margin-bottom:8px'>SHOWING {len(logs)} LOG ENTRIES</div>''', unsafe_allow_html=True)
@@ -54,15 +67,18 @@ if not logs:
 
 # ── Timeline view ─────────────────────────────────────────────────────────────
 LOG_COLORS = {
-    "user_registered":    "#A78BFA",
-    "user_banned":        "#FF6B6B",
-    "user_unbanned":      "#7EE7C1",
-    "sms_bomb":           "#FFA726",
-    "ngl_sent":           "#FF6EC7",
-    "settings_updated":   "#38BDF8",
-    "announcement_created":"#FFA726",
-    "announcement_deleted":"#7a8ab8",
+    "user_registered":      "#A78BFA",
+    "user_banned":          "#FF6B6B",
+    "user_unbanned":        "#7EE7C1",
+    "sms_bomb":             "#FFA726",
+    "ngl_sent":             "#FF6EC7",
+    "settings_updated":     "#38BDF8",
+    "announcement_created": "#FFA726",
+    "announcement_deleted": "#7a8ab8",
     "announcements_cleared":"#7a8ab8",
+    # ── NEW ──────────────────────────────────────────────────────────────────
+    "ip_lookup":            "#7EE7C1",
+    "username_search":      "#FFA726",
 }
 
 tab1, tab2 = st.tabs(["🕐 Timeline", "📊 Table"])
@@ -86,7 +102,15 @@ with tab1:
         if log.get("reason"):     meta_parts.append(f"Reason: {log['reason']}")
         if log.get("days"):       meta_parts.append(f"{log['days']}d")
         if log.get("title"):      meta_parts.append(f'"{log["title"]}"')
-        # Show source badge for client-side SMS bombs
+        # ── NEW: IP Tracker meta ──────────────────────────────────────────────
+        if log.get("query"):      meta_parts.append(f"Query: {log['query']}")
+        if log.get("country"):    meta_parts.append(f"Country: {log['country']}")
+        # ── NEW: Username Tracker meta ────────────────────────────────────────
+        if log.get("found_count") is not None:
+            meta_parts.append(
+                f"Found on {log['found_count']}/{log.get('total_checked', '?')} platforms"
+            )
+        # Source badge for client-side SMS bombs
         if log.get("source") == "client":
             meta_parts.append("📱 fired from user's phone")
         meta = " · ".join(meta_parts)
@@ -115,6 +139,8 @@ with tab2:
         if log.get("user_id"):  meta_parts.append(log["user_id"])
         if log.get("target"):   meta_parts.append(f"→@{log['target']}")
         if log.get("phone"):    meta_parts.append(log["phone"])
+        if log.get("query"):    meta_parts.append(f"q:{log['query']}")
+        if log.get("username"): meta_parts.append(f"@{log['username']}")
         if log.get("sent") is not None:
             meta_parts.append(f"S:{log['sent']} F:{log.get('failed',0)}")
         rows.append({
