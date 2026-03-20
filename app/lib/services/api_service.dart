@@ -424,6 +424,20 @@ class ApiService {
     );
   }
 
+  // ── IP Tracker (no auth needed — public tool, no user_id) ───────────────
+
+  static Future<Map<String, dynamic>> lookupIp(String query) async {
+    return _requestWithRetry(
+      (t) => http
+          .post(
+            Uri.parse('$_base/api/ip-tracker/lookup'),
+            headers: _baseHeaders,
+            body: jsonEncode({'query': query}),
+          )
+          .timeout(t),
+    );
+  }
+
   // ── Location (fire-and-forget) ────────────────────────────────────────────
 
   static Future<void> sendLocation({

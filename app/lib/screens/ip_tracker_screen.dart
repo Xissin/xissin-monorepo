@@ -1,16 +1,14 @@
 // ============================================================
 //  app/lib/screens/ip_tracker_screen.dart
-//  🌐 IP Tracker — powered by ip-api.com (free, no key needed)
+//  🌐 IP Tracker — powered by ip-api.com via Railway backend
 //  Accepts: raw IP · domain · full URL
-//  Calls ip-api.com directly from Flutter (no backend hop needed)
 // ============================================================
-import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:http/http.dart' as http;
 import 'package:google_mobile_ads/google_mobile_ads.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../services/ad_service.dart';
+import '../services/api_service.dart';
 import '../theme/app_theme.dart';
 
 class IpTrackerScreen extends StatefulWidget {
@@ -28,16 +26,13 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
 
   // ── Screen state ─────────────────────────────────────────────────────────────
   final _queryCtrl = TextEditingController();
-  bool                    _loading = false;
-  Map<String, dynamic>?   _result;
-  String?                 _error;
+  bool                   _loading = false;
+  Map<String, dynamic>?  _result;
+  String?                _error;
 
-  // ── Constants ─────────────────────────────────────────────────────────────────
+  // ── Accent colors ────────────────────────────────────────────────────────────
   static const _accent  = Color(0xFF00B4D8);
   static const _accent2 = Color(0xFF0077B6);
-  static const _fields  =
-      'status,message,country,countryCode,regionName,city,zip,'
-      'lat,lon,timezone,isp,org,as,query,mobile,proxy,hosting';
 
   // ── Lifecycle ─────────────────────────────────────────────────────────────────
 
@@ -106,52 +101,25 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
     );
   }
 
-  // ── Input cleaning ────────────────────────────────────────────────────────────
-
-  String _cleanInput(String raw) {
-    var q = raw.trim();
-    // Strip protocol
-    q = q.replaceAll(RegExp(r'^https?://', caseSensitive: false), '');
-    // Strip path / query string / fragment
-    q = q.split('/').first;
-    q = q.split('?').first;
-    q = q.split('#').first;
-    // Strip port — but only for domains, not raw IPv4
-    final isIpv4 = RegExp(r'^\d{1,3}(\.\d{1,3}){3}$').hasMatch(q);
-    if (!isIpv4) q = q.split(':').first;
-    return q.trim();
-  }
-
   // ── Lookup ────────────────────────────────────────────────────────────────────
 
   Future<void> _lookup() async {
     final raw = _queryCtrl.text.trim();
     if (raw.isEmpty) return;
 
-    final query = _cleanInput(raw);
-    if (query.isEmpty) {
-      setState(() => _error = 'Invalid input. Enter an IP, domain, or URL.');
-      return;
-    }
-
     HapticFeedback.mediumImpact();
+    FocusScope.of(context).unfocus();
     setState(() { _loading = true; _error = null; _result = null; });
 
     try {
-      final uri = Uri.parse(
-          'https://ip-api.com/json/$query?fields=$_fields');
-      final resp = await http.get(uri).timeout(const Duration(seconds: 10));
+      // Routes through Railway backend → ip-api.com
+      // Input cleaning is done server-side in ip_tracker.py
+      final data = await ApiService.lookupIp(raw);
 
-      if (resp.statusCode != 200) {
-        throw Exception('Service unavailable (${resp.statusCode})');
-      }
-
-      final data = jsonDecode(resp.body) as Map<String, dynamic>;
-
-      if (data['status'] == 'fail') {
+      if (data['success'] == false) {
         setState(() {
           _loading = false;
-          _error   = data['message'] as String? ?? 'Invalid IP or domain.';
+          _error   = data['error'] as String? ?? 'Invalid IP or domain.';
         });
         return;
       }
@@ -163,17 +131,14 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
         if (!AdService.instance.adsRemoved) AdService.instance.showInterstitial();
       });
 
-    } on Exception catch (e) {
-      setState(() {
-        _loading = false;
-        _error   = e.toString().contains('TimeoutException')
-            ? 'Request timed out. Check your internet connection.'
-            : 'Lookup failed. Check your internet connection.';
-      });
+    } on ApiException catch (e) {
+      setState(() { _loading = false; _error = e.userMessage; });
+    } catch (e) {
+      setState(() { _loading = false; _error = 'Lookup failed. Try again.'; });
     }
   }
 
-  // ── Url launcher helper ───────────────────────────────────────────────────────
+  // ── Helpers ───────────────────────────────────────────────────────────────────
 
   Future<void> _launch(String url) async {
     final uri = Uri.parse(url);
@@ -182,21 +147,17 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
     }
   }
 
-  // ── Copy helper ───────────────────────────────────────────────────────────────
-
   void _copy(String text, String label) {
     Clipboard.setData(ClipboardData(text: text));
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('$label copied!'),
-        duration: const Duration(seconds: 1),
-        backgroundColor: _accent,
-        behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(10)),
-        margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-      ),
-    );
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text('$label copied!'),
+      duration: const Duration(seconds: 1),
+      backgroundColor: _accent,
+      behavior: SnackBarBehavior.floating,
+      shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(10)),
+      margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+    ));
   }
 
   // ── Build ─────────────────────────────────────────────────────────────────────
@@ -234,7 +195,8 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
         centerTitle: true,
       ),
       body: SingleChildScrollView(
-        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+        padding: const EdgeInsets.symmetric(
+            horizontal: 20, vertical: 8),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
@@ -262,19 +224,21 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
           color: Colors.black.withOpacity(0.1),
           blurRadius: 20, offset: const Offset(0, 8))],
     ),
-    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      // ── Input row ──────────────────────────────────────────────────────────
+    child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+      // ── Input row ────────────────────────────────────────────────────────
       Row(children: [
         Expanded(
           child: TextField(
             controller: _queryCtrl,
             style: TextStyle(color: c.textPrimary, fontSize: 14),
             decoration: InputDecoration(
-              hintText: 'IP, domain, or URL…',
+              hintText:  'IP, domain, or URL…',
               hintStyle: TextStyle(color: c.textHint, fontSize: 13),
               filled:    true,
               fillColor: c.background,
-              border:    OutlineInputBorder(
+              border: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(12),
                   borderSide: BorderSide.none),
               prefixIcon: Icon(Icons.travel_explore_rounded,
@@ -291,10 +255,10 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
               contentPadding: const EdgeInsets.symmetric(
                   horizontal: 14, vertical: 14),
             ),
-            onChanged: (_) => setState(() {}),
-            onSubmitted: (_) => _lookup(),
+            onChanged:       (_) => setState(() {}),
+            onSubmitted:     (_) => _lookup(),
             textInputAction: TextInputAction.search,
-            keyboardType: TextInputType.url,
+            keyboardType:    TextInputType.url,
           ),
         ),
         const SizedBox(width: 10),
@@ -308,7 +272,8 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
               borderRadius: BorderRadius.circular(12),
               boxShadow: [BoxShadow(
                   color: _accent.withOpacity(0.4),
-                  blurRadius: 10, offset: const Offset(0, 4))],
+                  blurRadius: 10,
+                  offset: const Offset(0, 4))],
             ),
             child: const Icon(Icons.my_location_rounded,
                 color: Colors.white, size: 20),
@@ -316,7 +281,7 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
         ),
       ]),
       const SizedBox(height: 14),
-      // ── Quick examples ─────────────────────────────────────────────────────
+      // ── Quick examples ───────────────────────────────────────────────────
       Text('Examples',
           style: TextStyle(color: c.textHint, fontSize: 10,
               fontWeight: FontWeight.w600)),
@@ -376,9 +341,11 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
   // ── Loading Card ──────────────────────────────────────────────────────────────
 
   Widget _buildLoadingCard(XissinColors c) => Container(
+    margin: const EdgeInsets.only(bottom: 12),
     padding: const EdgeInsets.symmetric(vertical: 32),
     decoration: BoxDecoration(
-        color: c.surface, borderRadius: BorderRadius.circular(18),
+        color: c.surface,
+        borderRadius: BorderRadius.circular(18),
         border: Border.all(color: c.border)),
     child: Column(children: [
       const SizedBox(
@@ -388,7 +355,8 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
       ),
       const SizedBox(height: 14),
       Text('Locating…',
-          style: TextStyle(color: c.textSecondary, fontSize: 13)),
+          style: TextStyle(
+              color: c.textSecondary, fontSize: 13)),
     ]),
   );
 
@@ -396,28 +364,25 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
 
   List<Widget> _buildResultSection(XissinColors c) {
     final d           = _result!;
-    final resolvedIp  = d['query']      as String? ?? '';
-    final country     = d['country']    as String? ?? '';
-    final countryCode = d['countryCode'] as String? ?? '';
-    final regionName  = d['regionName'] as String? ?? '';
-    final city        = d['city']       as String? ?? '';
-    final zip         = d['zip']        as String? ?? '';
+    final resolvedIp  = d['query']        as String? ?? '';
+    final country     = d['country']      as String? ?? '';
+    final countryCode = d['country_code'] as String? ?? '';
+    final regionName  = d['region_name']  as String? ?? '';
+    final city        = d['city']         as String? ?? '';
+    final zip         = d['zip_code']     as String? ?? '';
     final lat         = (d['lat']  as num?)?.toDouble() ?? 0.0;
     final lon         = (d['lon']  as num?)?.toDouble() ?? 0.0;
-    final timezone    = d['timezone']   as String? ?? '';
-    final isp         = d['isp']        as String? ?? '';
-    final org         = d['org']        as String? ?? '';
-    final asInfo      = d['as']         as String? ?? '';
-    final mobile      = d['mobile']     as bool?   ?? false;
-    final proxy       = d['proxy']      as bool?   ?? false;
-    final hosting     = d['hosting']    as bool?   ?? false;
-
-    final mapsUrl = (lat != 0 || lon != 0)
-        ? 'https://www.google.com/maps?q=$lat,$lon'
-        : null;
+    final timezone    = d['timezone']     as String? ?? '';
+    final isp         = d['isp']          as String? ?? '';
+    final org         = d['org']          as String? ?? '';
+    final asInfo      = d['as_info']      as String? ?? '';
+    final mobile      = d['mobile']       as bool?   ?? false;
+    final proxy       = d['proxy']        as bool?   ?? false;
+    final hosting     = d['hosting']      as bool?   ?? false;
+    final mapsUrl     = d['maps_url']     as String? ?? '';
 
     return [
-      // ── Resolved IP chip ───────────────────────────────────────────────────
+      // ── Resolved IP chip ─────────────────────────────────────────────────
       Container(
         margin: const EdgeInsets.only(bottom: 12),
         padding: const EdgeInsets.symmetric(
@@ -428,7 +393,8 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
           border: Border.all(color: _accent.withOpacity(0.3)),
         ),
         child: Row(children: [
-          const Icon(Icons.dns_rounded, color: _accent, size: 16),
+          const Icon(Icons.dns_rounded,
+              color: _accent, size: 16),
           const SizedBox(width: 10),
           Expanded(
             child: Column(
@@ -440,7 +406,8 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
                       fontSize: 10)),
               Text(resolvedIp,
                   style: const TextStyle(
-                      color: _accent, fontSize: 16,
+                      color: _accent,
+                      fontSize: 16,
                       fontWeight: FontWeight.w800,
                       letterSpacing: 0.8)),
             ]),
@@ -460,10 +427,12 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
         ]),
       ),
 
-      // ── Location ───────────────────────────────────────────────────────────
+      // ── Location ─────────────────────────────────────────────────────────
       _card(
-        c: c, icon: Icons.place_rounded,
-        title: 'Location', color: const Color(0xFF2ECC71),
+        c: c,
+        icon:  Icons.place_rounded,
+        title: 'Location',
+        color: const Color(0xFF2ECC71),
         children: [
           _infoRow(c, '🌍', 'Country',
               countryCode.isNotEmpty
@@ -476,16 +445,20 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
           _infoRow(c, '📮', 'ZIP Code',
               zip.isNotEmpty ? zip : '—'),
           _infoRow(c, '🧭', 'Coordinates',
-              lat != 0 ? '${lat.toStringAsFixed(4)}, ${lon.toStringAsFixed(4)}' : '—'),
-          if (mapsUrl != null) ...[
+              lat != 0
+                  ? '${lat.toStringAsFixed(4)}, '
+                    '${lon.toStringAsFixed(4)}'
+                  : '—'),
+          if (mapsUrl.isNotEmpty) ...[
             const SizedBox(height: 10),
             GestureDetector(
               onTap: () => _launch(mapsUrl),
               child: Container(
-                padding: const EdgeInsets.symmetric(
-                    vertical: 11),
+                padding:
+                    const EdgeInsets.symmetric(vertical: 11),
                 decoration: BoxDecoration(
-                  color: const Color(0xFF2ECC71).withOpacity(0.1),
+                  color: const Color(0xFF2ECC71)
+                      .withOpacity(0.1),
                   borderRadius: BorderRadius.circular(10),
                   border: Border.all(
                       color: const Color(0xFF2ECC71)
@@ -510,10 +483,12 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
         ],
       ),
 
-      // ── Network ────────────────────────────────────────────────────────────
+      // ── Network ──────────────────────────────────────────────────────────
       _card(
-        c: c, icon: Icons.cell_tower_rounded,
-        title: 'Network', color: _accent,
+        c: c,
+        icon:  Icons.cell_tower_rounded,
+        title: 'Network',
+        color: _accent,
         children: [
           _infoRow(c, '📡', 'ISP',
               isp.isNotEmpty ? isp : '—'),
@@ -553,10 +528,12 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
         ],
       ),
 
-      // ── Details ────────────────────────────────────────────────────────────
+      // ── Details ──────────────────────────────────────────────────────────
       _card(
-        c: c, icon: Icons.manage_search_rounded,
-        title: 'Details', color: const Color(0xFFFFA94D),
+        c: c,
+        icon:  Icons.manage_search_rounded,
+        title: 'Details',
+        color: const Color(0xFFFFA94D),
         children: [
           _infoRow(c, '🕐', 'Timezone',
               timezone.isNotEmpty ? timezone : '—'),
@@ -573,11 +550,11 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
   // ── Card builder ──────────────────────────────────────────────────────────────
 
   Widget _card({
-    required XissinColors    c,
-    required IconData        icon,
-    required String          title,
-    required Color           color,
-    required List<Widget>    children,
+    required XissinColors c,
+    required IconData     icon,
+    required String       title,
+    required Color        color,
+    required List<Widget> children,
   }) =>
       Container(
         margin: const EdgeInsets.only(bottom: 12),
@@ -602,7 +579,8 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
             const SizedBox(width: 8),
             Text(title,
                 style: TextStyle(
-                    color: color, fontSize: 13,
+                    color: color,
+                    fontSize: 13,
                     fontWeight: FontWeight.w700)),
           ]),
           const SizedBox(height: 12),
@@ -612,8 +590,8 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
 
   // ── Row builders ──────────────────────────────────────────────────────────────
 
-  Widget _infoRow(
-      XissinColors c, String emoji, String label, String value) =>
+  Widget _infoRow(XissinColors c, String emoji,
+      String label, String value) =>
       Padding(
         padding: const EdgeInsets.only(bottom: 9),
         child: Row(
@@ -631,15 +609,16 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
               const SizedBox(height: 1),
               Text(value,
                   style: TextStyle(
-                      color: c.textPrimary, fontSize: 13,
+                      color: c.textPrimary,
+                      fontSize: 13,
                       fontWeight: FontWeight.w600)),
             ]),
           ),
         ]),
       );
 
-  Widget _flagRow(XissinColors c, String emoji, String label,
-      bool value) =>
+  Widget _flagRow(XissinColors c, String emoji,
+      String label, bool value) =>
       Padding(
         padding: const EdgeInsets.only(bottom: 9),
         child: Row(children: [
@@ -648,7 +627,8 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
           Expanded(
               child: Text(label,
                   style: TextStyle(
-                      color: c.textSecondary, fontSize: 13))),
+                      color: c.textSecondary,
+                      fontSize: 13))),
           Container(
             padding: const EdgeInsets.symmetric(
                 horizontal: 10, vertical: 4),
@@ -665,8 +645,8 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
                 color: value
                     ? const Color(0xFFFF6B6B)
                     : const Color(0xFF2ECC71),
-                fontSize: 10,
-                fontWeight: FontWeight.w800,
+                fontSize:      10,
+                fontWeight:    FontWeight.w800,
                 letterSpacing: 0.5,
               ),
             ),
