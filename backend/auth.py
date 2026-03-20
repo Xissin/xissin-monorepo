@@ -22,6 +22,12 @@ SECURITY NOTES:
   - ADMIN_SECRET_KEY must be set in Railway env vars — no fallback
   - BOOTSTRAP_SALT must be set in Railway env vars (used by session.py)
   - Backend refuses to start if ADMIN_SECRET_KEY is missing
+
+FIX (v2.1):
+  - BUG: _validate_session_token was using `await db.redis_get()`
+    but redis_get() is a SYNC function — caused every session lookup
+    to fail silently, returning False → every app request got 401.
+  - FIXED: removed await, call redis_get() directly as sync.
 """
 
 import hmac
@@ -72,15 +78,16 @@ _ADMIN_KEY_VALUE: str = _admin_key()
 
 # ── Session token validation ──────────────────────────────────────────────────
 
-async def _validate_session_token(token: str) -> bool:
+def _validate_session_token(token: str) -> bool:
     """
     Looks up the session token in Redis.
     Redis TTL handles expiry — if key is gone, session is expired.
     Returns False if Redis is unreachable (fail closed).
+    NOTE: redis_get() is a SYNC function — do NOT use await.
     """
     try:
         import database as db
-        value = await db.redis_get(f"sess:{token}")
+        value = db.redis_get(f"sess:{token}")  # ← sync, no await
         return value is not None
     except Exception as e:
         logger.warning(f"Redis session lookup failed (rejecting request): {e}")
@@ -116,7 +123,7 @@ async def verify_app_request(
             detail="Missing or invalid session token. Please restart the app.",
         )
 
-    if not await _validate_session_token(x_session_token):
+    if not _validate_session_token(x_session_token):  # ← sync call, no await
         logger.warning(
             f"Invalid/expired session: token={x_session_token[:8]}... "
             f"path={path}"
