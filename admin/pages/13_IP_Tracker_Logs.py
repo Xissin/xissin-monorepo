@@ -1,26 +1,16 @@
-"""
-pages/13_IP_Tracker_Logs.py — IP Tracker lookup logs
-  - Shows all IP/domain/URL lookups made through the Xissin app
-  - Per-country breakdown
-  - Timeline + Table views
-  - CSV export
-"""
+"""pages/13_IP_Tracker_Logs.py — IP Tracker lookup logs — full history, no cap"""
 import streamlit as st
 import pandas as pd
-from utils.api import get
+from utils.api import get, get_heavy, _ALL
 from utils.theme import inject_theme, page_header, auth_guard
 
-st.set_page_config(
-    page_title="IP Tracker Logs · Xissin Admin",
-    page_icon="🌐",
-    layout="wide",
-)
+st.set_page_config(page_title="IP Tracker Logs · Xissin Admin", page_icon="🌐", layout="wide")
 inject_theme()
 auth_guard()
 page_header("🌐", "IP Tracker Logs", "LOOKUP HISTORY · COUNTRY BREAKDOWN · SEARCHABLE")
 
 # ── Controls ───────────────────────────────────────────────────────────────────
-col_a, col_b, col_c, col_d = st.columns([2, 2, 1, 1])
+col_a, col_b, col_c = st.columns([2, 2, 1])
 with col_a:
     search_query = st.text_input(
         "🔍 Filter by IP/Domain", placeholder="e.g. 8.8.8.8 or facebook.com...",
@@ -32,18 +22,15 @@ with col_b:
         label_visibility="collapsed",
     )
 with col_c:
-    limit = st.selectbox("Show last", [50, 100, 200, 500], index=1,
-                         label_visibility="collapsed")
-with col_d:
     if st.button("↺  REFRESH", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
 
 # ── Fetch ──────────────────────────────────────────────────────────────────────
 @st.cache_data(ttl=20, show_spinner=False)
-def load_ip_logs(limit):
+def load_ip_logs():
     try:
-        return get("/api/ip-tracker/logs", {"limit": limit}).get("logs", [])
+        return get_heavy("/api/ip-tracker/logs", {"limit": _ALL}).get("logs", [])
     except Exception:
         return []
 
@@ -55,30 +42,31 @@ def load_ip_stats():
         return {}
 
 with st.spinner("Loading IP tracker data..."):
-    logs  = load_ip_logs(limit)
+    logs  = load_ip_logs()
     stats = load_ip_stats()
 
 # ── Apply filters ──────────────────────────────────────────────────────────────
 if search_query.strip():
-    q = search_query.strip().lower()
-    logs = [l for l in logs if q in str(l.get("query", "")).lower()
-            or q in str(l.get("ip", "")).lower()]
+    q    = search_query.strip().lower()
+    logs = [l for l in logs
+            if q in str(l.get("query", "")).lower()
+            or q in str(l.get("ip",    "")).lower()]
 if search_user.strip():
-    u = search_user.strip().lower()
+    u    = search_user.strip().lower()
     logs = [l for l in logs if u in str(l.get("user_id", "")).lower()]
 
 # ── Metric cards ───────────────────────────────────────────────────────────────
-total_lookups   = stats.get("total_lookups", len(logs))
-unique_ips      = len({l.get("query", "") for l in logs})
-unique_users    = len({l.get("user_id", "") for l in logs})
-top_country     = stats.get("top_country", "—")
+total_lookups = stats.get("total_lookups", len(logs))
+unique_ips    = len({l.get("query",   "") for l in logs})
+unique_users  = len({l.get("user_id", "") for l in logs})
+top_country   = stats.get("top_country", "—")
 
 c1, c2, c3, c4 = st.columns(4)
 for col, icon, label, value, color, delay in [
-    (c1, "🌐", "TOTAL LOOKUPS",  total_lookups,  "#7EE7C1", 0.0),
-    (c2, "🔎", "UNIQUE QUERIES", unique_ips,     "#00e5ff", 0.08),
-    (c3, "👤", "UNIQUE USERS",   unique_users,   "#a855f7", 0.16),
-    (c4, "🗺️", "TOP COUNTRY",    top_country,    "#FFA726", 0.24),
+    (c1, "🌐", "TOTAL LOOKUPS",  total_lookups, "#7EE7C1", 0.00),
+    (c2, "🔎", "UNIQUE QUERIES", unique_ips,    "#00e5ff", 0.08),
+    (c3, "👤", "UNIQUE USERS",   unique_users,  "#a855f7", 0.16),
+    (c4, "🗺️", "TOP COUNTRY",   top_country,   "#FFA726", 0.24),
 ]:
     with col:
         st.markdown(f"""
@@ -93,10 +81,7 @@ for col, icon, label, value, color, delay in [
                 color:{color}'>{value}</div>
         </div>""", unsafe_allow_html=True)
 
-st.markdown(f"""
-<div style='font-family:"Share Tech Mono",monospace;font-size:10px;
-    color:#5a7a9a;margin:12px 0 8px'>SHOWING {len(logs)} LOOKUP RECORDS</div>
-""", unsafe_allow_html=True)
+st.caption(f"Showing **{len(logs)}** lookup records")
 
 if not logs:
     st.info("No IP lookup logs found.")
@@ -108,15 +93,13 @@ tab1, tab2, tab3 = st.tabs(["🕐 Timeline", "📊 Table", "🗺️ Country Brea
 with tab1:
     for log in logs:
         ts      = (log.get("ts") or "")[:16].replace("T", " ")
-        query   = log.get("query", "—")
+        query   = log.get("query",   "—")
         user_id = log.get("user_id", "—")
         country = log.get("country", "")
-        city    = log.get("city", "")
-        isp     = log.get("isp", "")
-        ip      = log.get("ip", "")
-        lat     = log.get("lat", "")
-        lon     = log.get("lon", "")
-        success = log.get("success", True)
+        city    = log.get("city",    "")
+        isp     = log.get("isp",     "")
+        ip      = log.get("ip",      "")
+        success = log.get("success",  True)
 
         dot_color = "#7EE7C1" if success else "#FF6B6B"
 
@@ -125,23 +108,39 @@ with tab1:
         if country: location_parts.append(country)
         location_str = ", ".join(location_parts) if location_parts else "—"
 
+        isp_badge = (
+            f"<span style='background:#1a2340;border-radius:6px;padding:3px 8px;"
+            f"font-size:11px;color:#7EE7C1'>🖥️ {isp[:35]}</span>"
+            if isp else ""
+        )
+        loc_badge = (
+            f"<span style='background:#1a2340;border-radius:6px;padding:3px 8px;"
+            f"font-size:11px;color:#38BDF8'>📍 {location_str}</span>"
+            if location_str != "—" else ""
+        )
+        ip_badge = (
+            f"<span style='background:#1a2340;border-radius:6px;padding:3px 8px;"
+            f"font-size:11px;color:#FFA726'>🔢 {ip}</span>"
+            if ip and ip != query else ""
+        )
+
         st.markdown(f"""
-        <div style='padding:12px 0; border-bottom:1px solid #1d2c4a'>
-            <div style='display:flex; gap:12px; align-items:flex-start'>
-                <div style='width:10px; height:10px; border-radius:50%;
-                    background:{dot_color}; margin-top:5px; flex-shrink:0'></div>
+        <div style='padding:12px 0;border-bottom:1px solid #1d2c4a'>
+            <div style='display:flex;gap:12px;align-items:flex-start'>
+                <div style='width:10px;height:10px;border-radius:50%;
+                    background:{dot_color};margin-top:5px;flex-shrink:0'></div>
                 <div style='flex:1'>
-                    <div style='display:flex; justify-content:space-between; flex-wrap:wrap; gap:6px'>
-                        <span style='font-family:monospace; font-weight:700;
-                            font-size:13px; color:#7EE7C1'>🌐 {query}</span>
-                        <span style='font-size:10px; color:#7a8ab8'>{ts} PHT</span>
+                    <div style='display:flex;justify-content:space-between;flex-wrap:wrap;gap:6px'>
+                        <span style='font-family:monospace;font-weight:700;
+                            font-size:13px;color:#7EE7C1'>🌐 {query}</span>
+                        <span style='font-size:10px;color:#7a8ab8'>{ts} PHT</span>
                     </div>
-                    <div style='margin-top:6px; display:flex; flex-wrap:wrap; gap:8px'>
-                        <span style='background:#1a2340; border-radius:6px; padding:3px 8px;
-                            font-size:11px; color:#A78BFA'>👤 {user_id}</span>
-                        {f"<span style='background:#1a2340; border-radius:6px; padding:3px 8px; font-size:11px; color:#38BDF8'>📍 {location_str}</span>" if location_str != "—" else ""}
-                        {f"<span style='background:#1a2340; border-radius:6px; padding:3px 8px; font-size:11px; color:#7EE7C1'>🖥️ {isp[:30]}</span>" if isp else ""}
-                        {f"<span style='background:#1a2340; border-radius:6px; padding:3px 8px; font-size:11px; color:#FFA726'>🔢 {ip}</span>" if ip and ip != query else ""}
+                    <div style='margin-top:6px;display:flex;flex-wrap:wrap;gap:8px'>
+                        <span style='background:#1a2340;border-radius:6px;padding:3px 8px;
+                            font-size:11px;color:#A78BFA'>👤 {user_id}</span>
+                        {loc_badge}
+                        {isp_badge}
+                        {ip_badge}
                     </div>
                 </div>
             </div>
@@ -154,10 +153,10 @@ with tab2:
         ts = (log.get("ts") or "")[:16].replace("T", " ")
         rows.append({
             "Time (PHT)": ts,
-            "Query":      log.get("query", "—"),
-            "IP":         log.get("ip", "—"),
+            "Query":      log.get("query",   "—"),
+            "IP":         log.get("ip",      "—"),
             "Country":    log.get("country", "—"),
-            "City":       log.get("city", "—"),
+            "City":       log.get("city",    "—"),
             "ISP":        (log.get("isp") or "—")[:40],
             "User ID":    log.get("user_id", "—"),
             "Success":    "✅" if log.get("success", True) else "❌",
@@ -169,13 +168,12 @@ with tab2:
     csv = df.to_csv(index=False).encode("utf-8")
     st.download_button(
         "⬇️ Download as CSV",
-        data=csv,
-        file_name="xissin_ip_tracker_logs.csv",
-        mime="text/csv",
+        data      = csv,
+        file_name = "xissin_ip_tracker_logs.csv",
+        mime      = "text/csv",
     )
 
 with tab3:
-    # Build country frequency from logs
     country_counts: dict = {}
     for log in logs:
         c = log.get("country", "Unknown") or "Unknown"
@@ -184,16 +182,16 @@ with tab3:
     if not country_counts:
         st.info("No country data available.")
     else:
-        sorted_countries = dict(sorted(
-            country_counts.items(), key=lambda x: x[1], reverse=True
-        )[:20])
+        sorted_countries = dict(
+            sorted(country_counts.items(), key=lambda x: x[1], reverse=True)[:20]
+        )
         max_count = max(sorted_countries.values())
+        colors    = ["#7EE7C1","#00e5ff","#FFA726","#a855f7","#f472b6",
+                     "#ff9500","#00ff9d","#ff4757","#00b8d4","#38BDF8"]
 
         for i, (country, count) in enumerate(sorted_countries.items()):
             pct = int((count / max_count) * 100)
-            colors = ["#7EE7C1","#00e5ff","#FFA726","#a855f7","#f472b6",
-                      "#ff9500","#00ff9d","#ff4757","#00b8d4","#38BDF8"]
-            c = colors[i % len(colors)]
+            c   = colors[i % len(colors)]
             st.markdown(f"""
             <div style='margin-bottom:10px'>
                 <div style='display:flex;justify-content:space-between;margin-bottom:4px'>
@@ -207,3 +205,11 @@ with tab3:
                         border-radius:3px;box-shadow:0 0 6px {c}66'></div>
                 </div>
             </div>""", unsafe_allow_html=True)
+
+        # Also show as sortable dataframe
+        st.markdown("<br>", unsafe_allow_html=True)
+        df_c = pd.DataFrame([
+            {"Country": k, "Lookups": v}
+            for k, v in sorted_countries.items()
+        ])
+        st.dataframe(df_c, use_container_width=True, hide_index=True)

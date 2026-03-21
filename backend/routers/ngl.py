@@ -1,16 +1,15 @@
 """
 routers/ngl.py — NGL Anonymous Message Bomber
 
-ARCHITECTURE CHANGE:
-  Before: App → Railway backend → ngl.link  (Railway IP gets blocked/rate-limited)
-  After:  App → ngl.link directly from user's phone  (same as SMS Bomber)
-          App → /ngl/log  (backend only logs the result for admin panel)
+ARCHITECTURE:
+  App → ngl.link directly from user's phone  (NglService — no Railway IP issues)
+  App → /ngl/log  (backend logs the result for admin panel)
 
 Endpoints:
-  POST /ngl/send  — legacy/admin: still works, fires from Railway
-  POST /ngl/log   — NEW: client-side log (called by app after NglService.bombAll)
-  GET  /ngl/stats — admin
-  GET  /ngl/logs  — admin
+  POST /ngl/send  — legacy/admin: fires from Railway (kept for testing)
+  POST /ngl/log   — client-side log (called by app after NglService.bombAll)
+  GET  /ngl/stats — admin stats
+  GET  /ngl/logs  — admin full log history (no artificial inner cap)
 """
 
 from fastapi import APIRouter, HTTPException, Request, Depends
@@ -27,8 +26,8 @@ import database as db
 from limiter import limiter
 from auth import require_admin, verify_app_request
 
-router  = APIRouter()
-PH_TZ   = ZoneInfo("Asia/Manila")
+router = APIRouter()
+PH_TZ  = ZoneInfo("Asia/Manila")
 
 _MAX_CONCURRENT = 5
 _ngl_semaphore: asyncio.Semaphore | None = None
@@ -50,16 +49,14 @@ _USER_AGENTS = [
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15",
 ]
 
-_NGL_ENDPOINTS = [
-    "https://ngl.link/api/submit",
-]
+_NGL_ENDPOINT = "https://ngl.link/api/submit"
 
 
 def _ph_now() -> datetime:
     return datetime.now(PH_TZ).replace(tzinfo=None)
 
 
-# ── Shared models ─────────────────────────────────────────────────────────────
+# ── Models ─────────────────────────────────────────────────────────────────────
 
 class NglRequest(BaseModel):
     username: str = Field(..., min_length=1, max_length=60)
@@ -100,9 +97,36 @@ class NglResponse(BaseModel):
     message:  str
 
 
-# ── Core send logic (used by /send endpoint — fires from Railway) ─────────────
+class NglLogRequest(BaseModel):
+    user_id:  str  = Field(..., min_length=1, max_length=50)
+    username: str  = Field(..., min_length=1, max_length=60)
+    message:  str  = Field(..., min_length=1, max_length=300)
+    quantity: int  = Field(default=1, ge=1, le=50)
+    sent:     int  = Field(default=0, ge=0)
+    failed:   int  = Field(default=0, ge=0)
+    results:  list = Field(default_factory=list)
 
-async def _send_one(client: httpx.AsyncClient, username: str, message: str, index: int) -> bool:
+    @field_validator("username")
+    @classmethod
+    def clean_username(cls, v: str) -> str:
+        v = v.strip().lstrip("@")
+        v = re.sub(r"https?://(www\.)?ngl\.link/", "", v)
+        return v.strip("/").strip()
+
+    @field_validator("user_id")
+    @classmethod
+    def clean_user_id(cls, v: str) -> str:
+        return v.strip()
+
+
+# ── Internal send logic ────────────────────────────────────────────────────────
+
+async def _send_one(
+    client: httpx.AsyncClient,
+    username: str,
+    message: str,
+    index: int,
+) -> bool:
     if index < 5:
         await asyncio.sleep(index * 0.1)
 
@@ -131,7 +155,7 @@ async def _send_one(client: httpx.AsyncClient, username: str, message: str, inde
     for attempt in range(2):
         try:
             resp = await client.post(
-                _NGL_ENDPOINTS[0],
+                _NGL_ENDPOINT,
                 headers=headers,
                 content=payload,
                 timeout=12,
@@ -149,14 +173,17 @@ async def _send_one(client: httpx.AsyncClient, username: str, message: str, inde
     return False
 
 
-# ── /send — legacy/admin: fires from Railway backend ─────────────────────────
-# NOTE: The Flutter app no longer calls this. It now uses NglService (client-side).
-# Kept for admin testing and backward compatibility.
+# ── POST /ngl/send — legacy/admin (fires from Railway) ────────────────────────
 
 @router.post("/send", response_model=NglResponse,
              dependencies=[Depends(verify_app_request)])
 @limiter.limit("3/minute")
 async def send_ngl(req: NglRequest, request: Request):
+    """
+    Server-side NGL send (fires from Railway IP).
+    The Flutter app no longer calls this — it uses NglService + /ngl/log instead.
+    Kept for admin testing and backward compatibility.
+    """
     user = db.get_user(req.user_id)
     if not user:
         raise HTTPException(status_code=403, detail="User not registered.")
@@ -171,14 +198,12 @@ async def send_ngl(req: NglRequest, request: Request):
     async with _get_semaphore():
         sent = failed = 0
         async with httpx.AsyncClient() as client:
-            tasks   = [
-                _send_one(client, req.username, req.message, i)
-                for i in range(req.quantity)
-            ]
+            tasks   = [_send_one(client, req.username, req.message, i)
+                       for i in range(req.quantity)]
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        for result in results:
-            if result is True:
+        for r in results:
+            if r is True:
                 sent += 1
             else:
                 failed += 1
@@ -199,50 +224,27 @@ async def send_ngl(req: NglRequest, request: Request):
 
     success = sent > 0
     return NglResponse(
-        success=success,
-        username=req.username,
-        quantity=req.quantity,
-        sent=sent,
-        failed=failed,
-        message=(
+        success  = success,
+        username = req.username,
+        quantity = req.quantity,
+        sent     = sent,
+        failed   = failed,
+        message  = (
             f"Sent {sent}/{req.quantity} messages to @{req.username}!" if success
             else f"All {req.quantity} messages failed."
         ),
     )
 
 
-# ── /log — NEW: client-side log (app calls this AFTER NglService.bombAll) ─────
-# Does NOT send any messages. Records only. Same pattern as /sms/log.
-
-class NglLogRequest(BaseModel):
-    user_id:  str  = Field(..., min_length=1, max_length=50)
-    username: str  = Field(..., min_length=1, max_length=60)
-    message:  str  = Field(..., min_length=1, max_length=300)
-    quantity: int  = Field(default=1, ge=1, le=50)
-    sent:     int  = Field(default=0, ge=0)
-    failed:   int  = Field(default=0, ge=0)
-    results:  list = Field(default_factory=list)
-
-    @field_validator("username")
-    @classmethod
-    def clean_username(cls, v: str) -> str:
-        v = v.strip().lstrip("@")
-        v = re.sub(r"https?://(www\.)?ngl\.link/", "", v)
-        return v.strip("/").strip()
-
-    @field_validator("user_id")
-    @classmethod
-    def clean_user_id(cls, v: str) -> str:
-        return v.strip()
-
+# ── POST /ngl/log — client-side log ───────────────────────────────────────────
 
 @router.post("/log", dependencies=[Depends(verify_app_request)])
 @limiter.limit("10/minute")
 async def log_ngl_result(req: NglLogRequest, request: Request):
     """
-    Log a client-side NGL bomb result to Redis / admin panel.
-    Does NOT send any messages — records only.
-    Called automatically by the Flutter app after NglService.bombAll() finishes.
+    Records a client-side NGL bomb result to Redis / admin panel.
+    Does NOT send any messages — only logs.
+    Called by the Flutter app after NglService.bombAll() finishes.
     """
     user = db.get_user(req.user_id)
     if not user:
@@ -255,13 +257,9 @@ async def log_ngl_result(req: NglLogRequest, request: Request):
         raise HTTPException(status_code=503,
                             detail="NGL Bomber is currently disabled by the server.")
 
-    total = req.sent + req.failed
-
-    # Update user's NGL counter in stats
     if req.sent > 0:
         db.increment_ngl_stat(req.user_id, req.sent)
 
-    # Activity log (visible in admin Activity Logs panel)
     db.append_log({
         "action":   "ngl_sent",
         "user_id":  req.user_id,
@@ -270,13 +268,13 @@ async def log_ngl_result(req: NglLogRequest, request: Request):
         "quantity": req.quantity,
         "sent":     req.sent,
         "failed":   req.failed,
-        "source":   "client",   # marks it was fired from user's phone
+        "source":   "client",   # fired from user's phone via NglService
     })
 
     return {"success": True, "logged": True}
 
 
-# ── Admin endpoints ───────────────────────────────────────────────────────────
+# ── GET /ngl/stats ─────────────────────────────────────────────────────────────
 
 @router.get("/stats", dependencies=[Depends(require_admin)])
 def get_ngl_stats():
@@ -295,9 +293,19 @@ def get_ngl_stats():
     return {"total_ngl_sent": total, "user_count": len(by_user), "by_user": by_user}
 
 
+# ── GET /ngl/logs ──────────────────────────────────────────────────────────────
+
 @router.get("/logs", dependencies=[Depends(require_admin)])
-def get_ngl_logs(limit: int = 100):
-    """Admin: recent NGL send logs."""
-    all_logs = db.get_logs(limit=500)
-    ngl_logs = [l for l in all_logs if l.get("action") == "ngl_sent"][:limit]
+def get_ngl_logs(limit: int = 10_000):
+    """
+    Admin: full NGL send log history.
+
+    FIX (was broken): the old version called db.get_logs(limit=500) as a hard
+    inner cap, so the admin panel could never see more than 500 total activity
+    log entries to filter from — meaning older NGL logs were invisible even
+    when requesting more. Now passes `limit` straight through so ALL records
+    are accessible.
+    """
+    all_logs = db.get_logs(limit=limit)
+    ngl_logs = [l for l in all_logs if l.get("action") == "ngl_sent"]
     return {"total": len(ngl_logs), "logs": ngl_logs}
