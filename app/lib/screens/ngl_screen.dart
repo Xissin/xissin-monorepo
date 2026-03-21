@@ -7,8 +7,13 @@ import 'package:provider/provider.dart';
 import '../theme/app_theme.dart';
 import '../services/ad_service.dart';
 import '../services/api_service.dart';
+import '../services/ngl_service.dart';
 import '../widgets/glass_neumorphic_card.dart';
 import '../widgets/haptic_button.dart';
+
+// NGL now fires DIRECTLY from the user's phone (same as SMS Bomber).
+// No Railway backend involved — requests come from the user's device.
+// Backend is only called AFTER bombing to log the result for the admin panel.
 
 const _kPink   = Color(0xFFFF6EC7);
 const _kOrange = Color(0xFFFF9A44);
@@ -26,6 +31,7 @@ class NglScreen extends StatefulWidget {
 class _NglScreenState extends State<NglScreen> {
   final _usernameCtrl = TextEditingController();
   final _messageCtrl  = TextEditingController();
+  final _scrollCtrl   = ScrollController();
   final _formKey      = GlobalKey<FormState>();
 
   int    _quantity   = 5;
@@ -33,13 +39,19 @@ class _NglScreenState extends State<NglScreen> {
   bool   _done       = false;
   int    _charCount  = 0;
 
+  // Final results (shown on result screen)
   int    _sent       = 0;
   int    _failed     = 0;
   String _resultMsg  = '';
   bool   _resultOk   = false;
 
-  double _progress   = 0.0;
-  Timer? _progressTimer;
+  // Live results (shown DURING an active send)
+  List<NglResult> _liveResults = [];
+  int             _liveSent    = 0;
+  int             _liveFailed  = 0;
+
+  // Real progress (0.0 → 1.0) based on messages completed
+  double _progress = 0.0;
 
   // ── Local Banner Ad (owned by THIS screen only) ───────────────────────────
   BannerAd? _bannerAd;
@@ -52,51 +64,36 @@ class _NglScreenState extends State<NglScreen> {
       final len = _messageCtrl.text.length;
       if (len != _charCount) setState(() => _charCount = len);
     });
-    // Listen for premium state changes
-    AdService.instance.addListener(_onAdServiceChanged);
-    // Load our own banner ad
+    AdService.instance.addListener(_onAdChanged);
     _initBanner();
   }
 
   @override
   void dispose() {
-    AdService.instance.removeListener(_onAdServiceChanged);
+    AdService.instance.removeListener(_onAdChanged);
     _bannerAd?.dispose();
     _usernameCtrl.dispose();
     _messageCtrl.dispose();
-    _progressTimer?.cancel();
+    _scrollCtrl.dispose();
     super.dispose();
   }
 
-  // ── Ad Service listener ────────────────────────────────────────────────────
+  // ── Ad helpers ─────────────────────────────────────────────────────────────
 
-  void _onAdServiceChanged() {
+  void _onAdChanged() {
     if (!mounted) return;
     if (AdService.instance.adsRemoved && _bannerAd != null) {
       _bannerAd?.dispose();
-      setState(() {
-        _bannerAd    = null;
-        _bannerReady = false;
-      });
+      setState(() { _bannerAd = null; _bannerReady = false; });
     }
   }
 
-  // ── Banner init ────────────────────────────────────────────────────────────
-
   void _initBanner() {
     if (AdService.instance.adsRemoved) return;
-
-    _bannerAd?.dispose();
-    _bannerAd    = null;
-    _bannerReady = false;
-
+    _bannerAd?.dispose(); _bannerAd = null; _bannerReady = false;
     final ad = AdService.instance.createBannerAd(
       onLoaded: () {
-        if (!mounted || AdService.instance.adsRemoved) {
-          _bannerAd?.dispose();
-          _bannerAd = null;
-          return;
-        }
+        if (!mounted || AdService.instance.adsRemoved) { _bannerAd?.dispose(); _bannerAd = null; return; }
         setState(() => _bannerReady = true);
       },
       onFailed: () {
@@ -111,23 +108,19 @@ class _NglScreenState extends State<NglScreen> {
     _bannerAd!.load();
   }
 
-  // ── Progress ───────────────────────────────────────────────────────────────
-
-  void _startFakeProgress() {
-    _progress = 0.0;
-    _progressTimer?.cancel();
-    _progressTimer = Timer.periodic(const Duration(milliseconds: 60), (t) {
-      if (!mounted) { t.cancel(); return; }
-      setState(() {
-        if (_progress < 0.88) _progress += 0.015 * (1.0 - _progress);
-      });
-    });
-  }
-
-  void _stopProgress(bool success) {
-    _progressTimer?.cancel();
-    if (!mounted) return;
-    setState(() => _progress = success ? 1.0 : _progress);
+  Widget _buildBannerAd() {
+    if (AdService.instance.adsRemoved || !_bannerReady || _bannerAd == null) {
+      return const SizedBox.shrink();
+    }
+    return SafeArea(
+      top: false,
+      child: Container(
+        alignment: Alignment.center,
+        width:  _bannerAd!.size.width.toDouble(),
+        height: _bannerAd!.size.height.toDouble(),
+        child:  AdWidget(ad: _bannerAd!),
+      ),
+    );
   }
 
   // ── Paste username ─────────────────────────────────────────────────────────
@@ -154,46 +147,72 @@ class _NglScreenState extends State<NglScreen> {
     HapticFeedback.mediumImpact();
     FocusScope.of(context).unfocus();
 
+    final username = _usernameCtrl.text.trim();
+    final message  = _messageCtrl.text.trim();
+
     setState(() {
-      _loading   = true;
-      _done      = false;
-      _sent      = 0;
-      _failed    = 0;
-      _resultMsg = '';
+      _loading     = true;
+      _done        = false;
+      _sent        = 0;
+      _failed      = 0;
+      _liveSent    = 0;
+      _liveFailed  = 0;
+      _liveResults = [];
+      _resultMsg   = '';
+      _progress    = 0.0;
     });
 
-    _startFakeProgress();
-
     try {
-      final result = await ApiService.sendNgl(
-        userId:   widget.userId,
-        username: _usernameCtrl.text.trim(),
-        message:  _messageCtrl.text.trim(),
-        quantity: _quantity,
+      // ── Fires directly from the user's phone — no Railway IP geoblocking ──
+      final result = await NglService.bombAll(
+        username:  username,
+        message:   message,
+        quantity:  _quantity,
+        onMessageDone: (r, sent, failed) {
+          if (!mounted) return;
+          setState(() {
+            _liveResults.add(r);
+            _liveSent   = sent;
+            _liveFailed = failed;
+            _progress   = (sent + failed) / _quantity;
+          });
+        },
       );
 
-      _stopProgress(result['success'] == true);
       if (!mounted) return;
 
+      final success = result.sent > 0;
       setState(() {
         _loading   = false;
         _done      = true;
-        _resultOk  = result['success'] == true;
-        _sent      = (result['sent']   as num?)?.toInt() ?? 0;
-        _failed    = (result['failed'] as num?)?.toInt() ?? 0;
-        _resultMsg = result['message'] as String? ?? '';
+        _resultOk  = success;
+        _sent      = result.sent;
+        _failed    = result.failed;
+        _resultMsg = success
+            ? 'Sent ${result.sent}/$_quantity messages to @$username!'
+            : 'All $_quantity messages failed. "@$username" may not exist or NGL is blocking requests.';
       });
       HapticFeedback.heavyImpact();
 
-      // Show interstitial ad after send completes
-      AdService.instance.showInterstitial();
+      // ── Log to backend for admin panel (non-blocking — failure is silent) ──
+      ApiService.logNgl(
+        userId:   widget.userId,
+        username: username,
+        message:  message,
+        quantity: _quantity,
+        sent:     result.sent,
+        failed:   result.failed,
+        results:  result.results.map((r) => r.toJson()).toList(),
+      ).catchError((_) {});
+
+      // ── Interstitial ad after work completes ───────────────────────────────
+      Future.delayed(const Duration(milliseconds: 600), () {
+        if (!AdService.instance.adsRemoved) AdService.instance.showInterstitial();
+      });
 
     } catch (e) {
-      _stopProgress(false);
       if (!mounted) return;
-      final err = e is ApiException
-          ? e.userMessage
-          : e.toString().replaceFirst('Exception: ', '');
+      final err = e.toString().replaceFirst('Exception: ', '');
       setState(() {
         _loading   = false;
         _done      = true;
@@ -206,33 +225,18 @@ class _NglScreenState extends State<NglScreen> {
 
   void _reset() {
     HapticFeedback.selectionClick();
+    if (!AdService.instance.adsRemoved) AdService.instance.showInterstitial();
     setState(() {
       _done = _loading = false;
-      _progress  = 0;
-      _sent = _failed = 0;
-      _resultMsg = '';
-      _charCount = 0;
+      _progress    = 0;
+      _sent        = _failed = 0;
+      _liveSent    = _liveFailed = 0;
+      _liveResults = [];
+      _resultMsg   = '';
+      _charCount   = 0;
     });
     _usernameCtrl.clear();
     _messageCtrl.clear();
-  }
-
-  // ── Banner Ad ──────────────────────────────────────────────────────────────
-  // Uses LOCAL _bannerAd — not a shared instance — so no "already in tree" crash.
-
-  Widget _buildBannerAd() {
-    if (AdService.instance.adsRemoved || !_bannerReady || _bannerAd == null) {
-      return const SizedBox.shrink();
-    }
-    return SafeArea(
-      top: false,
-      child: Container(
-        alignment: Alignment.center,
-        width:  _bannerAd!.size.width.toDouble(),
-        height: _bannerAd!.size.height.toDouble(),
-        child:  AdWidget(ad: _bannerAd!),
-      ),
-    );
   }
 
   // ── Build ──────────────────────────────────────────────────────────────────
@@ -241,11 +245,12 @@ class _NglScreenState extends State<NglScreen> {
   Widget build(BuildContext context) {
     final c = context.c;
     return Scaffold(
-      backgroundColor: c.background,
+      backgroundColor:    c.background,
       bottomNavigationBar: _buildBannerAd(),
       appBar: _buildAppBar(c),
       body: SafeArea(
         child: SingleChildScrollView(
+          controller: _scrollCtrl,
           padding: const EdgeInsets.fromLTRB(20, 12, 20, 40),
           child: _done ? _buildResult(c) : _buildForm(c),
         ),
@@ -323,11 +328,22 @@ class _NglScreenState extends State<NglScreen> {
               .fadeIn(duration: 350.ms, delay: 120.ms),
           const SizedBox(height: 28),
 
-          // Progress bar while loading
+          // ── Live progress while sending ──────────────────────────────────
           if (_loading) ...[
-            _GradientProgressBar(progress: _progress, c: c)
-                .animate()
-                .fadeIn(duration: 300.ms),
+            _GradientProgressBar(
+              progress:    _progress,
+              sent:        _liveSent,
+              failed:      _liveFailed,
+              total:       _quantity,
+              c:           c,
+            ).animate().fadeIn(duration: 300.ms),
+            const SizedBox(height: 12),
+
+            // Live result stream (last 8 results)
+            if (_liveResults.isNotEmpty)
+              _LiveResultsList(results: _liveResults, c: c)
+                  .animate()
+                  .fadeIn(duration: 250.ms),
             const SizedBox(height: 20),
           ],
 
@@ -338,10 +354,11 @@ class _NglScreenState extends State<NglScreen> {
 
           const SizedBox(height: 24),
 
-          // Tips section
-          _TipsCard(c: c)
-              .animate(delay: 300.ms)
-              .fadeIn(duration: 400.ms),
+          // Tips section (only shown when not loading)
+          if (!_loading)
+            _TipsCard(c: c)
+                .animate(delay: 300.ms)
+                .fadeIn(duration: 400.ms),
         ],
       ),
     );
@@ -374,12 +391,12 @@ class _NglScreenState extends State<NglScreen> {
     return TextFormField(
       controller: _messageCtrl,
       style: TextStyle(color: c.textPrimary, fontSize: 14, height: 1.5),
-      maxLines: 4,
+      maxLines:   4,
       maxLength:  300,
       buildCounter: (_, {required currentLength, required isFocused, maxLength}) =>
           const SizedBox.shrink(),
       decoration: _inputDecoration(c).copyWith(
-        hintText: 'Enter your anonymous message...',
+        hintText:           'Enter your anonymous message...',
         alignLabelWithHint: true,
         contentPadding:
             const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
@@ -408,9 +425,9 @@ class _NglScreenState extends State<NglScreen> {
                 const RoundSliderOverlayShape(overlayRadius: 20),
           ),
           child: Slider(
-            value: _quantity.toDouble(),
-            min:   1,
-            max:   50,
+            value:     _quantity.toDouble(),
+            min:       1,
+            max:       50,
             divisions: 49,
             onChanged: (v) => setState(() => _quantity = v.toInt()),
           ),
@@ -448,7 +465,7 @@ class _NglScreenState extends State<NglScreen> {
           const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
       border: OutlineInputBorder(
         borderRadius: BorderRadius.circular(AppRadius.lg),
-        borderSide: BorderSide.none,
+        borderSide:   BorderSide.none,
       ),
       enabledBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(AppRadius.lg),
@@ -457,20 +474,20 @@ class _NglScreenState extends State<NglScreen> {
       ),
       focusedBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(AppRadius.lg),
-        borderSide: const BorderSide(color: _kPink, width: 1.5),
+        borderSide:   const BorderSide(color: _kPink, width: 1.5),
       ),
       errorBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(AppRadius.lg),
-        borderSide: const BorderSide(color: _kRed, width: 1.5),
+        borderSide:   const BorderSide(color: _kRed, width: 1.5),
       ),
       focusedErrorBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(AppRadius.lg),
-        borderSide: const BorderSide(color: _kRed, width: 1.5),
+        borderSide:   const BorderSide(color: _kRed, width: 1.5),
       ),
     );
   }
 
-  // ── Result ─────────────────────────────────────────────────────────────────
+  // ── Result screen ──────────────────────────────────────────────────────────
 
   Widget _buildResult(XissinColors c) {
     final color = _resultOk ? _kGreen : _kRed;
@@ -535,7 +552,35 @@ class _NglScreenState extends State<NglScreen> {
               _StatChip(label: 'Failed', value: '$_failed', color: _kRed,   c: c),
             ],
           ).animate().fadeIn(duration: 350.ms, delay: 280.ms),
-          const SizedBox(height: 32),
+          const SizedBox(height: 28),
+        ],
+
+        // ── Breakdown of individual message results ───────────────────────
+        if (_liveResults.isNotEmpty) ...[
+          Align(
+            alignment: Alignment.centerLeft,
+            child: Text(
+              'Message Breakdown',
+              style: TextStyle(
+                  color:      c.textPrimary,
+                  fontSize:   13,
+                  fontWeight: FontWeight.w600),
+            ),
+          ),
+          const SizedBox(height: 10),
+          ...(_liveResults.take(20).toList().asMap().entries.map(
+                (e) => _NglResultRow(result: e.value, index: e.key, c: c),
+              )),
+          if (_liveResults.length > 20)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Text(
+                '+ ${_liveResults.length - 20} more messages',
+                style: TextStyle(
+                    color: c.textSecondary, fontSize: 11),
+              ),
+            ),
+          const SizedBox(height: 28),
         ],
 
         SizedBox(
@@ -560,7 +605,191 @@ class _NglScreenState extends State<NglScreen> {
   }
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// ── Live Results List (shown during send) ─────────────────────────────────────
+
+class _LiveResultsList extends StatelessWidget {
+  final List<NglResult> results;
+  final XissinColors    c;
+  const _LiveResultsList({required this.results, required this.c});
+
+  @override
+  Widget build(BuildContext context) {
+    // Show only the last 6 results to keep UI compact while loading
+    final visible = results.length <= 6
+        ? results
+        : results.sublist(results.length - 6);
+    return Container(
+      padding:      const EdgeInsets.all(10),
+      decoration:   BoxDecoration(
+        color:        c.surface,
+        borderRadius: BorderRadius.circular(AppRadius.lg),
+        border:       Border.all(color: c.border, width: 1),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: visible
+            .asMap()
+            .entries
+            .map((e) => _NglResultRow(result: e.value, index: e.key, c: c))
+            .toList(),
+      ),
+    );
+  }
+}
+
+// ── Single result row ─────────────────────────────────────────────────────────
+
+class _NglResultRow extends StatelessWidget {
+  final NglResult    result;
+  final int          index;
+  final XissinColors c;
+  const _NglResultRow({
+    required this.result,
+    required this.index,
+    required this.c,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final ok    = result.success;
+    final color = ok ? _kGreen : _kRed;
+    return Container(
+      margin:  const EdgeInsets.only(bottom: 5),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+      decoration: BoxDecoration(
+        color:        color.withOpacity(0.06),
+        borderRadius: BorderRadius.circular(AppRadius.sm),
+        border: Border.all(color: color.withOpacity(0.20), width: 1),
+      ),
+      child: Row(
+        children: [
+          Icon(
+            ok ? Icons.check_circle_outline_rounded : Icons.cancel_outlined,
+            size:  14,
+            color: color,
+          ),
+          const SizedBox(width: 8),
+          Text(
+            'Msg #${result.index + 1}',
+            style: TextStyle(
+                color:      c.textPrimary,
+                fontSize:   12,
+                fontWeight: FontWeight.w600),
+          ),
+          const Spacer(),
+          Text(
+            result.message,
+            style: TextStyle(
+                color:    color,
+                fontSize: 11,
+                fontWeight: FontWeight.w500),
+          ),
+        ],
+      ),
+    )
+        .animate(delay: Duration(milliseconds: 30 * index.clamp(0, 10)))
+        .fadeIn(duration: 200.ms)
+        .slideX(begin: 0.05, end: 0, duration: 200.ms);
+  }
+}
+
+// ── Progress bar (real progress — not fake) ───────────────────────────────────
+
+class _GradientProgressBar extends StatelessWidget {
+  final double       progress;
+  final int          sent;
+  final int          failed;
+  final int          total;
+  final XissinColors c;
+  const _GradientProgressBar({
+    required this.progress,
+    required this.sent,
+    required this.failed,
+    required this.total,
+    required this.c,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final done = sent + failed;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(
+              'Sending from your phone...',
+              style: TextStyle(
+                  color:      c.textSecondary,
+                  fontSize:   12,
+                  fontWeight: FontWeight.w500),
+            ),
+            Text(
+              '$done / $total',
+              style: const TextStyle(
+                  color:      _kPink,
+                  fontSize:   12,
+                  fontWeight: FontWeight.w700),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        ClipRRect(
+          borderRadius: BorderRadius.circular(AppRadius.sm),
+          child: Stack(
+            children: [
+              Container(height: 8, color: c.surface),
+              FractionallySizedBox(
+                widthFactor: progress.clamp(0.0, 1.0),
+                child: Container(
+                  height: 8,
+                  decoration: const BoxDecoration(
+                    gradient: LinearGradient(
+                      colors: [_kPink, _kOrange],
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 6),
+        Row(
+          children: [
+            _MiniChip(label: '✓ $sent sent',    color: _kGreen),
+            const SizedBox(width: 8),
+            _MiniChip(label: '✗ $failed failed', color: _kRed),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+class _MiniChip extends StatelessWidget {
+  final String label;
+  final Color  color;
+  const _MiniChip({required this.label, required this.color});
+
+  @override
+  Widget build(BuildContext context) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+        decoration: BoxDecoration(
+          color:        color.withOpacity(0.12),
+          borderRadius: BorderRadius.circular(AppRadius.full),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+              color:      color,
+              fontSize:   10,
+              fontWeight: FontWeight.w600),
+        ),
+      );
+}
+
+// ── Static helper widgets ─────────────────────────────────────────────────────
 
 class _Label extends StatelessWidget {
   final String text;
@@ -593,7 +822,7 @@ class _QuantityLabel extends StatelessWidget {
             decoration: BoxDecoration(
               color:        _kPink.withOpacity(0.15),
               borderRadius: BorderRadius.circular(AppRadius.full),
-              border:       Border.all(color: _kPink.withOpacity(0.35), width: 1),
+              border: Border.all(color: _kPink.withOpacity(0.35), width: 1),
             ),
             child: Text(
               '$quantity msg${quantity == 1 ? '' : 's'}',
@@ -625,7 +854,7 @@ class _CharCounter extends StatelessWidget {
   Widget build(BuildContext context) => Row(
         children: [
           SizedBox(
-            width: 20,
+            width:  20,
             height: 20,
             child: CircularProgressIndicator(
               value:           count / max,
@@ -654,11 +883,11 @@ class _InfoBanner extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.all(14),
+      padding:    const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: _kOrange.withOpacity(0.07),
+        color:        _kOrange.withOpacity(0.07),
         borderRadius: BorderRadius.circular(AppRadius.lg),
-        border: Border.all(color: _kOrange.withOpacity(0.25), width: 1),
+        border:       Border.all(color: _kOrange.withOpacity(0.25), width: 1),
       ),
       child: Row(
         children: [
@@ -667,64 +896,13 @@ class _InfoBanner extends StatelessWidget {
           Expanded(
             child: Text(
               'Sends anonymous messages to any NGL profile.\n'
-              'Max 50 messages per send.',
+              'Fires directly from your phone — max 50 per send.',
               style: TextStyle(
                   color: c.textSecondary, fontSize: 12, height: 1.45),
             ),
           ),
         ],
       ),
-    );
-  }
-}
-
-class _GradientProgressBar extends StatelessWidget {
-  final double progress;
-  final XissinColors c;
-  const _GradientProgressBar({required this.progress, required this.c});
-
-  @override
-  Widget build(BuildContext context) {
-    final pct = (progress * 100).toStringAsFixed(0);
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            Text('Sending messages...',
-                style: TextStyle(
-                    color:      c.textSecondary,
-                    fontSize:   12,
-                    fontWeight: FontWeight.w500)),
-            Text('$pct%',
-                style: const TextStyle(
-                    color:      _kPink,
-                    fontSize:   12,
-                    fontWeight: FontWeight.w700)),
-          ],
-        ),
-        const SizedBox(height: 8),
-        ClipRRect(
-          borderRadius: BorderRadius.circular(AppRadius.sm),
-          child: Stack(
-            children: [
-              Container(height: 8, color: c.surface),
-              FractionallySizedBox(
-                widthFactor: progress.clamp(0.0, 1.0),
-                child: Container(
-                  height: 8,
-                  decoration: const BoxDecoration(
-                    gradient: LinearGradient(
-                      colors: [_kPink, _kOrange],
-                    ),
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ],
     );
   }
 }
@@ -736,7 +914,7 @@ class _TipsCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.all(16),
+      padding:    const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color:        c.surfaceAlt,
         borderRadius: BorderRadius.circular(AppRadius.lg),
@@ -759,6 +937,7 @@ class _TipsCard extends StatelessWidget {
           const SizedBox(height: 10),
           _tip('Enter only the username, not the full ngl.link URL', c),
           _tip('Use the paste button to auto-clean copied links', c),
+          _tip('Requests fire from your phone — not blocked by Railway IP', c),
           _tip('Max 50 messages per send to avoid rate limits', c),
         ],
       ),
@@ -833,7 +1012,7 @@ class _StatChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 16),
+      padding:    const EdgeInsets.symmetric(horizontal: 28, vertical: 16),
       decoration: BoxDecoration(
         color:        color.withOpacity(0.10),
         borderRadius: BorderRadius.circular(AppRadius.lg),

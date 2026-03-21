@@ -1,9 +1,16 @@
 """
 routers/ngl.py — NGL Anonymous Message Bomber
 
-Sends anonymous messages to any ngl.link/username profile.
-Key-gated: user must have an active key.
-Rate-limited: 3 requests/minute per IP.
+ARCHITECTURE CHANGE:
+  Before: App → Railway backend → ngl.link  (Railway IP gets blocked/rate-limited)
+  After:  App → ngl.link directly from user's phone  (same as SMS Bomber)
+          App → /ngl/log  (backend only logs the result for admin panel)
+
+Endpoints:
+  POST /ngl/send  — legacy/admin: still works, fires from Railway
+  POST /ngl/log   — NEW: client-side log (called by app after NglService.bombAll)
+  GET  /ngl/stats — admin
+  GET  /ngl/logs  — admin
 """
 
 from fastapi import APIRouter, HTTPException, Request, Depends
@@ -18,15 +25,11 @@ from zoneinfo import ZoneInfo
 
 import database as db
 from limiter import limiter
-from auth import require_admin
+from auth import require_admin, verify_app_request
 
-router = APIRouter()
-PH_TZ  = ZoneInfo("Asia/Manila")
+router  = APIRouter()
+PH_TZ   = ZoneInfo("Asia/Manila")
 
-# FIX 1 & 2: Removed global ThreadPoolExecutor and blocking semaphore.
-# Now uses asyncio semaphore + httpx async client — fully non-blocking.
-# FIX CRASH: asyncio.Semaphore must NOT be created at module level in Python 3.11
-# (crashes before the event loop starts). Created lazily on first request instead.
 _MAX_CONCURRENT = 5
 _ngl_semaphore: asyncio.Semaphore | None = None
 
@@ -47,7 +50,6 @@ _USER_AGENTS = [
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15",
 ]
 
-# NGL API endpoints to try in order (FIX 5: fallback list)
 _NGL_ENDPOINTS = [
     "https://ngl.link/api/submit",
 ]
@@ -56,6 +58,8 @@ _NGL_ENDPOINTS = [
 def _ph_now() -> datetime:
     return datetime.now(PH_TZ).replace(tzinfo=None)
 
+
+# ── Shared models ─────────────────────────────────────────────────────────────
 
 class NglRequest(BaseModel):
     username: str = Field(..., min_length=1, max_length=60)
@@ -96,39 +100,35 @@ class NglResponse(BaseModel):
     message:  str
 
 
+# ── Core send logic (used by /send endpoint — fires from Railway) ─────────────
+
 async def _send_one(client: httpx.AsyncClient, username: str, message: str, index: int) -> bool:
-    """
-    FIX 1: Now fully async using httpx.AsyncClient — never blocks the event loop.
-    FIX 4: Stagger delay capped at 0.5s max (was 2s), and only for first 5 messages.
-    FIX 6: Added 1 retry on 429 with a short backoff.
-    """
-    # Small stagger only for first 5 to avoid hammering NGL at once
     if index < 5:
         await asyncio.sleep(index * 0.1)
 
     device_id  = str(uuid.uuid4())
     user_agent = random.choice(_USER_AGENTS)
-    payload = (
+    payload    = (
         f"username={username}"
         f"&question={message}"
         f"&deviceId={device_id}&gameSlug=&referrer="
     )
     headers = {
-        "authority":         "ngl.link",
-        "accept":            "*/*",
-        "accept-language":   "en-US,en;q=0.9",
-        "content-type":      "application/x-www-form-urlencoded; charset=UTF-8",
-        "origin":            "https://ngl.link",
-        "referer":           f"https://ngl.link/{username}",
-        "sec-ch-ua":         '"Chromium";v="124", "Google Chrome";v="124"',
-        "sec-fetch-dest":    "empty",
-        "sec-fetch-mode":    "cors",
-        "sec-fetch-site":    "same-origin",
-        "x-requested-with":  "XMLHttpRequest",
-        "user-agent":        user_agent,
+        "authority":        "ngl.link",
+        "accept":           "*/*",
+        "accept-language":  "en-US,en;q=0.9",
+        "content-type":     "application/x-www-form-urlencoded; charset=UTF-8",
+        "origin":           "https://ngl.link",
+        "referer":          f"https://ngl.link/{username}",
+        "sec-ch-ua":        '"Chromium";v="124", "Google Chrome";v="124"',
+        "sec-fetch-dest":   "empty",
+        "sec-fetch-mode":   "cors",
+        "sec-fetch-site":   "same-origin",
+        "x-requested-with": "XMLHttpRequest",
+        "user-agent":       user_agent,
     }
 
-    for attempt in range(2):   # FIX 6: 1 retry on failure/429
+    for attempt in range(2):
         try:
             resp = await client.post(
                 _NGL_ENDPOINTS[0],
@@ -139,7 +139,6 @@ async def _send_one(client: httpx.AsyncClient, username: str, message: str, inde
             if resp.status_code == 200:
                 return True
             if resp.status_code == 429 and attempt == 0:
-                # Rate limited — wait briefly and retry once
                 await asyncio.sleep(1.5)
                 continue
             return False
@@ -147,11 +146,15 @@ async def _send_one(client: httpx.AsyncClient, username: str, message: str, inde
             if attempt == 0:
                 await asyncio.sleep(0.5)
             continue
-
     return False
 
 
-@router.post("/send", response_model=NglResponse)
+# ── /send — legacy/admin: fires from Railway backend ─────────────────────────
+# NOTE: The Flutter app no longer calls this. It now uses NglService (client-side).
+# Kept for admin testing and backward compatibility.
+
+@router.post("/send", response_model=NglResponse,
+             dependencies=[Depends(verify_app_request)])
 @limiter.limit("3/minute")
 async def send_ngl(req: NglRequest, request: Request):
     user = db.get_user(req.user_id)
@@ -160,32 +163,15 @@ async def send_ngl(req: NglRequest, request: Request):
     if db.is_banned(req.user_id):
         raise HTTPException(status_code=403, detail="Your account has been banned.")
 
-    active_key  = user.get("active_key")
-    key_expires = user.get("key_expires")
-    if not active_key or not key_expires:
-        raise HTTPException(
-            status_code=403,
-            detail="Active key required to use NGL Bomber. Go to Key Manager to redeem one.",
-        )
-    try:
-        expires_dt = datetime.fromisoformat(key_expires)
-    except (ValueError, TypeError):
-        raise HTTPException(status_code=403, detail="Invalid key data. Please re-redeem your key.")
-    if _ph_now() > expires_dt:
-        raise HTTPException(status_code=403, detail="Your key has expired. Please redeem a new key.")
-
     settings = db.get_server_settings()
     if not settings.get("feature_ngl", True):
-        raise HTTPException(status_code=503, detail="NGL Bomber is currently disabled by the server.")
+        raise HTTPException(status_code=503,
+                            detail="NGL Bomber is currently disabled by the server.")
 
-    # FIX 3: asyncio.Semaphore properly queues up to _MAX_CONCURRENT requests
-    # instead of immediately rejecting anything beyond 1.
     async with _get_semaphore():
         sent = failed = 0
-
-        # FIX 1: Use async httpx client — fully non-blocking
         async with httpx.AsyncClient() as client:
-            tasks = [
+            tasks   = [
                 _send_one(client, req.username, req.message, i)
                 for i in range(req.quantity)
             ]
@@ -208,6 +194,7 @@ async def send_ngl(req: NglRequest, request: Request):
         "quantity": req.quantity,
         "sent":     sent,
         "failed":   failed,
+        "source":   "server",
     })
 
     success = sent > 0
@@ -219,10 +206,77 @@ async def send_ngl(req: NglRequest, request: Request):
         failed=failed,
         message=(
             f"Sent {sent}/{req.quantity} messages to @{req.username}!" if success
-            else f"All {req.quantity} messages failed. '@{req.username}' may not exist or NGL is blocking requests."
+            else f"All {req.quantity} messages failed."
         ),
     )
 
+
+# ── /log — NEW: client-side log (app calls this AFTER NglService.bombAll) ─────
+# Does NOT send any messages. Records only. Same pattern as /sms/log.
+
+class NglLogRequest(BaseModel):
+    user_id:  str  = Field(..., min_length=1, max_length=50)
+    username: str  = Field(..., min_length=1, max_length=60)
+    message:  str  = Field(..., min_length=1, max_length=300)
+    quantity: int  = Field(default=1, ge=1, le=50)
+    sent:     int  = Field(default=0, ge=0)
+    failed:   int  = Field(default=0, ge=0)
+    results:  list = Field(default_factory=list)
+
+    @field_validator("username")
+    @classmethod
+    def clean_username(cls, v: str) -> str:
+        v = v.strip().lstrip("@")
+        v = re.sub(r"https?://(www\.)?ngl\.link/", "", v)
+        return v.strip("/").strip()
+
+    @field_validator("user_id")
+    @classmethod
+    def clean_user_id(cls, v: str) -> str:
+        return v.strip()
+
+
+@router.post("/log", dependencies=[Depends(verify_app_request)])
+@limiter.limit("10/minute")
+async def log_ngl_result(req: NglLogRequest, request: Request):
+    """
+    Log a client-side NGL bomb result to Redis / admin panel.
+    Does NOT send any messages — records only.
+    Called automatically by the Flutter app after NglService.bombAll() finishes.
+    """
+    user = db.get_user(req.user_id)
+    if not user:
+        raise HTTPException(status_code=403, detail="User not registered.")
+    if db.is_banned(req.user_id):
+        raise HTTPException(status_code=403, detail="Your account has been banned.")
+
+    settings = db.get_server_settings()
+    if not settings.get("feature_ngl", True):
+        raise HTTPException(status_code=503,
+                            detail="NGL Bomber is currently disabled by the server.")
+
+    total = req.sent + req.failed
+
+    # Update user's NGL counter in stats
+    if req.sent > 0:
+        db.increment_ngl_stat(req.user_id, req.sent)
+
+    # Activity log (visible in admin Activity Logs panel)
+    db.append_log({
+        "action":   "ngl_sent",
+        "user_id":  req.user_id,
+        "target":   req.username,
+        "message":  req.message,
+        "quantity": req.quantity,
+        "sent":     req.sent,
+        "failed":   req.failed,
+        "source":   "client",   # marks it was fired from user's phone
+    })
+
+    return {"success": True, "logged": True}
+
+
+# ── Admin endpoints ───────────────────────────────────────────────────────────
 
 @router.get("/stats", dependencies=[Depends(require_admin)])
 def get_ngl_stats():

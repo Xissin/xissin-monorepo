@@ -447,7 +447,11 @@ class ApiService {
     return result;
   }
 
-  // ── NGL Bomber (signed, never cached) ────────────────────────────────────
+  // ── NGL Bomber ────────────────────────────────────────────────────────────
+  // NOTE: The Flutter app no longer calls sendNgl() directly.
+  //       Requests now fire from the user's phone via NglService (ngl_service.dart).
+  //       sendNgl() is kept here for admin/testing use only.
+  //       The app calls logNgl() after NglService.bombAll() finishes.
 
   static Future<Map<String, dynamic>> sendNgl({
     required String userId,
@@ -469,6 +473,42 @@ class ApiService {
           )
           .timeout(const Duration(seconds: 90)),
     );
+  }
+
+  // ── NGL Log (client-side results → admin panel) ───────────────────────────
+  // Called by NglScreen after NglService.bombAll() finishes.
+  // Does NOT send any NGL messages — only records the result for the admin panel.
+  // Fire-and-forget — failures are silently swallowed so they never
+  // block or error the user's screen.
+
+  static Future<void> logNgl({
+    required String userId,
+    required String username,
+    required String message,
+    required int    quantity,
+    required int    sent,
+    required int    failed,
+    List<Map<String, dynamic>> results = const [],
+  }) async {
+    try {
+      await _pinnedClient
+          .post(
+            Uri.parse('$_base/api/ngl/log'),
+            headers: _signedHeaders(userId: userId),
+            body: jsonEncode({
+              'user_id':  userId,
+              'username': username,
+              'message':  message,
+              'quantity': quantity,
+              'sent':     sent,
+              'failed':   failed,
+              'results':  results,
+            }),
+          )
+          .timeout(const Duration(seconds: 15));
+    } catch (_) {
+      // Fire-and-forget — never throw, never block the user
+    }
   }
 
   // ── IP Tracker (no auth needed — public tool) ────────────────────────────
