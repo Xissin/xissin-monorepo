@@ -3,19 +3,10 @@
 //  🔗 URL Remover — 100% local, no backend, offline-safe ads
 //  Interstitial fires: AFTER processing + AFTER share/new file
 //
-//  FIXES v2:
-//   [1] Ticker stored as class field + cancelled in dispose()
-//       → prevents setState-after-dispose crash on back press
-//   [2] utf8.decode(allowMalformed:true) instead of fromCharCodes
-//       → handles Latin-1 / mixed-encoding files safely
-//   [3] Interstitial fires AFTER share completes, not before
-//       → prevents ad blocking the share sheet on Android 11
-//   [4] Empty result guard with SnackBar warning
-//       → user warned instead of silently sharing an empty file
-//   [5] _originalCount moved inside setState
-//       → no desync between count and phase on rapid taps
-//   [6] "Copy All" button added in result card
-//       → quick clipboard copy without opening share sheet
+//  CHANGES v3:
+//   [7] Fire-and-forget usage log to backend after processing
+//       → logs input/output/removed counts only (no file content)
+//       → silently skipped when offline, never blocks the UI
 // ============================================================
 import 'dart:async';
 import 'dart:convert';
@@ -29,6 +20,7 @@ import 'package:google_mobile_ads/google_mobile_ads.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import '../services/ad_service.dart';
+import '../services/api_service.dart';
 import '../theme/app_theme.dart';
 
 class UrlRemoverScreen extends StatefulWidget {
@@ -158,7 +150,6 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
   @override
   void dispose() {
     _connSub?.cancel();
-    // FIX [1]: Always cancel ticker to prevent setState-after-dispose crash
     _ticker?.cancel();
     AdService.instance.removeListener(_onAdChanged);
     _bannerAd?.dispose();
@@ -246,8 +237,6 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
       }
       setState(() {
         _pickedFileName = file.name;
-        // FIX [2]: Use utf8.decode with allowMalformed:true instead of
-        //          String.fromCharCodes — handles Latin-1 / mixed-encoding files
         _rawContent     = utf8.decode(bytes, allowMalformed: true);
         _phase          = _Phase.ready;
         _errorMsg       = null;
@@ -265,7 +254,6 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
 
     final lines = _rawContent!.split('\n');
 
-    // FIX [5]: _originalCount now inside setState so UI and count are always in sync
     setState(() {
       _originalCount = lines.where((l) => l.trim().isNotEmpty).length;
       _phase         = _Phase.processing;
@@ -273,7 +261,6 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
       _errorMsg      = null;
     });
 
-    // FIX [1]: Store ticker in class field so dispose() can cancel it
     _ticker?.cancel();
     _ticker = Stream.periodic(const Duration(milliseconds: 120), (i) => i)
         .listen((_) {
@@ -288,7 +275,6 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
       _ticker?.cancel();
       _ticker = null;
 
-      // FIX [4]: Guard against empty result — warn user instead of sharing empty file
       if (result.isEmpty) {
         setState(() {
           _phase    = _Phase.ready;
@@ -313,7 +299,18 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
         _outputFile = outFile;
       });
 
-      // Show interstitial AFTER result card renders
+      // [7] Fire-and-forget usage log — only counts, no file content
+      // Runs silently after UI updates; errors are swallowed
+      if (_isOnline) {
+        ApiService.logToolUsage(
+          tool:         'url_remover',
+          inputCount:   _originalCount,
+          outputCount:  result.length,
+          removedCount: _originalCount - result.length,
+        ).catchError((_) {});
+      }
+
+      // Interstitial ad after result card renders
       Future.delayed(
         const Duration(milliseconds: 600),
         _tryShowInterstitial,
@@ -328,8 +325,6 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
     }
   }
 
-  // FIX [3]: Interstitial fires AFTER share completes, not before.
-  //          Firing before could block the share sheet on Android 11.
   Future<void> _shareFile() async {
     if (_outputFile == null) return;
     HapticFeedback.mediumImpact();
@@ -337,14 +332,12 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
       [XFile(_outputFile!.path)],
       subject: 'URL Removed — ${_outputFile!.path.split('/').last}',
     );
-    // Small delay then show interstitial AFTER share sheet closes
     Future.delayed(
       const Duration(milliseconds: 300),
       _tryShowInterstitial,
     );
   }
 
-  // FIX [6]: Copy all lines to clipboard — fast alternative to share sheet
   void _copyAll() {
     if (_result.isEmpty) return;
     HapticFeedback.mediumImpact();
@@ -654,9 +647,7 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
     ),
   );
 
-  // FIX [6]: Action row now has 3 buttons: New File | Copy All | Share Result
   Widget _buildActionRow(XissinColors c) => Row(children: [
-    // New File button
     Expanded(
       child: GestureDetector(
         onTap: _reset,
@@ -675,7 +666,6 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
       ),
     ),
     const SizedBox(width: 8),
-    // Copy All button
     Expanded(
       child: GestureDetector(
         onTap: _copyAll,
@@ -703,7 +693,6 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
       ),
     ),
     const SizedBox(width: 8),
-    // Share Result button
     Expanded(
       child: GestureDetector(
         onTap: _shareFile,
@@ -776,7 +765,6 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
                 style: TextStyle(color: c.textSecondary, fontSize: 11)),
           )),
           const SizedBox(height: 10),
-          // FIX [6]: Quick hint text so user knows about Copy All option
           Row(children: [
             Icon(Icons.info_outline_rounded,
                 color: c.textHint, size: 12),

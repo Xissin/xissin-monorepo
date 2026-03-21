@@ -66,6 +66,12 @@ try:
 except ImportError:
     _HAS_SESSION = False
 
+try:
+    from routers import tools as tools_router
+    _HAS_TOOLS = True
+except ImportError:
+    _HAS_TOOLS = False
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s"
@@ -77,7 +83,7 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     port = int(os.environ.get("PORT", 8000))
     logger.info("=" * 55)
-    logger.info("🚀  XISSIN BACKEND  v2.1.0  —  STARTING UP")
+    logger.info("🚀  XISSIN BACKEND  v2.2.0  —  STARTING UP")
     logger.info("=" * 55)
     logger.info(f"🌐  Listening on  0.0.0.0:{port}")
     logger.info(f"🔧  Environment : {os.environ.get('ENVIRONMENT', 'production')}")
@@ -101,6 +107,7 @@ async def lifespan(app: FastAPI):
     logger.info(f"    {'✅' if _HAS_IP_TRACKER          else '❌'}  /api/ip-tracker       — IP Tracker")
     logger.info(f"    {'✅' if _HAS_USERNAME_TRACKER    else '❌'}  /api/username-tracker — Username Tracker")
     logger.info(f"    {'✅' if _HAS_SESSION              else '❌'}  /api/auth/session     — Session Tokens")
+    logger.info(f"    {'✅' if _HAS_TOOLS               else '❌'}  /api/tools            — Tool Logs")
 
     logger.info("=" * 55)
     logger.info("✅  Xissin Backend is ONLINE and ready!")
@@ -114,7 +121,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Xissin App API",
     description="Backend API for the Xissin Multi-Tool Flutter App",
-    version="2.1.0",
+    version="2.2.0",
     lifespan=lifespan,
 )
 
@@ -192,6 +199,10 @@ if _HAS_SESSION:
     app.include_router(session_router.router,
                        prefix="/api/auth", tags=["Auth"])
 
+if _HAS_TOOLS:
+    app.include_router(tools_router.router,
+                       prefix="/api/tools", tags=["Tool Logs"])
+
 
 # ── Base routes ───────────────────────────────────────────────────────────────
 @app.get("/")
@@ -199,7 +210,7 @@ def root():
     return {
         "status":  "online",
         "app":     "Xissin Multi-Tool API",
-        "version": "2.1.0",
+        "version": "2.2.0",
     }
 
 @app.get("/health")
@@ -232,7 +243,7 @@ def api_status():
                        os.environ.get("LATEST_APK_NOTES", ""))
 
     return {
-        "api_version":        "2.1.0",
+        "api_version":        "2.2.0",
         "min_app_version":    min_ver,
         "latest_app_version": lat_ver,
         "apk_download_url":   apk_url,
@@ -247,6 +258,7 @@ def api_status():
             "username_tracker": _HAS_USERNAME_TRACKER,
             "announcements":    _HAS_ANNOUNCEMENTS,
             "remove_ads":       _HAS_PAYMENTS,
+            "tool_logs":        _HAS_TOOLS,
         },
         "links": {
             "channel":    "https://t.me/Xissin_0",
