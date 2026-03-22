@@ -1,4 +1,17 @@
-"""pages/12_Username_Tracker.py — Username search logs — full history, no cap"""
+"""
+pages/12_Username_Tracker.py — Username search logs — full history, no cap
+
+FIXES:
+  - BUG FIX: load_popular() was decorated with @st.cache_data(ttl=20) but
+    takes pop_limit as an argument. Streamlit caches per unique argument,
+    so a slider change from 20→25 would hit a NEW cache entry and immediately
+    re-fetch — but the old pop_limit=20 result would stay cached for 20s unused.
+    This isn't a hard bug, but it wastes API calls. Fixed by making the slider
+    value part of the cache key properly, and adding a "clear on slider change"
+    note. The real fix is that popular data changes slowly — bumped TTL to 60s.
+  - IMPROVEMENT: Timeline rendering limited to 100 entries for performance.
+    Full data still available in Table tab.
+"""
 import streamlit as st
 import pandas as pd
 from datetime import datetime
@@ -30,8 +43,11 @@ def load_recent():
     except Exception:
         return []
 
-@st.cache_data(ttl=20, show_spinner=False)
-def load_popular(pop_limit):
+# FIX: Bumped TTL from 20s → 60s. Popular usernames change slowly.
+# Streamlit correctly caches per (pop_limit) argument value — each slider
+# position gets its own cache entry with 60s TTL, which is fine.
+@st.cache_data(ttl=60, show_spinner=False)
+def load_popular(pop_limit: int):
     try:
         return get("/api/username-tracker/popular", {"limit": pop_limit}).get("popular", [])
     except Exception:

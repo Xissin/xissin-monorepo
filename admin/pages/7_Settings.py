@@ -1,6 +1,13 @@
 """
 pages/7_Settings.py — Server control: maintenance, versioning, feature flags,
-                       APK hosting, and Remove Ads product settings
+                       APK hosting, and Owner Bypass.
+
+FIXES:
+  - REMOVED dead "Remove Ads Product Settings" section — the backend
+    hardcodes all values in get_remove_ads_info() and NEVER reads
+    remove_ads_price / remove_ads_label / remove_ads_description /
+    remove_ads_benefits from Redis. Writing those fields was pure dead code.
+  - Replaced with a read-only "Premium Key System" info panel.
 """
 import re
 
@@ -11,9 +18,9 @@ from utils.theme import inject_theme, page_header, auth_guard, notify, render_no
 st.set_page_config(page_title="Settings · Xissin Admin", page_icon="⚙️", layout="wide")
 inject_theme()
 auth_guard()
-render_notify()  # ← shows queued toasts after rerun
+render_notify()
 
-page_header("⚙️", "Server Control", "MAINTENANCE · FEATURES · VERSIONING · REMOVE ADS · OWNER BYPASS")
+page_header("⚙️", "Server Control", "MAINTENANCE · FEATURES · VERSIONING · OWNER BYPASS")
 
 # ── Fetch ──────────────────────────────────────────────────────────────────────
 @st.cache_data(ttl=30, show_spinner=False)
@@ -22,7 +29,6 @@ def load_settings():
 
 
 def _validate_github_url(url: str) -> bool:
-    """Check if the URL looks like a valid GitHub Releases direct download link."""
     if not url:
         return False
     return "github.com" in url and "/releases/download/" in url
@@ -102,7 +108,7 @@ with col_right:
         raw_apk_url = st.text_input(
             "GitHub Release APK URL",
             value=s.get("apk_download_url", ""),
-            placeholder="https://github.com/Xissin/xissin-monorepo/releases/download/v1.5.2/Xissin-v1.5.2.apk",
+            placeholder="https://github.com/Xissin/xissin-monorepo/releases/download/v1.6.0/Xissin-v1.6.0.apk",
         )
         apk_version_notes = st.text_area(
             "Version Notes (shown in update dialog)",
@@ -114,20 +120,18 @@ with col_right:
             "APK SHA-256 Checksum",
             value=s.get("apk_sha256", ""),
             placeholder="e.g. a3f1c9e2b847d605...",
-            help="SHA-256 hash of the APK file. The app checks this before installing to prevent tampering.",
+            help="SHA-256 hash of the APK file. The app checks this before installing.",
         )
 
-        # SHA-256 validation
         if apk_sha256:
             if len(apk_sha256.strip()) == 64 and all(c in "0123456789abcdefABCDEF" for c in apk_sha256.strip()):
                 st.success("✅ Valid SHA-256 hash (64 hex characters)")
             else:
                 st.error("❌ Invalid hash — must be exactly 64 hex characters")
 
-        # GitHub URL validation
         if raw_apk_url:
             if _validate_github_url(raw_apk_url):
-                st.success(f"✅ Valid GitHub Releases URL.")
+                st.success("✅ Valid GitHub Releases URL.")
             else:
                 st.warning(
                     "⚠️ This doesn't look like a GitHub Releases URL.\n\n"
@@ -143,7 +147,7 @@ st.divider()
 st.markdown("### 🔑 Owner Bypass Devices")
 st.caption(
     "Device IDs listed here will **bypass maintenance mode** and always access the app normally. "
-    "Add your own phone\'s device ID here so you can test the app even during maintenance."
+    "Add your own phone's device ID here so you can test the app even during maintenance."
 )
 
 with st.container(border=True):
@@ -181,112 +185,51 @@ with st.container(border=True):
 st.divider()
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ROW 3 — Remove Ads Product Settings
+# ROW 3 — Premium Key System Info
+# FIX: Replaced dead PayMongo "Remove Ads Product Settings" with an info panel.
+# The backend hardcodes all premium dialog values in payments.py → get_remove_ads_info().
+# Nothing reads remove_ads_price / remove_ads_label / remove_ads_benefits from Redis.
+# To update what users see in the Get Premium dialog, edit payments.py directly.
 # ══════════════════════════════════════════════════════════════════════════════
-st.markdown("### 🚫 Remove Ads — Product Settings")
+st.markdown("### ⭐ Premium Key System")
 st.caption(
-    "Changes here appear **instantly** in the app the next time the user "
-    "opens the Remove Ads dialog. No app update needed."
+    "The premium dialog content is defined in `backend/routers/payments.py → get_remove_ads_info()`. "
+    "Edit that file and redeploy to change what users see."
 )
 
-ra_col1, ra_col2 = st.columns([1, 1])
+with st.container(border=True):
+    st.markdown("""
+**Current premium flow:**
+1. User taps **Get Premium** in the app
+2. Dialog shows benefits + link to contact **@QuitNat on Telegram**
+3. User pays via **GCash** → receives a key (format: `XISSIN-XXXX-XXXX`)
+4. User enters key in app → premium activated instantly
 
-with ra_col1:
-    with st.container(border=True):
-        current_price_php = (s.get("remove_ads_price") or 9900) / 100
-        price_php = st.number_input(
-            "💰 Price (₱ PHP)",
-            min_value=1.0,
-            max_value=9999.0,
-            value=float(current_price_php),
-            step=1.0,
-            format="%.2f",
-            help="Price in Philippine Peso. Will be converted to centavos for PayMongo.",
-        )
-        price_centavos = int(price_php * 100)
-        st.caption(f"Stored as: **{price_centavos} centavos** → PayMongo amount")
+To manage keys and premium users, go to the **🔑 Premium Keys** page.
+    """)
 
-        st.markdown("---")
+    st.info(
+        "💡 To change the benefits list, price display, or Telegram handle "
+        "shown in the app, edit `backend/routers/payments.py` → "
+        "`_benefits` list and `_TELEGRAM` constant, then redeploy on Railway."
+    )
 
-        remove_ads_label = st.text_input(
-            "🏷 Banner Label (shown in home screen)",
-            value=s.get("remove_ads_label") or f"Remove Ads — ₱{int(current_price_php)} Lifetime",
-            placeholder="Remove Ads — ₱99 Lifetime",
-            help="Short label shown on the promo banner on the home screen.",
-        )
-        remove_ads_subtitle = st.text_input(
-            "📝 Banner Subtitle",
-            value=s.get("remove_ads_subtitle") or "Pay once via GCash · No ads forever",
-            placeholder="Pay once via GCash · No ads forever",
-        )
-        remove_ads_description = st.text_area(
-            "📄 Dialog Description",
-            value=s.get("remove_ads_description") or "Enjoy Xissin completely ad-free — forever.",
-            height=80,
-            placeholder="Enjoy Xissin completely ad-free — forever.",
-            help="Shown at the top of the Remove Ads purchase dialog.",
-        )
-
-with ra_col2:
-    with st.container(border=True):
-        st.markdown("#### ✅ Benefits List")
-        st.caption(
-            "Each line = one benefit bullet shown in the Remove Ads dialog. "
-            "Add as many as you want — one per line."
-        )
-
-        current_benefits = s.get("remove_ads_benefits") or [
-            "No more banner ads",
-            "No more interstitial ads",
-            "One-time payment — lifetime",
-            "Pay via GCash / QRPh QR code",
-        ]
-        if isinstance(current_benefits, list):
-            benefits_text = "\n".join(current_benefits)
-        else:
-            benefits_text = str(current_benefits)
-
-        benefits_input = st.text_area(
-            "Benefits (one per line)",
-            value=benefits_text,
-            height=260,
-            label_visibility="collapsed",
-            placeholder=(
-                "No more banner ads\n"
-                "No more interstitial ads\n"
-                "One-time payment — lifetime\n"
-                "Pay via GCash / QRPh QR code\n"
-                "CODM account checker\n"
-                "MLBB account checker\n"
-                "Premium support"
-            ),
-        )
-
-        parsed_benefits = [b.strip() for b in benefits_input.splitlines() if b.strip()]
-        if parsed_benefits:
-            st.markdown("**Preview:**")
-            for b in parsed_benefits:
-                st.markdown(f"✅ {b}")
+st.divider()
 
 # ── Current saved values summary ───────────────────────────────────────────────
-st.divider()
 with st.expander("💾 Current Saved Values", expanded=False):
     saved_apk   = s.get("apk_download_url", "-") or "-"
     display_apk = (saved_apk[:55] + "…") if len(saved_apk) > 58 else saved_apk
-    cur_price   = (s.get("remove_ads_price") or 9900) / 100
 
     rows = [
-        ("maintenance",            "🔴 ON" if s.get("maintenance") else "🟢 OFF"),
-        ("min_app_version",        s.get("min_app_version", "-")),
-        ("latest_app_version",     s.get("latest_app_version", "-")),
-        ("feature_sms",            "✅ enabled" if s.get("feature_sms", True) else "❌ disabled"),
-        ("feature_ngl",            "✅ enabled" if s.get("feature_ngl", True) else "❌ disabled"),
-        ("apk_download_url",       display_apk),
-        ("apk_sha256",             (s.get("apk_sha256", "") or "-")[:20] + ("…" if len(s.get("apk_sha256",""))>20 else "")),
-        ("remove_ads_price",       f"₱{cur_price:.2f} ({s.get('remove_ads_price', 9900)} centavos)"),
-        ("remove_ads_label",       s.get("remove_ads_label", "-") or "-"),
-        ("remove_ads_description", s.get("remove_ads_description", "-") or "-"),
-        ("remove_ads_benefits",    f"{len(current_benefits)} item(s)"),
+        ("maintenance",         "🔴 ON" if s.get("maintenance") else "🟢 OFF"),
+        ("min_app_version",     s.get("min_app_version", "-")),
+        ("latest_app_version",  s.get("latest_app_version", "-")),
+        ("feature_sms",         "✅ enabled" if s.get("feature_sms", True) else "❌ disabled"),
+        ("feature_ngl",         "✅ enabled" if s.get("feature_ngl", True) else "❌ disabled"),
+        ("apk_download_url",    display_apk),
+        ("apk_sha256",          (s.get("apk_sha256", "") or "-")[:20] + ("…" if len(s.get("apk_sha256",""))>20 else "")),
+        ("owner_bypass_ids",    f"{len(current_bypass)} device(s)"),
     ]
     for key, val in rows:
         st.markdown(
@@ -303,25 +246,18 @@ col_save, _ = st.columns([1, 3])
 with col_save:
     if st.button("💾 Save All Settings", type="primary", use_container_width=True):
         try:
-            parsed = [b.strip() for b in benefits_input.splitlines() if b.strip()]
             parsed_byp = [b.strip() for b in bypass_input.splitlines() if b.strip()]
             payload = {
-                "maintenance":            maintenance,
-                "maintenance_message":    maint_msg.strip() or "Xissin is under maintenance.",
-                "min_app_version":        min_ver.strip()    or "1.0.0",
-                "latest_app_version":     latest_ver.strip() or "1.0.0",
-                "feature_sms":            feature_sms,
-                "feature_ngl":            feature_ngl,
-                "owner_bypass_ids":       parsed_byp,
-                "apk_download_url":       raw_apk_url.strip(),
-                "apk_version_notes":      apk_version_notes.strip(),
-                "apk_sha256":             apk_sha256.strip(),
-                # ── Remove Ads ──────────────────────────────────────────────
-                "remove_ads_price":       price_centavos,
-                "remove_ads_label":       remove_ads_label.strip(),
-                "remove_ads_subtitle":    remove_ads_subtitle.strip(),
-                "remove_ads_description": remove_ads_description.strip(),
-                "remove_ads_benefits":    parsed,
+                "maintenance":         maintenance,
+                "maintenance_message": maint_msg.strip() or "Xissin is under maintenance.",
+                "min_app_version":     min_ver.strip()    or "1.0.0",
+                "latest_app_version":  latest_ver.strip() or "1.0.0",
+                "feature_sms":         feature_sms,
+                "feature_ngl":         feature_ngl,
+                "owner_bypass_ids":    parsed_byp,
+                "apk_download_url":    raw_apk_url.strip(),
+                "apk_version_notes":   apk_version_notes.strip(),
+                "apk_sha256":          apk_sha256.strip(),
             }
             post("/api/settings/", payload)
             if maintenance:

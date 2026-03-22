@@ -1,23 +1,26 @@
 """
 pages/10_User_Map.py — Live user location map
-Fixes & improvements v2:
+
+FIXES:
+  - BUG FIX: `from utils.api import get, post` was imported AFTER the folium
+    conditional check + st.stop(). Moved to top of file with other imports.
   - BUG FIX: Location Table now shows FILTERED records (was always showing all)
-  - BUG FIX: Last Refresh clock now uses UTC (was using server local time)
-  - BUG FIX: timezone imported once at top-level (was double-imported in functions)
-  - BUG FIX: Map auto-fits bounds so all markers are visible (no more off-screen pins)
-  - BUG FIX: HeatMap was missing legend in heatmap mode
-  - IMPROVEMENT: Table is now sorted by Last Seen (newest first)
+  - BUG FIX: Last Refresh clock now uses UTC
+  - BUG FIX: Map auto-fits bounds so all markers are visible
+  - BUG FIX: HeatMap had missing legend
+  - IMPROVEMENT: Table sorted by Last Seen (newest first)
   - IMPROVEMENT: Table search also searches Country column
   - IMPROVEMENT: "Recently Active" badge (< 1h) shown in table
-  - IMPROVEMENT: Info panel shows active users stat (seen < 24h)
-  - IMPROVEMENT: Export tab shows filtered data, not just all data
+  - IMPROVEMENT: Export tab shows filtered data
   - IMPROVEMENT: Tab labels show live counts
-  - IMPROVEMENT: Cleaner popup HTML (escaped properly)
 """
 
 import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta, timezone
+
+# FIX: api imports now at the TOP — previously imported after a conditional st.stop()
+from utils.api import get, post
 from utils.theme import inject_theme, page_header, auth_guard
 
 st.set_page_config(
@@ -48,13 +51,10 @@ if not FOLIUM_OK:
     )
     st.stop()
 
-from utils.api import get, post
-
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def format_time(ts_str: str) -> str:
-    """Format ISO timestamp to human-readable string."""
     try:
         return datetime.fromisoformat(ts_str).strftime("%b %d, %Y %I:%M %p")
     except Exception:
@@ -62,26 +62,21 @@ def format_time(ts_str: str) -> str:
 
 
 def time_ago(ts_str: str) -> str:
-    """Return human-readable relative time, UTC-aware."""
     try:
         dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
         diff = datetime.now(timezone.utc) - dt
         secs = diff.total_seconds()
-        if secs < 60:
-            return "Just now"
-        if secs < 3600:
-            return f"{int(secs / 60)}m ago"
-        if secs < 86400:
-            return f"{int(secs / 3600)}h ago"
+        if secs < 60:    return "Just now"
+        if secs < 3600:  return f"{int(secs / 60)}m ago"
+        if secs < 86400: return f"{int(secs / 3600)}h ago"
         return f"{diff.days}d ago"
     except Exception:
         return "Unknown"
 
 
 def is_active(ts_str: str, hours: int = 24) -> bool:
-    """Return True if the timestamp is within the last N hours."""
     try:
         dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
         if dt.tzinfo is None:
@@ -145,7 +140,6 @@ with col_c:
     if st.button("🗑️ Clear All", use_container_width=True, type="secondary"):
         st.session_state["confirm_clear_locations"] = True
 
-# Confirmation banner — full width, outside the column grid
 if st.session_state.get("confirm_clear_locations"):
     st.warning(
         "⚠️ **Clear ALL location data?** This cannot be undone and will "
@@ -188,7 +182,6 @@ for loc in locations:
     except (TypeError, ValueError):
         continue
 
-# ── Active users (seen in last 24h) ──────────────────────────────────────────
 active_count = sum(
     1 for loc in locations if is_active(loc.get("updated_at", ""), hours=24)
 )
@@ -202,7 +195,6 @@ with col_s3:
 with col_s4:
     st.metric("⭐ Premium Users", len(premium_uids))
 
-# Active users secondary metric row
 ac1, ac2, _, _ = st.columns([1, 1, 1, 1])
 with ac1:
     st.metric("🟢 Active (24h)", active_count)
@@ -239,12 +231,10 @@ def apply_filters(locs):
     now = datetime.now(timezone.utc)
     for loc in locs:
         uid = loc.get("user_id", "")
-
         if filter_premium == "⭐ Premium Only" and uid not in premium_uids:
             continue
         if filter_premium == "Free Users Only" and uid in premium_uids:
             continue
-
         if filter_time != "All Time":
             ts = loc.get("updated_at", "")
             try:
@@ -260,7 +250,6 @@ def apply_filters(locs):
                     continue
             except Exception:
                 pass
-
         result.append(loc)
     return result
 
@@ -316,7 +305,6 @@ def build_map(locs, center, zoom):
                 pass
         if heat_data:
             HeatMap(heat_data, radius=20, blur=15, min_opacity=0.4).add_to(m)
-            # FIX: auto-fit bounds on heatmap too
             lat_list = [x[0] for x in heat_data]
             lng_list = [x[1] for x in heat_data]
             if len(lat_list) > 1:
@@ -389,7 +377,6 @@ def build_map(locs, center, zoom):
                 else ""
             )
 
-            # Safe truncation of uid for display
             uid_display = uid[:18] + ("..." if len(uid) > 18 else "")
 
             popup_html = (
@@ -441,7 +428,6 @@ def build_map(locs, center, zoom):
         except Exception:
             continue
 
-    # FIX: Auto-fit bounds so all markers are visible (no more off-screen pins)
     if len(lat_list) > 1:
         m.fit_bounds(
             [[min(lat_list), min(lng_list)], [max(lat_list), max(lng_list)]],
@@ -451,22 +437,17 @@ def build_map(locs, center, zoom):
     return m
 
 
-# ── Active users within 24h (from filtered set) ───────────────────────────────
 filtered_active = sum(
     1 for loc in filtered_all if is_active(loc.get("updated_at", ""), hours=24)
 )
 
-# ── TABS: Map+Table | Export ──────────────────────────────────────────────────
 tab_map, tab_export = st.tabs([
     f"🗺️ Map & Locations ({len(filtered_all)})",
     f"📥 Export ({len(filtered_all)})",
 ])
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TAB 1 — UNIFIED MAP + LOCATION TABLE BELOW
-# ══════════════════════════════════════════════════════════════════════════════
 with tab_map:
-
     map_col, info_col = st.columns([3, 1])
 
     with map_col:
@@ -510,7 +491,6 @@ with tab_map:
 
         st.markdown("### 🕒 Last Refresh")
         with st.container(border=True):
-            # FIX: use UTC time, consistent with the rest of the code
             st.markdown(
                 f"<div style='font-size:12px; color:#7EE7C1'>"
                 f"{datetime.now(timezone.utc).strftime('%b %d %Y %I:%M:%S %p')} UTC</div>",
@@ -521,8 +501,6 @@ with tab_map:
     st.divider()
     st.markdown("### 📋 Location Table")
 
-    # FIX: use filtered_all instead of raw `locations`
-    # The table now respects the premium/time filters set above
     if not filtered_all:
         st.info("No location records match the current filters.")
     else:
@@ -547,26 +525,20 @@ with tab_map:
                 "Active":    "🟢" if is_active(ts_raw, hours=1) else ("🔵" if is_active(ts_raw, hours=24) else "⚫"),
                 "Latitude":  lat_val,
                 "Longitude": lng_val,
-                "Accuracy":  f"{float(loc['accuracy']):.0f}m"
-                             if loc.get("accuracy") else "—",
+                "Accuracy":  f"{float(loc['accuracy']):.0f}m" if loc.get("accuracy") else "—",
                 "City":      loc.get("city",    "") or "—",
                 "Region":    loc.get("region",  "") or "—",
-                "Country":   loc.get("country", "")
-                             or ("PH" if is_ph(lat_val, lng_val) else "—"),
+                "Country":   loc.get("country", "") or ("PH" if is_ph(lat_val, lng_val) else "—"),
                 "In PH":     "🇵🇭" if is_ph(lat_val, lng_val) else "🌍",
                 "Last Seen": format_time(ts_raw),
                 "Time Ago":  time_ago(ts_raw),
-                # hidden sort key
                 "_ts_raw":   ts_raw,
             })
 
         df = pd.DataFrame(rows)
-
-        # Sort by Last Seen descending (newest first) — FIX: was unsorted
         df = df.sort_values("_ts_raw", ascending=False, na_position="last")
-        df = df.drop(columns=["_ts_raw"])
-        df = df.reset_index(drop=True)
-        df.index = df.index + 1   # 1-based display index
+        df = df.drop(columns=["_ts_raw"]).reset_index(drop=True)
+        df.index = df.index + 1
 
         search = st.text_input(
             "🔍 Search by User ID, Username, City, Region, or Country",
@@ -580,19 +552,17 @@ with tab_map:
                 | df["Username"].str.contains(q, case=False, na=False)
                 | df["City"].str.contains(q, case=False, na=False)
                 | df["Region"].str.contains(q, case=False, na=False)
-                | df["Country"].str.contains(q, case=False, na=False)   # FIX: now searches Country too
+                | df["Country"].str.contains(q, case=False, na=False)
             )
             df = df[mask]
 
         st.dataframe(df, use_container_width=True, height=420)
         st.caption(
             f"Showing **{len(df)}** of **{len(rows)}** filtered records · "
-            f"🟢 Active < 1h · 🔵 Active < 24h · ⚫ Older"
+            "🟢 Active < 1h · 🔵 Active < 24h · ⚫ Older"
         )
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# TAB 2 — EXPORT (now uses filtered data, not all data)
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_export:
     st.markdown("### 📥 Export Location Data")
@@ -630,7 +600,6 @@ with tab_export:
                 "last_seen": ts_raw,
             })
 
-        # Sort export by last_seen descending
         df_export = pd.DataFrame(export_rows)
         df_export = df_export.sort_values("last_seen", ascending=False, na_position="last")
         csv = df_export.to_csv(index=False)
