@@ -1,26 +1,24 @@
 """
-routers/payments.py — Remove Ads payment via PayMongo QRPh
-Hardened for multi-user production use.
+routers/payments.py — Premium Key System
+Replaces PayMongo with a manual key-based system.
 
-Security & reliability features:
-  ✅ Duplicate payment protection  — reuses active intent if user taps button twice
-  ✅ Rate limiting                 — max 3 payment attempts per user per hour
-  ✅ Input validation              — rejects invalid/malicious user_id values
-  ✅ Ownership check on /status   — user can only poll their own payment intent
-  ✅ Webhook HMAC verification    — blocks fake/spoofed webhook calls
-  ✅ Idempotent premium granting  — safe to call set_premium multiple times
-  ✅ Auto-cleanup on expiry/fail  — pending intent keys cleared automatically
+Flow:
+  1. Admin generates keys in Streamlit admin panel
+  2. User contacts @QuitNat on Telegram
+  3. User pays via GCash
+  4. Developer sends the user a key (e.g. XISSIN-A3B2-C9D1)
+  5. User enters key in app → premium granted instantly
+
+Key format: XISSIN-XXXX-XXXX  (16 chars total)
 """
 
-import base64
-import hashlib
-import hmac
+import json
 import logging
-import os
+import random
 import re
-import httpx
+import string
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, field_validator
 from typing import Optional
 
@@ -31,18 +29,51 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # ── Config ────────────────────────────────────────────────────────────────────
-PAYMONGO_BASE           = "https://api.paymongo.com/v1"
-_DEFAULT_PRICE_CENTAVOS = 9900   # ₱99.00
-BACKEND_URL             = "https://xissin-app-backend-production.up.railway.app"
-
-# Max payment creation attempts per user per hour (prevents bot spam)
-_MAX_ATTEMPTS_PER_HOUR = 3
-
-# Regex: only allow safe user_id characters
 _USER_ID_RE = re.compile(r'^[a-zA-Z0-9_\-\.]{1,64}$')
+_KEY_RE     = re.compile(r'^XISSIN-[A-Z0-9]{4}-[A-Z0-9]{4}$')
+_TELEGRAM   = "@QuitNat"
 
 
-# ── Validation ────────────────────────────────────────────────────────────────
+# ── Redis helpers ─────────────────────────────────────────────────────────────
+
+def _rk(key_str: str) -> str:
+    """Redis key for a specific premium key."""
+    return f"xissin:key:{key_str.upper()}"
+
+def _get_key_data(key_str: str) -> Optional[dict]:
+    try:
+        raw = db.redis_get(_rk(key_str))
+        return json.loads(raw) if raw else None
+    except Exception:
+        return None
+
+def _save_key_data(key_str: str, data: dict):
+    try:
+        db.redis_set(_rk(key_str), json.dumps(data))
+    except Exception as e:
+        logger.error(f"Failed to save key data: {e}")
+
+def _get_key_index() -> list:
+    try:
+        raw = db.redis_get("xissin:keys:index")
+        return json.loads(raw) if raw else []
+    except Exception:
+        return []
+
+def _save_key_index(keys: list):
+    try:
+        db.redis_set("xissin:keys:index", json.dumps(keys))
+    except Exception as e:
+        logger.error(f"Failed to save key index: {e}")
+
+
+# ── Key generation ────────────────────────────────────────────────────────────
+
+def _generate_key() -> str:
+    chars  = string.ascii_uppercase + string.digits
+    part1  = ''.join(random.choices(chars, k=4))
+    part2  = ''.join(random.choices(chars, k=4))
+    return f"XISSIN-{part1}-{part2}"
 
 def _validate_user_id(user_id: str) -> str:
     uid = str(user_id).strip()
@@ -51,127 +82,11 @@ def _validate_user_id(user_id: str) -> str:
     return uid
 
 
-# ── PayMongo config ───────────────────────────────────────────────────────────
-
-def _get_remove_ads_price() -> int:
-    try:
-        s = db.get_server_settings()
-        return int(s.get("remove_ads_price") or _DEFAULT_PRICE_CENTAVOS)
-    except Exception:
-        return _DEFAULT_PRICE_CENTAVOS
-
-
-def _secret_key() -> str:
-    k = os.environ.get("PAYMONGO_SECRET_KEY", "").strip()
-    if not k:
-        raise RuntimeError("PAYMONGO_SECRET_KEY not set.")
-    return k
-
-
-def _auth_header() -> str:
-    encoded = base64.b64encode(f"{_secret_key()}:".encode()).decode()
-    return f"Basic {encoded}"
-
-
-def _webhook_secret() -> str:
-    """
-    Returns the webhook secret from env.
-    Returns empty string if not set — caller must check and reject.
-    """
-    return os.environ.get("PAYMONGO_WEBHOOK_SECRET", "").strip()
-
-
-# ── PayMongo HTTP helpers ─────────────────────────────────────────────────────
-
-async def _paymongo_post(endpoint: str, payload: dict) -> dict:
-    async with httpx.AsyncClient(timeout=15) as client:
-        resp = await client.post(
-            f"{PAYMONGO_BASE}{endpoint}",
-            headers={
-                "Authorization": _auth_header(),
-                "Content-Type":  "application/json",
-            },
-            json=payload,
-        )
-    if resp.status_code not in (200, 201):
-        logger.error(f"PayMongo {endpoint} error {resp.status_code}: {resp.text}")
-        try:
-            errors = resp.json().get("errors", [{}])
-            detail = errors[0].get("detail", "Payment provider error")
-        except Exception:
-            detail = "Payment provider error"
-        raise HTTPException(status_code=502, detail=detail)
-    return resp.json()
-
-
-async def _paymongo_get(endpoint: str) -> dict:
-    async with httpx.AsyncClient(timeout=15) as client:
-        resp = await client.get(
-            f"{PAYMONGO_BASE}{endpoint}",
-            headers={"Authorization": _auth_header()},
-        )
-    if resp.status_code != 200:
-        raise HTTPException(status_code=502, detail="Payment provider error")
-    return resp.json()
-
-
-# ── Redis key helpers (short-lived, TTL-based) ────────────────────────────────
-
-def _rate_limit_key(user_id: str) -> str:
-    return f"xissin:pay:rl:{user_id}"
-
-def _pending_intent_key(user_id: str) -> str:
-    return f"xissin:pay:pending:{user_id}"
-
-
-def _check_and_increment_rate_limit(user_id: str):
-    """
-    Allows max 3 payment creations per user per hour.
-    Raises HTTP 429 if exceeded. Fails open (allows) if Redis is down.
-    """
-    try:
-        key   = _rate_limit_key(user_id)
-        count = db.redis_get(key)
-        count = int(count) if count else 0
-        if count >= _MAX_ATTEMPTS_PER_HOUR:
-            raise HTTPException(
-                status_code=429,
-                detail="Too many payment attempts. Please wait before trying again."
-            )
-        # Increment — TTL of 1 hour, only set on first call
-        db.redis_incr(key, ttl_seconds=3600)
-    except HTTPException:
-        raise
-    except Exception:
-        pass  # Fail open for UX — don't block payment if Redis is temporarily down
-
-
-def _save_pending_intent(user_id: str, intent_id: str):
-    """Track user's active intent. 30-min TTL matches QRPh expiry."""
-    try:
-        db.redis_set(_pending_intent_key(user_id), intent_id, ttl_seconds=1800)
-    except Exception:
-        pass
-
-
-def _get_pending_intent(user_id: str) -> Optional[str]:
-    try:
-        return db.redis_get(_pending_intent_key(user_id))
-    except Exception:
-        return None
-
-
-def _clear_pending_intent(user_id: str):
-    try:
-        db.redis_delete(_pending_intent_key(user_id))
-    except Exception:
-        pass
-
-
 # ── Request models ────────────────────────────────────────────────────────────
 
-class CreatePaymentRequest(BaseModel):
+class KeyRedeemRequest(BaseModel):
     user_id: str
+    key: str
 
     @field_validator("user_id")
     @classmethod
@@ -181,336 +96,52 @@ class CreatePaymentRequest(BaseModel):
             raise ValueError("Invalid user_id")
         return v
 
-
-class PaymentStatusRequest(BaseModel):
-    payment_intent_id: str
-    user_id: str
-
-    @field_validator("user_id")
+    @field_validator("key")
     @classmethod
-    def validate_uid(cls, v):
-        v = str(v).strip()
-        if not _USER_ID_RE.match(v):
-            raise ValueError("Invalid user_id")
-        return v
-
-    @field_validator("payment_intent_id")
-    @classmethod
-    def validate_intent_id(cls, v):
-        v = str(v).strip()
-        if not v.startswith("pi_") or len(v) > 100:
-            raise ValueError("Invalid payment_intent_id")
+    def validate_key(cls, v):
+        v = str(v).strip().upper()
+        if not _KEY_RE.match(v):
+            raise ValueError("Invalid key format. Expected: XISSIN-XXXX-XXXX")
         return v
 
 
-# ── 0. Public info ────────────────────────────────────────────────────────────
+class GenerateKeysRequest(BaseModel):
+    count: int = 1
+    note: Optional[str] = None
+
+    @field_validator("count")
+    @classmethod
+    def validate_count(cls, v):
+        if not 1 <= v <= 50:
+            raise ValueError("Count must be between 1 and 50")
+        return v
+
+
+# ── 0. Product info (app dialog) ──────────────────────────────────────────────
 
 @router.get("/remove-ads-info")
 def get_remove_ads_info():
-    """Flutter app fetches this on dialog open to show price & benefits."""
-    s     = db.get_server_settings()
-    price = int(s.get("remove_ads_price") or _DEFAULT_PRICE_CENTAVOS)
+    """Returns info shown in the premium dialog in the Flutter app."""
     return {
-        "price":       price,
-        "price_php":   price / 100,
-        "label":       s.get("remove_ads_label")       or f"Remove Ads — ₱{price // 100} Lifetime",
-        "subtitle":    s.get("remove_ads_subtitle")    or "Pay once via GCash · No ads forever",
-        "description": s.get("remove_ads_description") or "Enjoy Xissin completely ad-free — forever.",
-        "benefits":    s.get("remove_ads_benefits")    or [
-            "No more banner ads",
-            "No more interstitial ads",
-            "One-time payment — lifetime",
-            "Pay via GCash / QRPh QR code",
+        "telegram":    _TELEGRAM,
+        "telegram_url": "https://t.me/QuitNat",
+        "label":       "Get Premium — Contact @QuitNat on Telegram",
+        "description": "Chat with the developer, pay via GCash, and get your key.",
+        "benefits": [
+            "No ads forever — banner & interstitial gone",
+            "SMS Bomber — 50 batches, no cooldown",
+            "NGL Bomber — up to 100 attacks, no cooldown",
+            "URL & Dup Remover — unlimited file size",
+            "IP Tracker & Username Tracker — no limits",
+            "Live progress bars on all tools",
         ],
     }
 
 
-# ── 1. Create Payment ─────────────────────────────────────────────────────────
-
-@router.post("/create", dependencies=[Depends(verify_app_request)])
-async def create_payment(req: CreatePaymentRequest):
-    """
-    Creates a QRPh Payment Intent.
-    Guards:
-      1. Already premium → return immediately
-      2. Active pending intent exists → reuse QR (no double charge)
-      3. Rate limit → 3 attempts/hour max
-    """
-    user_id = req.user_id
-
-    # Guard 1: Already premium
-    if db.is_premium(user_id):
-        return {"already_premium": True}
-
-    # Guard 2: Reuse existing active intent (prevents double-tap double-charge)
-    existing_intent_id = _get_pending_intent(user_id)
-    if existing_intent_id:
-        try:
-            data       = await _paymongo_get(f"/payment_intents/{existing_intent_id}")
-            attributes = data["data"]["attributes"]
-            status     = attributes.get("status", "")
-
-            if status == "awaiting_next_action":
-                # QR still valid — return it
-                next_action = attributes.get("next_action") or {}
-                code_block  = next_action.get("code") or {}
-                qr_image    = code_block.get("image_url", "")
-                price       = attributes.get("amount", _DEFAULT_PRICE_CENTAVOS)
-                logger.info(f"♻️ Reusing intent {existing_intent_id} for user={user_id}")
-                return {
-                    "payment_intent_id": existing_intent_id,
-                    "qr_image_url":      qr_image,
-                    "amount":            price,
-                    "amount_php":        price / 100,
-                    "reused":            True,
-                }
-        except Exception:
-            pass
-        # Intent expired or error — clear it and make a new one
-        _clear_pending_intent(user_id)
-
-    # Guard 3: Rate limit
-    _check_and_increment_rate_limit(user_id)
-
-    price = _get_remove_ads_price()
-
-    # Step 1: Create Payment Intent
-    intent_data = await _paymongo_post("/payment_intents", {
-        "data": {
-            "attributes": {
-                "amount":                 price,
-                "currency":               "PHP",
-                "payment_method_allowed": ["qrph"],
-                "description":            "Xissin — Remove Ads Lifetime",
-                "metadata": {
-                    "user_id": user_id,
-                    "product": "remove_ads",
-                },
-            }
-        }
-    })
-    intent_id  = intent_data["data"]["id"]
-    client_key = intent_data["data"]["attributes"]["client_key"]
-
-    # Step 2: Create QRPh Payment Method
-    pm_data = await _paymongo_post("/payment_methods", {
-        "data": {
-            "attributes": {
-                "type": "qrph",
-                "billing": {
-                    "name":  "Xissin User",
-                    "email": f"user_{user_id}@xissin.app",
-                },
-            }
-        }
-    })
-    pm_id = pm_data["data"]["id"]
-
-    # Step 3: Attach → get QR image
-    attach_data = await _paymongo_post(
-        f"/payment_intents/{intent_id}/attach",
-        {
-            "data": {
-                "attributes": {
-                    "payment_method": pm_id,
-                    "client_key":     client_key,
-                    "return_url":     f"{BACKEND_URL}/api/payments/success",
-                }
-            }
-        }
-    )
-
-    next_action = attach_data["data"]["attributes"].get("next_action") or {}
-    code_block  = next_action.get("code") or {}
-    qr_image    = code_block.get("image_url", "")
-
-    # Save pending intent (30-min TTL) for duplicate protection
-    _save_pending_intent(user_id, intent_id)
-
-    # Save pending payment record
-    db.save_payment({
-        "payment_intent_id": intent_id,
-        "payment_method_id": pm_id,
-        "user_id":           user_id,
-        "amount":            price,
-        "status":            "pending",
-        "type":              "qrph",
-        "product":           "remove_ads",
-        "created_at":        db.ph_now().isoformat(),
-    })
-
-    logger.info(f"💳 QRPh intent created: {intent_id} for user={user_id}")
-
-    return {
-        "payment_intent_id": intent_id,
-        "qr_image_url":      qr_image,
-        "amount":            price,
-        "amount_php":        price / 100,
-    }
-
-
-# ── 2. Poll status ────────────────────────────────────────────────────────────
-
-@router.post("/status", dependencies=[Depends(verify_app_request)])
-async def check_payment_status(req: PaymentStatusRequest):
-    """
-    Flutter polls every 5s while QR is shown.
-    Security: verifies the intent belongs to the requesting user.
-    """
-    user_id = req.user_id
-
-    # Fast path — already premium
-    if db.is_premium(user_id):
-        _clear_pending_intent(user_id)
-        return {"paid": True, "premium": True}
-
-    try:
-        data       = await _paymongo_get(f"/payment_intents/{req.payment_intent_id}")
-        attributes = data["data"]["attributes"]
-        status     = attributes.get("status", "")
-
-        # Security: verify this intent belongs to this user
-        metadata       = attributes.get("metadata") or {}
-        intent_user_id = str(metadata.get("user_id", ""))
-        if intent_user_id and intent_user_id != user_id:
-            logger.warning(
-                f"⚠️ SECURITY: user={user_id} tried to poll "
-                f"intent owned by user={intent_user_id}"
-            )
-            raise HTTPException(status_code=403, detail="Forbidden")
-
-        if status == "succeeded":
-            price = _get_remove_ads_price()
-            db.set_premium(user_id, req.payment_intent_id, price)
-            db.save_payment({
-                "payment_intent_id": req.payment_intent_id,
-                "user_id":           user_id,
-                "status":            "paid",
-                "paid_at":           db.ph_now().isoformat(),
-            })
-            _clear_pending_intent(user_id)
-            logger.info(f"✅ Confirmed via poll: user={user_id}")
-            return {"paid": True, "premium": True}
-
-        # QR expired on PayMongo side
-        if status == "awaiting_payment_method":
-            _clear_pending_intent(user_id)
-            return {
-                "paid":          False,
-                "premium":       False,
-                "expired":       True,
-                "intent_status": status,
-            }
-
-        return {"paid": False, "premium": False, "intent_status": status}
-
-    except HTTPException:
-        raise
-    except Exception:
-        return {"paid": False, "premium": False}
-
-
-# ── 3. Webhook ────────────────────────────────────────────────────────────────
-
-@router.post("/webhook")
-async def payment_webhook(
-    request: Request,
-    paymongo_signature: Optional[str] = Header(None, alias="paymongo-signature"),
-):
-    """
-    PayMongo calls this when payment.paid / payment.failed / qrph.expired fires.
-    Protected by HMAC-SHA256 signature verification.
-    """
-    body = await request.body()
-
-    # ── FAIL CLOSED: reject immediately if anything is missing or wrong ───────
-    wh_secret = _webhook_secret()
-
-    # 1. Webhook secret must be configured in Railway env vars
-    if not wh_secret:
-        logger.error(
-            "❌ PAYMONGO_WEBHOOK_SECRET is not set — rejecting all webhook calls. "
-            "Set this env var in Railway."
-        )
-        raise HTTPException(status_code=500, detail="Webhook not configured on server.")
-
-    # 2. Signature header must be present
-    if not paymongo_signature:
-        logger.warning("⚠️ Webhook received without paymongo-signature header — rejected.")
-        raise HTTPException(status_code=401, detail="Missing webhook signature.")
-
-    # 3. Signature must be valid — any parse or mismatch error → reject
-    try:
-        parts    = dict(p.split("=", 1) for p in paymongo_signature.split(","))
-        ts       = parts.get("t", "")
-        test_sig = parts.get("te", "") or parts.get("li", "")
-        if not ts or not test_sig:
-            raise ValueError("Missing t or signature component")
-        to_sign  = f"{ts}.{body.decode()}"
-        expected = hmac.new(
-            wh_secret.encode(), to_sign.encode(), hashlib.sha256
-        ).hexdigest()
-        if not hmac.compare_digest(expected, test_sig):
-            logger.warning("⚠️ Webhook signature mismatch — possible spoofed request!")
-            raise HTTPException(status_code=400, detail="Invalid signature.")
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.warning(f"⚠️ Webhook sig parse failed — rejecting: {e}")
-        raise HTTPException(status_code=400, detail="Malformed signature header.")
-
-    try:
-        event = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON")
-
-    event_type  = event.get("data", {}).get("attributes", {}).get("type", "")
-    resource    = event.get("data", {}).get("attributes", {}).get("data", {})
-    attributes  = resource.get("attributes", {})
-    metadata    = attributes.get("metadata") or {}
-    user_id     = str(metadata.get("user_id", ""))
-    resource_id = resource.get("id", "")
-    intent_id   = attributes.get("payment_intent_id", resource_id)
-
-    logger.info(f"📬 Webhook: type={event_type} user={user_id} id={resource_id}")
-
-    if event_type == "payment.paid" and user_id:
-        # Validate user_id from metadata before granting premium
-        if not _USER_ID_RE.match(user_id):
-            logger.warning(f"⚠️ Webhook has invalid user_id in metadata: {user_id!r}")
-            return {"received": True}
-
-        if not db.is_premium(user_id):
-            price = _get_remove_ads_price()
-            db.set_premium(user_id, intent_id, price)
-            db.save_payment({
-                "payment_intent_id": intent_id,
-                "user_id":           user_id,
-                "status":            "paid",
-                "paid_at":           db.ph_now().isoformat(),
-            })
-            _clear_pending_intent(user_id)
-            logger.info(f"✅ Premium granted via webhook: user={user_id}")
-        else:
-            logger.info(f"ℹ️ Webhook: user={user_id} already premium (idempotent OK)")
-
-    elif event_type == "payment.failed":
-        logger.warning(f"❌ Payment failed: user={user_id} id={resource_id}")
-        if user_id:
-            _clear_pending_intent(user_id)
-
-    elif event_type == "qrph.expired":
-        logger.info(f"⏰ QRPh expired: id={resource_id}")
-        if user_id:
-            _clear_pending_intent(user_id)
-
-    return {"received": True}
-
-
-# ── 4. Premium status ─────────────────────────────────────────────────────────
+# ── 1. Check premium status ───────────────────────────────────────────────────
 
 @router.get("/premium/{user_id}")
-async def get_premium_status(user_id: str):
+def get_premium_status(user_id: str):
     uid     = _validate_user_id(user_id)
     premium = db.is_premium(uid)
     record  = db.get_premium_record(uid) if premium else None
@@ -521,36 +152,204 @@ async def get_premium_status(user_id: str):
     }
 
 
-# ── 5. Redirects ──────────────────────────────────────────────────────────────
+# ── 2. Validate key (read-only, no auth) ─────────────────────────────────────
 
-@router.get("/success")
-def payment_success():
-    return {"status": "success", "message": "Payment received! Open Xissin to continue."}
+@router.get("/keys/validate/{key_str}")
+def validate_key(key_str: str):
+    """Check if a key is valid and unused without redeeming it."""
+    key_str = key_str.strip().upper()
+    if not _KEY_RE.match(key_str):
+        return {"valid": False, "reason": "Invalid key format."}
+    data = _get_key_data(key_str)
+    if not data:
+        return {"valid": False, "reason": "Key not found."}
+    if data.get("used"):
+        return {"valid": False, "reason": "Key has already been used."}
+    return {"valid": True}
 
-@router.get("/failed")
-def payment_failed():
-    return {"status": "failed", "message": "Payment was not completed. Please try again."}
+
+# ── 3. Redeem key ─────────────────────────────────────────────────────────────
+
+@router.post("/keys/redeem", dependencies=[Depends(verify_app_request)])
+def redeem_key(req: KeyRedeemRequest):
+    """
+    Redeem a premium key for a user.
+    - Key must exist and be unused
+    - User must not already be premium
+    - Marks key as used and grants premium instantly
+    """
+    user_id = req.user_id
+    key_str = req.key.upper()
+
+    # Fast path: already premium
+    if db.is_premium(user_id):
+        return {
+            "success":         True,
+            "already_premium": True,
+            "message":         "You are already premium! Enjoy Xissin.",
+        }
+
+    # Check key exists
+    data = _get_key_data(key_str)
+    if not data:
+        raise HTTPException(status_code=404,
+                            detail="Invalid key. Please check and try again.")
+
+    # Check key unused
+    if data.get("used"):
+        raise HTTPException(status_code=409,
+                            detail="This key has already been used.")
+
+    # Mark key as used
+    now             = db.ph_now().isoformat()
+    data["used"]    = True
+    data["used_by"] = user_id
+    data["used_at"] = now
+    _save_key_data(key_str, data)
+
+    # Grant premium (price = 0 since it's key-based)
+    db.set_premium(user_id, key_str, 0)
+
+    # Log the redemption
+    db.append_log({
+        "action":  "key_redeemed",
+        "user_id": user_id,
+        "key":     key_str,
+    })
+
+    logger.info(f"✅ Key redeemed: {key_str} by user={user_id[:12]}...")
+    return {
+        "success": True,
+        "premium": True,
+        "message": "Key redeemed! You are now premium. Enjoy Xissin!",
+    }
 
 
-# ── Admin ─────────────────────────────────────────────────────────────────────
+# ── Admin: Key management ──────────────────────────────────────────────────────
+
+@router.get("/keys/admin/list", dependencies=[Depends(require_admin)])
+def admin_list_keys():
+    """List all generated keys with their status."""
+    index = _get_key_index()
+    keys  = []
+    for k in index:
+        data = _get_key_data(k)
+        if data:
+            keys.append(data)
+    # Sort: unused first, then by created_at
+    keys.sort(key=lambda x: (x.get("used", False), x.get("created_at", "")))
+    total_used      = sum(1 for k in keys if k.get("used"))
+    total_available = sum(1 for k in keys if not k.get("used"))
+    return {
+        "keys":            keys,
+        "total":           len(keys),
+        "total_used":      total_used,
+        "total_available": total_available,
+    }
+
+
+@router.post("/keys/admin/generate", dependencies=[Depends(require_admin)])
+def admin_generate_keys(req: GenerateKeysRequest):
+    """Generate N new premium keys."""
+    index    = _get_key_index()
+    existing = set(index)
+    new_keys = []
+    now      = db.ph_now().isoformat()
+
+    attempts = 0
+    while len(new_keys) < req.count and attempts < req.count * 20:
+        attempts += 1
+        k = _generate_key()
+        if k in existing:
+            continue
+        existing.add(k)
+        new_keys.append(k)
+        _save_key_data(k, {
+            "key":        k,
+            "used":       False,
+            "used_by":    None,
+            "used_at":    None,
+            "created_at": now,
+            "note":       req.note or "",
+        })
+
+    # Update index with all keys
+    _save_key_index(list(existing))
+
+    logger.info(f"🔑 Generated {len(new_keys)} premium key(s)")
+    return {"generated": new_keys, "count": len(new_keys)}
+
+
+@router.delete("/keys/admin/revoke/{key_str}", dependencies=[Depends(require_admin)])
+def admin_revoke_key(key_str: str):
+    """
+    Revoke and delete a key.
+    If the key was already used, also revokes the user's premium.
+    """
+    key_str = key_str.strip().upper()
+    data    = _get_key_data(key_str)
+    if not data:
+        raise HTTPException(status_code=404, detail="Key not found.")
+
+    # If used → revoke the user's premium too
+    if data.get("used") and data.get("used_by"):
+        db.revoke_premium(data["used_by"])
+        logger.info(f"🗑️ Premium revoked for user={data['used_by']} (key revoked)")
+
+    # Delete key data from Redis
+    try:
+        db.redis_delete(_rk(key_str))
+    except Exception:
+        pass
+
+    # Remove from index
+    index = [k for k in _get_key_index() if k != key_str]
+    _save_key_index(index)
+
+    logger.info(f"🗑️ Key revoked: {key_str}")
+    return {"success": True, "key": key_str}
+
+
+# ── Admin: Premium users (backward compat with existing admin panel) ───────────
 
 @router.get("/admin/all", dependencies=[Depends(require_admin)])
 def admin_get_all_payments():
-    return {"payments": db.get_all_payments()}
+    """Returns key redemption records (replaces old PayMongo records)."""
+    index   = _get_key_index()
+    records = []
+    for k in index:
+        data = _get_key_data(k)
+        if data and data.get("used"):
+            records.append({
+                "payment_intent_id": data["key"],
+                "user_id":           data.get("used_by", ""),
+                "amount":            0,
+                "type":              "premium_key",
+                "status":            "paid",
+                "created_at":        data.get("created_at", ""),
+                "paid_at":           data.get("used_at", ""),
+            })
+    return {"payments": records}
+
 
 @router.get("/admin/premium", dependencies=[Depends(require_admin)])
 def admin_get_premium_users():
     return {"premium_users": db.get_all_premium()}
 
+
 @router.post("/admin/grant/{user_id}", dependencies=[Depends(require_admin)])
 def admin_grant_premium(user_id: str):
-    uid   = _validate_user_id(user_id)
-    price = _get_remove_ads_price()
-    db.set_premium(uid, "manual_admin", price)
+    """Manually grant premium to a user (for verified GCash payments)."""
+    uid = _validate_user_id(user_id)
+    db.set_premium(uid, "manual_admin", 0)
+    logger.info(f"⭐ Premium manually granted to user={uid}")
     return {"success": True, "user_id": uid}
+
 
 @router.delete("/admin/revoke/{user_id}", dependencies=[Depends(require_admin)])
 def admin_revoke_premium(user_id: str):
+    """Revoke premium from a user."""
     uid = _validate_user_id(user_id)
     db.revoke_premium(uid)
+    logger.info(f"🗑️ Premium revoked from user={uid}")
     return {"success": True, "user_id": uid}

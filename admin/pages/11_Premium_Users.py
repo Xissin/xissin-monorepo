@@ -1,5 +1,7 @@
 """
-pages/11_Premium_Users.py — Manage Remove Ads premium users & payment records
+pages/11_Premium_Users.py — Premium Key Management
+Replaced PayMongo with a key-based system.
+Admin generates keys → shares with users who pay via GCash → users redeem in app.
 """
 
 import streamlit as st
@@ -7,15 +9,15 @@ import pandas as pd
 from utils.api import get, post, delete
 
 st.set_page_config(
-    page_title="Premium Users · Xissin Admin",
-    page_icon="⭐",
+    page_title="Premium Keys · Xissin Admin",
+    page_icon="🔑",
     layout="wide",
 )
 from utils.theme import inject_theme, page_header, auth_guard
 inject_theme()
 auth_guard()
 
-page_header("⭐", "Premium Users", "REMOVE ADS · PAYMENTS · MANUAL GRANTS")
+page_header("🔑", "Premium Keys", "KEY GENERATION · PREMIUM USERS · MANUAL GRANTS")
 
 # ── Refresh ────────────────────────────────────────────────────────────────────
 col_refresh, _ = st.columns([1, 5])
@@ -31,70 +33,80 @@ def load_premium():
 
 
 @st.cache_data(ttl=30, show_spinner=False)
-def load_payments():
-    return get("/api/payments/admin/all").get("payments", [])
+def load_keys():
+    data = get("/api/payments/keys/admin/list")
+    return data.get("keys", []), data.get("total", 0), data.get("total_used", 0), data.get("total_available", 0)
 
 
-with st.spinner("Loading premium data..."):
+with st.spinner("Loading data..."):
     try:
-        premium_users = load_premium()
-        payments      = load_payments()
+        premium_users                                  = load_premium()
+        all_keys, total_keys, used_keys, avail_keys   = load_keys()
     except Exception as e:
         st.error(f"Failed to load data: {e}")
         st.stop()
 
 # ── Summary metrics ────────────────────────────────────────────────────────────
-total_premium  = len(premium_users)
-total_payments = len(payments)
-paid_payments  = [p for p in payments if p.get("status") == "paid"]
-total_revenue  = sum(p.get("amount", 0) for p in paid_payments) / 100  # centavos → PHP
-
 col1, col2, col3, col4 = st.columns(4)
 with col1:
-    st.metric("⭐ Premium Users",    total_premium)
+    st.metric("⭐ Premium Users",    len(premium_users))
 with col2:
-    st.metric("💳 Total Payments",  total_payments)
+    st.metric("🔑 Total Keys",      total_keys)
 with col3:
-    st.metric("✅ Successful Pays", len(paid_payments))
+    st.metric("✅ Keys Used",        used_keys)
 with col4:
-    st.metric("💰 Total Revenue",   f"₱{total_revenue:,.2f}")
+    st.metric("🎁 Keys Available",   avail_keys)
 
 st.divider()
 
-# ── Two column layout ──────────────────────────────────────────────────────────
+# ── Two-column layout ──────────────────────────────────────────────────────────
 col_left, col_right = st.columns([1, 1])
 
-# ── LEFT: Premium Users ────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────────
+# LEFT COLUMN: Key Management
+# ────────────────────────────────────────────────────────────────────────────────
 with col_left:
-    st.markdown("### ⭐ Premium Users")
+    st.markdown("### 🔑 Key Management")
 
-    if not premium_users:
-        st.info("No premium users yet.")
-    else:
-        rows = []
-        for uid, rec in premium_users.items():
-            rows.append({
-                "User ID":    uid,
-                "Paid At":    rec.get("paid_at", "-"),
-                "Payment ID": (rec.get("payment_id") or "-")[:20] + "…"
-                              if len(rec.get("payment_id") or "") > 20
-                              else rec.get("payment_id", "-"),
-                "Amount":     f"₱{rec.get('amount', 0) / 100:.2f}",
-                "Type":       rec.get("type", "remove_ads"),
-            })
-        df = pd.DataFrame(rows)
-        st.dataframe(df, use_container_width=True, hide_index=True)
+    # ── Generate keys ──────────────────────────────────────────────────────────
+    st.markdown("#### ✨ Generate New Keys")
+    st.caption("Each key can only be used once. Share with users after they pay via GCash.")
+    with st.container(border=True):
+        gen_count = st.number_input(
+            "How many keys?", min_value=1, max_value=50, value=1, step=1)
+        gen_note  = st.text_input(
+            "Optional note (e.g. customer name / batch label):",
+            placeholder="e.g. John Doe — March 2026")
+        if st.button("🔑 Generate Keys", type="primary", use_container_width=True):
+            try:
+                result = post("/api/payments/keys/admin/generate", {
+                    "count": gen_count,
+                    "note":  gen_note or "",
+                })
+                new_keys = result.get("generated", [])
+                if new_keys:
+                    st.success(f"✓ Generated {len(new_keys)} key(s)!")
+                    st.markdown("**Copy and send these keys to your customers:**")
+                    for k in new_keys:
+                        st.code(k, language=None)
+                    st.cache_data.clear()
+                    st.rerun()
+                else:
+                    st.warning("No keys generated. Try again.")
+            except Exception as e:
+                st.error(f"Error: {e}")
 
     st.markdown("---")
 
-    # ── Manual Grant ──────────────────────────────────────────────────────────
+    # ── Manual grant ───────────────────────────────────────────────────────────
     st.markdown("#### 🎁 Manually Grant Premium")
-    st.caption("Use this if a user paid via GCash send / cash and you verified it.")
+    st.caption("Use this if a user paid and you want to grant premium without a key.")
     with st.container(border=True):
-        grant_uid = st.text_input("User ID to grant premium:", key="grant_uid",
-                                  placeholder="e.g. abc123def456")
-        if st.button("✅ Grant Premium", type="primary",
-                     use_container_width=True, disabled=not grant_uid.strip()):
+        grant_uid = st.text_input(
+            "User ID to grant premium:", key="grant_uid",
+            placeholder="e.g. abc123def456")
+        if st.button("✅ Grant Premium", type="primary", use_container_width=True,
+                     disabled=not grant_uid.strip()):
             try:
                 post(f"/api/payments/admin/grant/{grant_uid.strip()}", {})
                 st.success(f"✓ Premium granted to {grant_uid.strip()}!")
@@ -105,14 +117,15 @@ with col_left:
 
     st.markdown("---")
 
-    # ── Revoke ────────────────────────────────────────────────────────────────
+    # ── Revoke premium ─────────────────────────────────────────────────────────
     st.markdown("#### ❌ Revoke Premium")
-    st.caption("Removes premium status. Use for refunds or abuse.")
+    st.caption("Removes a user's premium status.")
     with st.container(border=True):
-        revoke_uid = st.text_input("User ID to revoke:", key="revoke_uid",
-                                   placeholder="e.g. abc123def456")
-        if st.button("🗑️ Revoke Premium", type="secondary",
-                     use_container_width=True, disabled=not revoke_uid.strip()):
+        revoke_uid = st.text_input(
+            "User ID to revoke:", key="revoke_uid",
+            placeholder="e.g. abc123def456")
+        if st.button("🗑️ Revoke Premium", type="secondary", use_container_width=True,
+                     disabled=not revoke_uid.strip()):
             try:
                 delete(f"/api/payments/admin/revoke/{revoke_uid.strip()}")
                 st.success(f"✓ Premium revoked from {revoke_uid.strip()}.")
@@ -121,50 +134,89 @@ with col_left:
             except Exception as e:
                 st.error(f"Error: {e}")
 
-# ── RIGHT: Payment Records ─────────────────────────────────────────────────────
-with col_right:
-    st.markdown("### 💳 Payment Records")
+    st.markdown("---")
 
-    status_filter = st.selectbox(
-        "Filter by status",
-        ["All", "paid", "pending", "failed"],
+    # ── Revoke a key ───────────────────────────────────────────────────────────
+    st.markdown("#### 🔒 Revoke a Key")
+    st.caption("If a key was used fraudulently, revoke it (also removes user's premium).")
+    with st.container(border=True):
+        revoke_key = st.text_input(
+            "Key to revoke:", key="revoke_key",
+            placeholder="e.g. XISSIN-A3B2-C9D1")
+        if st.button("🗑️ Revoke Key", type="secondary", use_container_width=True,
+                     disabled=not revoke_key.strip()):
+            try:
+                delete(f"/api/payments/keys/admin/revoke/{revoke_key.strip().upper()}")
+                st.success(f"✓ Key {revoke_key.strip().upper()} revoked.")
+                st.cache_data.clear()
+                st.rerun()
+            except Exception as e:
+                st.error(f"Error: {e}")
+
+
+# ────────────────────────────────────────────────────────────────────────────────
+# RIGHT COLUMN: Premium users + All keys table
+# ────────────────────────────────────────────────────────────────────────────────
+with col_right:
+    # ── Premium Users ──────────────────────────────────────────────────────────
+    st.markdown("### ⭐ Premium Users")
+    if not premium_users:
+        st.info("No premium users yet.")
+    else:
+        rows = []
+        for uid, rec in premium_users.items():
+            rows.append({
+                "User ID":    uid[:20] + "…" if len(uid) > 20 else uid,
+                "Key Used":   (rec.get("payment_id") or "manual")[:20],
+                "Granted At": (rec.get("paid_at") or "-")[:16],
+            })
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+    st.markdown("---")
+
+    # ── All Keys Table ─────────────────────────────────────────────────────────
+    st.markdown("### 📋 All Keys")
+    key_filter = st.selectbox(
+        "Filter",
+        ["All", "Available", "Used"],
         label_visibility="collapsed",
     )
 
-    filtered = payments if status_filter == "All" else [
-        p for p in payments if p.get("status") == status_filter
-    ]
+    filtered_keys = all_keys
+    if key_filter == "Available":
+        filtered_keys = [k for k in all_keys if not k.get("used")]
+    elif key_filter == "Used":
+        filtered_keys = [k for k in all_keys if k.get("used")]
 
-    if not filtered:
-        st.info("No payment records found.")
+    if not filtered_keys:
+        st.info("No keys found.")
     else:
         rows = []
-        for p in filtered[:100]:  # show latest 100
-            status = p.get("status", "pending")
-            emoji  = "✅" if status == "paid" else ("⏳" if status == "pending" else "❌")
+        for k in filtered_keys:
+            status = "✅ Used" if k.get("used") else "🎁 Available"
             rows.append({
-                "Status":    f"{emoji} {status}",
-                "User ID":   p.get("user_id", "-"),
-                "Amount":    f"₱{p.get('amount', 0) / 100:.2f}",
-                "Type":      p.get("type", "qrph"),
-                "Created":   (p.get("created_at") or "-")[:16],
-                "Paid At":   (p.get("paid_at")    or "-")[:16],
+                "Key":        k.get("key", ""),
+                "Status":     status,
+                "Used By":    (k.get("used_by") or "-")[:20],
+                "Used At":    (k.get("used_at")  or "-")[:16],
+                "Created":    (k.get("created_at") or "-")[:16],
+                "Note":       k.get("note", ""),
             })
-        df = pd.DataFrame(rows)
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
     st.markdown("---")
-    st.markdown("#### 🔗 PayMongo Webhook Setup")
+
+    # ── How it works ───────────────────────────────────────────────────────────
+    st.markdown("### ℹ️ How the Key System Works")
     with st.container(border=True):
-        st.caption("Register this URL in PayMongo → Settings → Webhooks:")
-        st.code(
-            "https://xissin-app-backend-production.up.railway.app/api/payments/webhook",
-            language=None,
-        )
-        st.caption("Subscribe to events:")
-        st.code("source.chargeable\npayment.paid", language=None)
-        st.info(
-            "💡 After registering the webhook, copy the **Webhook Secret** "
-            "from PayMongo and add it to Railway as:\n\n"
-            "`PAYMONGO_WEBHOOK_SECRET = whsec_xxxxx`"
-        )
+        st.markdown("""
+1. **Generate** keys above (1 key per customer)
+2. **User contacts** @QuitNat on Telegram to purchase
+3. **User pays** via GCash to your number
+4. **You send** the key to the user
+5. **User enters** the key in the app → premium activated instantly
+
+**Key format:** `XISSIN-XXXX-XXXX`  
+**Each key:** One-time use, never expires  
+**Premium features:** No ads, higher limits, live progress
+        """)

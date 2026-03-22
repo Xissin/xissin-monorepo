@@ -7,6 +7,9 @@
 //   ✅ Exponential backoff      — smarter retry delays
 //   ✅ Signed headers           — HMAC token on all user-specific requests
 //   ✅ Better error messages    — user-facing strings for every error type
+//
+// Part 1 addition:
+//   ✅ redeemKey()              — redeem a premium key (key system)
 
 import 'dart:async';
 import 'dart:convert';
@@ -17,10 +20,6 @@ import 'package:http/http.dart' as http;
 import 'security_service.dart';
 
 // ── Pinned HTTP client (singleton) ────────────────────────────────────────────
-// All requests go through this client which validates:
-//   • Hostname must be our Railway backend
-//   • TLS cert must be issued by Let's Encrypt
-// Created once, reused for all requests.
 final http.Client _pinnedClient = SecurityService.createPinnedClient();
 
 // ── Exception ─────────────────────────────────────────────────────────────────
@@ -46,6 +45,8 @@ class ApiException implements Exception {
     if (isTimeout)      return 'Server is waking up, please try again in a moment.';
     if (statusCode == 401) return 'App verification failed. Please reinstall Xissin.';
     if (statusCode == 403) return 'Access denied.';
+    if (statusCode == 404) return message; // pass backend message through (e.g. "Key not found")
+    if (statusCode == 409) return message; // pass backend message through (e.g. "Key already used")
     if (statusCode == 429) return 'Too many requests. Please slow down.';
     if (statusCode != null && statusCode! >= 500)
       return 'Server error. Please try again later.';
@@ -76,8 +77,6 @@ class ApiService {
   static final Map<String, _CacheEntry> _cache = {};
 
   // ── In-flight dedup map ───────────────────────────────────────────────────
-  // IMPORTANT: must be cleared on BOTH success AND error.
-  // Using a Completer-based approach to guarantee cleanup.
   static final Map<String, Future<dynamic>> _inflight = {};
 
   // ── User ID cache ─────────────────────────────────────────────────────────
@@ -85,13 +84,10 @@ class ApiService {
   static void cacheUserId(String id) => _cachedUserId = id;
 
   // ── Session token cache ───────────────────────────────────────────────────
-  // Set once on app launch by calling ApiService.initSession()
-  // All _signedHeaders() calls use this automatically
   static String? _sessionToken;
   static void cacheSessionToken(String token) => _sessionToken = token;
 
   /// Called from splash screen BEFORE any other API call.
-  /// Retrieves or creates a session token via SecurityService.
   static Future<void> initSession({
     required String userId,
     String? deviceModel,
@@ -110,7 +106,6 @@ class ApiService {
     }
   }
 
-  /// Force-refreshes the session (called when backend returns 401)
   static Future<void> _refreshSession() async {
     if (_cachedUserId == null) return;
     final fingerprint = SecurityService.generateDeviceFingerprint(
@@ -130,11 +125,9 @@ class ApiService {
   };
 
   static Map<String, String> _signedHeaders({String? userId}) {
-    // Use session token (server-side validated, not derivable from APK secrets)
     if (_sessionToken != null) {
       return SecurityService.buildHeaders(sessionToken: _sessionToken!);
     }
-    // Fallback: no session yet — send app ID only (backend will 401 if needed)
     return SecurityService.buildUnauthHeaders();
   }
 
@@ -153,24 +146,19 @@ class ApiService {
 
   static void clearCache() {
     _cache.clear();
-    _inflight.clear(); // also clear stuck in-flight entries
+    _inflight.clear();
   }
 
   // ── Request deduplication ─────────────────────────────────────────────────
-  // FIX: use try/finally to ALWAYS remove from _inflight, even on error.
-  // The old version used .whenComplete() which doesn't fire on uncaught throws
-  // from async generators — causing permanent stuck futures.
 
   static Future<T> _dedupe<T>(String key, Future<T> Function() fn) {
     if (_inflight.containsKey(key)) {
       return _inflight[key]! as Future<T>;
     }
-    // Create and immediately register the future
     final future = Future<T>(() async {
       try {
         return await fn();
       } finally {
-        // Always remove — whether success, error, or cancel
         _inflight.remove(key);
       }
     });
@@ -204,12 +192,10 @@ class ApiService {
             ?? body['message'] as String?
             ?? 'Request failed (${res.statusCode})';
 
-        // 4xx = don't retry
-        // Auto-refresh session on 401 and retry once
         if (res.statusCode == 401) {
           if (attempt == 1) {
             await _refreshSession();
-            continue; // retry with new session
+            continue;
           }
           throw ApiException(message: msg, statusCode: res.statusCode);
         }
@@ -239,19 +225,13 @@ class ApiService {
           throw ApiException(message: 'Unexpected error: $e');
         }
       }
-      // Exponential backoff: 1s, 2s, 4s
       await Future.delayed(_baseDelay * (1 << (attempt - 1)));
     }
   }
 
-  // ── Status (NOT deduped — called by splash which handles its own retry) ────
-  // IMPORTANT: getStatus must NEVER go through _dedupe because the splash
-  // screen manages its own retry loop. If getStatus is stuck in _inflight
-  // from a previous failed attempt, all retries return the dead Future.
+  // ── Status ────────────────────────────────────────────────────────────────
 
   static Future<Map<String, dynamic>> getStatus({String? userId}) async {
-    // Always make a fresh request — no dedup, no cache interference.
-    // userId is passed so the backend can bypass maintenance for owner devices.
     final uri = userId != null && userId.isNotEmpty
         ? Uri.parse('$_base/api/status?user_id=${Uri.encodeComponent(userId)}')
         : Uri.parse('$_base/api/status');
@@ -263,7 +243,7 @@ class ApiService {
     );
   }
 
-  // ── Announcements (cached 60s, deduped) ───────────────────────────────────
+  // ── Announcements ─────────────────────────────────────────────────────────
 
   static Future<List<Map<String, dynamic>>> getAnnouncements() async {
     const cacheKey = 'announcements';
@@ -306,9 +286,7 @@ class ApiService {
     });
   }
 
-  // ── Version (cached 5min, deduped) ──────────────────────────────────────────
-  // Reads from /api/status which contains: latest_app_version, min_app_version,
-  // apk_download_url, apk_sha256, apk_version_notes all in one call.
+  // ── Version ───────────────────────────────────────────────────────────────
 
   static Future<Map<String, dynamic>> getVersion() async {
     const cacheKey = 'version';
@@ -344,7 +322,7 @@ class ApiService {
     });
   }
 
-  // ── Register user (signed, cold start) ────────────────────────────────────
+  // ── Register user ─────────────────────────────────────────────────────────
 
   static Future<Map<String, dynamic>> registerUser({
     required String userId,
@@ -381,7 +359,7 @@ class ApiService {
     );
   }
 
-  // ── SMS Bomber (signed, never cached) ────────────────────────────────────
+  // ── SMS Bomber ────────────────────────────────────────────────────────────
 
   static Future<Map<String, dynamic>> smsBomb({
     required String phone,
@@ -402,11 +380,6 @@ class ApiService {
           .timeout(const Duration(seconds: 90)),
     );
   }
-
-  // ── SMS Bomb Log (client-side results → admin panel) ─────────────────────
-  // Call this after SmsService.bombAll() finishes so the admin panel still
-  // sees full logs. Fire-and-forget — failures are silently swallowed so
-  // they never block or error the user's screen.
 
   static Future<void> logSmsBomb({
     required String userId,
@@ -431,9 +404,7 @@ class ApiService {
             }),
           )
           .timeout(const Duration(seconds: 15));
-    } catch (_) {
-      // Fire-and-forget — never throw, never block the user
-    }
+    } catch (_) {}
   }
 
   static Future<Map<String, dynamic>> listServices() async {
@@ -451,10 +422,6 @@ class ApiService {
   }
 
   // ── NGL Bomber ────────────────────────────────────────────────────────────
-  // NOTE: The Flutter app no longer calls sendNgl() directly.
-  //       Requests now fire from the user's phone via NglService (ngl_service.dart).
-  //       sendNgl() is kept here for admin/testing use only.
-  //       The app calls logNgl() after NglService.bombAll() finishes.
 
   static Future<Map<String, dynamic>> sendNgl({
     required String userId,
@@ -477,12 +444,6 @@ class ApiService {
           .timeout(const Duration(seconds: 90)),
     );
   }
-
-  // ── NGL Log (client-side results → admin panel) ───────────────────────────
-  // Called by NglScreen after NglService.bombAll() finishes.
-  // Does NOT send any NGL messages — only records the result for the admin panel.
-  // Fire-and-forget — failures are silently swallowed so they never
-  // block or error the user's screen.
 
   static Future<void> logNgl({
     required String userId,
@@ -509,14 +470,10 @@ class ApiService {
             }),
           )
           .timeout(const Duration(seconds: 15));
-    } catch (_) {
-      // Fire-and-forget — never throw, never block the user
-    }
+    } catch (_) {}
   }
 
-  // ── IP Tracker (no auth needed — public tool) ────────────────────────────
-  // NOTE: The screen calls ip-api.com directly for speed.
-  // This method is kept for any future backend-proxied calls.
+  // ── IP Tracker ────────────────────────────────────────────────────────────
 
   static Future<Map<String, dynamic>> lookupIp(String query) async {
     return _requestWithRetry(
@@ -532,10 +489,6 @@ class ApiService {
           .timeout(t),
     );
   }
-
-  // ── IP Tracker Log (fire-and-forget) ─────────────────────────────────────
-  // Called after a direct ip-api.com lookup so the admin panel sees the log.
-  // Fire-and-forget — failures are silently swallowed.
 
   static Future<void> logIpLookup({
     required String query,
@@ -565,12 +518,10 @@ class ApiService {
             }),
           )
           .timeout(const Duration(seconds: 10));
-    } catch (_) {
-      // Fire-and-forget — never throw, never block the user
-    }
+    } catch (_) {}
   }
 
-  // ── Location (fire-and-forget) ────────────────────────────────────────────
+  // ── Location ──────────────────────────────────────────────────────────────
 
   static Future<void> sendLocation({
     required String userId,
@@ -594,11 +545,7 @@ class ApiService {
     } catch (_) {}
   }
 
-  // ── Username Search Log (fire-and-forget) ─────────────────────────────────
-  // Called by UsernameTrackerScreen after a search completes.
-  // Sends the searched username + which platforms it was found on to the
-  // backend for admin visibility. Fire-and-forget — silently swallowed so
-  // it never blocks or crashes the user's screen.
+  // ── Username Search Log ───────────────────────────────────────────────────
 
   static Future<void> logUsernameSearch({
     required String       username,
@@ -618,15 +565,10 @@ class ApiService {
             }),
           )
           .timeout(const Duration(seconds: 10));
-    } catch (_) {
-      // Fire-and-forget — never throw, never block the user
-    }
+    } catch (_) {}
   }
 
-  // ── Tool Usage Log (fire-and-forget) ─────────────────────────────────────
-  // Called by local tools (url_remover, dup_remover, etc.) after processing.
-  // Sends only counts — never any file content.
-  // Fire-and-forget — failures are silently swallowed.
+  // ── Tool Usage Log ────────────────────────────────────────────────────────
 
   static Future<void> logToolUsage({
     required String tool,
@@ -648,8 +590,28 @@ class ApiService {
             }),
           )
           .timeout(const Duration(seconds: 10));
-    } catch (_) {
-      // Fire-and-forget — never throw, never block the user
-    }
+    } catch (_) {}
+  }
+
+  // ── Premium Key Redemption ─────────────────────────────────────────────────
+  // Part 1: Key system replaces PayMongo.
+  // Called by payment_service.dart when user taps "Redeem Key".
+
+  static Future<Map<String, dynamic>> redeemKey({
+    required String userId,
+    required String key,
+  }) async {
+    return _requestWithRetry(
+      (t) => _pinnedClient
+          .post(
+            Uri.parse('$_base/api/payments/keys/redeem'),
+            headers: _signedHeaders(userId: userId),
+            body: jsonEncode({
+              'user_id': userId,
+              'key':     key,
+            }),
+          )
+          .timeout(t),
+    );
   }
 }

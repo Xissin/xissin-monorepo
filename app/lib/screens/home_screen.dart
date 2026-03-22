@@ -24,7 +24,13 @@ import 'username_tracker_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   final String userId;
-  const HomeScreen({super.key, required this.userId});
+  final String nickname;   // ← NEW (Part 1): nickname from first-launch dialog
+
+  const HomeScreen({
+    super.key,
+    required this.userId,
+    this.nickname = '',    // default empty for backward compat
+  });
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
@@ -32,11 +38,9 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   List<Map<String, dynamic>> _announcements = [];
-
-  // Dismissed set lives in State — NOT in build() — so it survives rebuilds
   final Set<String> _dismissed = {};
 
-  // ── Local Banner Ad (owned by THIS screen only) ───────────────────────────
+  // ── Local Banner Ad ───────────────────────────────────────────────────────
   BannerAd? _bannerAd;
   bool      _bannerReady = false;
 
@@ -47,16 +51,12 @@ class _HomeScreenState extends State<HomeScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       LocationService.tryCollectAndSend(widget.userId);
     });
-    // Full AdService init now that we have userId — verifies premium + loads interstitial
     AdService.instance.init(userId: widget.userId).then((_) {
-      // Re-init banner after premium check completes (in case user is premium)
       if (mounted && !AdService.instance.adsRemoved && !_bannerReady) {
         _initBanner();
       }
     });
-    // Listen for premium state changes (e.g. user pays while on screen)
     AdService.instance.addListener(_onAdServiceChanged);
-    // Load our own banner ad (may load before premium check — will be disposed if premium)
     _initBanner();
   }
 
@@ -67,24 +67,16 @@ class _HomeScreenState extends State<HomeScreen> {
     super.dispose();
   }
 
-  // ── Ad Service listener ────────────────────────────────────────────────────
-
   void _onAdServiceChanged() {
     if (!mounted) return;
     if (AdService.instance.adsRemoved && _bannerAd != null) {
       _bannerAd?.dispose();
-      setState(() {
-        _bannerAd    = null;
-        _bannerReady = false;
-      });
+      setState(() { _bannerAd = null; _bannerReady = false; });
     }
   }
 
-  // ── Banner init ────────────────────────────────────────────────────────────
-
   void _initBanner() {
     if (AdService.instance.adsRemoved) return;
-
     _bannerAd?.dispose();
     _bannerAd    = null;
     _bannerReady = false;
@@ -140,28 +132,24 @@ class _HomeScreenState extends State<HomeScreen> {
         context, MaterialPageRoute(builder: (_) => const AboutScreen()));
   }
 
-  // ── NEW: URL Remover ───────────────────────────────────────────────────────
   void _goToUrlRemover() {
     HapticFeedback.mediumImpact();
-    AdService.instance.showInterstitial(); // same pattern as SMS/NGL
+    AdService.instance.showInterstitial();
     _pushSlide(const UrlRemoverScreen());
   }
 
-  // ── NEW: Duplicate Remover ─────────────────────────────────────────────────
   void _goToDupRemover() {
     HapticFeedback.mediumImpact();
-    AdService.instance.showInterstitial(); // same pattern as SMS/NGL
+    AdService.instance.showInterstitial();
     _pushSlide(const DuplicateRemoverScreen());
   }
 
-  // ── NEW: IP Tracker ────────────────────────────────────────────────────────
   void _goToIpTracker() {
     HapticFeedback.mediumImpact();
     AdService.instance.showInterstitial();
     _pushSlide(const IpTrackerScreen());
   }
 
-  // ── NEW: Username Tracker ──────────────────────────────────────────────────
   void _goToUsernameTracker() {
     HapticFeedback.mediumImpact();
     AdService.instance.showInterstitial();
@@ -192,13 +180,14 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  // ── Remove Ads ─────────────────────────────────────────────────────────────
+  // ── Get Premium (was: Remove Ads) ──────────────────────────────────────────
 
   Future<void> _onRemoveAdsTap() async {
     HapticFeedback.mediumImpact();
     final adService = AdService.instance;
     final c = context.c;
 
+    // Already premium
     if (adService.adsRemoved) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -209,10 +198,11 @@ class _HomeScreenState extends State<HomeScreen> {
           margin:   const EdgeInsets.fromLTRB(16, 0, 16, 16),
           duration: const Duration(seconds: 3),
           content: Row(children: [
-            const Icon(Icons.star_rounded, color: Color(0xFFFFD700), size: 18),
+            const Icon(Icons.workspace_premium_rounded,
+                color: Color(0xFFFFD700), size: 18),
             const SizedBox(width: 10),
             Text(
-              '✨ Ads already removed! Thank you!',
+              '✨ You\'re already premium! Enjoy Xissin!',
               style: TextStyle(
                   color: c.textPrimary, fontWeight: FontWeight.w600),
             ),
@@ -222,6 +212,7 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
 
+    // Show Get Premium dialog (key entry + Telegram)
     final purchased = await PaymentService.showRemoveAdsDialog(
       context: context,
       userId:  widget.userId,
@@ -240,10 +231,10 @@ class _HomeScreenState extends State<HomeScreen> {
           duration: const Duration(seconds: 4),
           content: Row(children: [
             const Icon(Icons.check_circle_rounded,
-                color: Color(0xFF7EE7C1), size: 18),
+                color: Color(0xFFFFD700), size: 18),
             const SizedBox(width: 10),
             Text(
-              '🎉 Ads removed! Enjoy Xissin!',
+              '🎉 Premium activated! Enjoy Xissin!',
               style: TextStyle(
                   color: c.textPrimary, fontWeight: FontWeight.w600),
             ),
@@ -273,7 +264,6 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   // ── Banner Ad ──────────────────────────────────────────────────────────────
-  // Uses LOCAL _bannerAd — not a shared instance — so no "already in tree" crash.
 
   Widget _buildBannerAd() {
     if (AdService.instance.adsRemoved || !_bannerReady || _bannerAd == null) {
@@ -314,7 +304,7 @@ class _HomeScreenState extends State<HomeScreen> {
             slivers: [
               SliverToBoxAdapter(child: _buildHeader(c)),
 
-              // ── Announcements ─────────────────────────────────────────────
+              // ── Announcements ───────────────────────────────────────────────
               if (visible.isNotEmpty)
                 SliverToBoxAdapter(
                   child: Padding(
@@ -336,7 +326,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ),
 
-              // ── Remove Ads / Premium banner ───────────────────────────────
+              // ── Premium / Get Premium banner ────────────────────────────────
               SliverToBoxAdapter(
                 child: Consumer<AdService>(
                   builder: (_, adService, __) {
@@ -359,11 +349,11 @@ class _HomeScreenState extends State<HomeScreen> {
                           child: Row(
                             mainAxisAlignment: MainAxisAlignment.center,
                             children: [
-                              const Icon(Icons.star_rounded,
+                              const Icon(Icons.workspace_premium_rounded,
                                   color: Color(0xFFFFD700), size: 16),
                               const SizedBox(width: 8),
                               Text(
-                                '✨  Ad-Free  —  Thank you for supporting Xissin!',
+                                '⭐  Premium Active  —  Thank you for supporting Xissin!',
                                 style: TextStyle(
                                   color:      c.gold,
                                   fontSize:   12,
@@ -376,7 +366,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       );
                     }
 
-                    // Remove Ads promo
+                    // Get Premium promo
                     return Padding(
                       padding: const EdgeInsets.fromLTRB(22, 16, 22, 0),
                       child: GestureDetector(
@@ -395,7 +385,7 @@ class _HomeScreenState extends State<HomeScreen> {
                           ),
                           child: Row(
                             children: [
-                              Icon(Icons.block_rounded,
+                              Icon(Icons.workspace_premium_rounded,
                                   color: c.primary, size: 18),
                               const SizedBox(width: 10),
                               Expanded(
@@ -403,7 +393,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
                                     Text(
-                                      'Remove Ads',
+                                      'Get Premium',
                                       style: TextStyle(
                                         color:      c.primary,
                                         fontSize:   13,
@@ -411,7 +401,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                       ),
                                     ),
                                     Text(
-                                      'Tap to see benefits & pay via GCash',
+                                      'Tap to see benefits & redeem a key',
                                       style: TextStyle(
                                           color: c.textHint, fontSize: 11),
                                     ),
@@ -429,7 +419,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               ),
 
-              // ── Section heading ───────────────────────────────────────────
+              // ── Section heading ─────────────────────────────────────────────
               SliverToBoxAdapter(
                 child: Padding(
                   padding: const EdgeInsets.fromLTRB(22, 28, 22, 14),
@@ -452,8 +442,6 @@ class _HomeScreenState extends State<HomeScreen> {
                           borderRadius: BorderRadius.circular(AppRadius.full),
                         ),
                         child: Text(
-                          // 7 active tools: SMS, NGL, URL Remover,
-                          // Dup Remover, IP Tracker, Username Tracker, About
                           '7',
                           style: TextStyle(
                             color:      c.primary,
@@ -467,12 +455,11 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               ),
 
-              // ── Tools grid ────────────────────────────────────────────────
+              // ── Tools grid ─────────────────────────────────────────────────
               SliverPadding(
                 padding: const EdgeInsets.fromLTRB(16, 0, 16, 32),
                 sliver: SliverGrid(
                   delegate: SliverChildListDelegate([
-                    // ── 0: SMS Bomber ─────────────────────────────────────────
                     _FeatureCard(
                       icon:      Icons.sms_rounded,
                       title:     'SMS Bomber',
@@ -482,7 +469,6 @@ class _HomeScreenState extends State<HomeScreen> {
                       onTap:     _goToSms,
                       index:     0,
                     ),
-                    // ── 1: NGL Bomber ─────────────────────────────────────────
                     _FeatureCard(
                       icon:      Icons.chat_bubble_outline_rounded,
                       title:     'NGL Bomber',
@@ -492,7 +478,6 @@ class _HomeScreenState extends State<HomeScreen> {
                       onTap:     _goToNgl,
                       index:     1,
                     ),
-                    // ── 2: URL Remover (NEW — fully local) ────────────────────
                     _FeatureCard(
                       icon:      Icons.link_off_rounded,
                       title:     'URL Remover',
@@ -505,7 +490,6 @@ class _HomeScreenState extends State<HomeScreen> {
                       onTap:     _goToUrlRemover,
                       index:     2,
                     ),
-                    // ── 3: Duplicate Remover (NEW — fully local) ──────────────
                     _FeatureCard(
                       icon:      Icons.filter_list_off_rounded,
                       title:     'Dup Remover',
@@ -518,17 +502,6 @@ class _HomeScreenState extends State<HomeScreen> {
                       onTap:     _goToDupRemover,
                       index:     3,
                     ),
-                    // ── 4: About ──────────────────────────────────────────────
-                    _FeatureCard(
-                      icon:      Icons.info_outline_rounded,
-                      title:     'About',
-                      subtitle:  'App Info & Links',
-                      gradient:  AppColors.aboutGradient,
-                      glowColor: c.secondary,
-                      onTap:     _goToAbout,
-                      index:     4,
-                    ),
-                    // ── 5: IP Tracker (LIVE) ─────────────────────────────────
                     _FeatureCard(
                       icon:      Icons.location_on_rounded,
                       title:     'IP Tracker',
@@ -539,9 +512,8 @@ class _HomeScreenState extends State<HomeScreen> {
                       ],
                       glowColor: const Color(0xFF00B4D8),
                       onTap:     _goToIpTracker,
-                      index:     5,
+                      index:     4,
                     ),
-                    // ── 6: Username Tracker (NEW) ─────────────────────────────
                     _FeatureCard(
                       icon:      Icons.manage_accounts_rounded,
                       title:     'User Tracker',
@@ -552,6 +524,16 @@ class _HomeScreenState extends State<HomeScreen> {
                       ],
                       glowColor: const Color(0xFF9B59B6),
                       onTap:     _goToUsernameTracker,
+                      index:     5,
+                    ),
+                    // About card — placed logically at bottom of grid
+                    _FeatureCard(
+                      icon:      Icons.info_outline_rounded,
+                      title:     'About',
+                      subtitle:  'App Info & Links',
+                      gradient:  AppColors.aboutGradient,
+                      glowColor: c.secondary,
+                      onTap:     _goToAbout,
                       index:     6,
                     ),
                   ]),
@@ -577,6 +559,11 @@ class _HomeScreenState extends State<HomeScreen> {
   // ── Header ─────────────────────────────────────────────────────────────────
 
   Widget _buildHeader(XissinColors c) {
+    // Show nickname if available, otherwise fallback to "Multi-Tool Suite"
+    final subtitle = widget.nickname.isNotEmpty
+        ? 'Hi, ${widget.nickname}! 👋'
+        : 'Multi-Tool Suite';
+
     return Padding(
       padding: const EdgeInsets.fromLTRB(22, 24, 22, 0),
       child: Row(
@@ -605,7 +592,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 Row(
                   children: [
                     Text(
-                      'Multi-Tool Suite',
+                      subtitle,
                       style: TextStyle(
                           color: c.textSecondary, fontSize: 12),
                     ),
@@ -623,7 +610,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         child: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            const Icon(Icons.star_rounded,
+                            const Icon(Icons.workspace_premium_rounded,
                                 color: Color(0xFFFFD700), size: 9),
                             const SizedBox(width: 3),
                             Text(
@@ -651,7 +638,7 @@ class _HomeScreenState extends State<HomeScreen> {
           // Action buttons
           Row(
             children: [
-              // Remove Ads button
+              // Get Premium button (only shown when NOT premium)
               Selector<AdService, bool>(
                 selector: (_, s) => s.adsRemoved,
                 builder: (_, adsRemoved, __) => adsRemoved
@@ -668,7 +655,7 @@ class _HomeScreenState extends State<HomeScreen> {
                               width: 1,
                             ),
                           ),
-                          child: Icon(Icons.block_rounded,
+                          child: Icon(Icons.workspace_premium_rounded,
                               size: 18, color: c.primary),
                         ),
                       )

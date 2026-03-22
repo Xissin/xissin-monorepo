@@ -6,6 +6,7 @@ import 'package:flutter_animate/flutter_animate.dart';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:package_info_plus/package_info_plus.dart';
+import 'package:shared_preferences/shared_preferences.dart';      // ← NEW
 import 'package:url_launcher/url_launcher.dart';
 import 'package:battery_plus/battery_plus.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
@@ -27,25 +28,18 @@ class _SplashScreenState extends State<SplashScreen>
     with TickerProviderStateMixin {
 
   // ── Controllers ────────────────────────────────────────────────────────────
-  late AnimationController _entranceCtrl;   // logo entrance
-  late AnimationController _orbitCtrl;      // slow orbit ring
-  late AnimationController _pulseCtrl;      // icon glow pulse
-  late AnimationController _rotateCtrl;     // outer ring slow rotation
-  late AnimationController _dotCtrl;        // loading dots
+  late AnimationController _entranceCtrl;
+  late AnimationController _orbitCtrl;
+  late AnimationController _pulseCtrl;
+  late AnimationController _rotateCtrl;
+  late AnimationController _dotCtrl;
 
-  // Entrance
   late Animation<double> _logoFade;
   late Animation<double> _logoScale;
   late Animation<double> _titleSlide;
-
-  // Orbit ring scale pulse
   late Animation<double> _orbit1;
   late Animation<double> _orbit2;
-
-  // Glow pulse
   late Animation<double> _glow;
-
-  // Dot bounces
   late Animation<double> _dot1;
   late Animation<double> _dot2;
   late Animation<double> _dot3;
@@ -59,7 +53,6 @@ class _SplashScreenState extends State<SplashScreen>
   String  _appVersion      = '';
 
   static const String _telegramUrl = 'https://t.me/Xissin_0';
-  // _driveUrl removed — APK URL now comes dynamically from /api/status
 
   static const _storage = FlutterSecureStorage(
     aOptions: AndroidOptions(encryptedSharedPreferences: true),
@@ -70,16 +63,14 @@ class _SplashScreenState extends State<SplashScreen>
   void initState() {
     super.initState();
 
-    // ── Entrance (logo fades + scales in) ────────────────────────────────────
     _entranceCtrl = AnimationController(
         vsync: this, duration: const Duration(milliseconds: 1400));
-    _logoFade = CurvedAnimation(parent: _entranceCtrl, curve: const Interval(0.0, 0.6, curve: Curves.easeOut));
+    _logoFade  = CurvedAnimation(parent: _entranceCtrl, curve: const Interval(0.0, 0.6, curve: Curves.easeOut));
     _logoScale = Tween<double>(begin: 0.5, end: 1.0).animate(
         CurvedAnimation(parent: _entranceCtrl, curve: const Interval(0.0, 0.7, curve: Curves.easeOutBack)));
     _titleSlide = CurvedAnimation(parent: _entranceCtrl,
         curve: const Interval(0.4, 1.0, curve: Curves.easeOut));
 
-    // ── Orbit rings scale-pulse (2.8s) ────────────────────────────────────────
     _orbitCtrl = AnimationController(
         vsync: this, duration: const Duration(milliseconds: 2800));
     _orbit1 = Tween<double>(begin: 0.90, end: 1.10).animate(
@@ -87,17 +78,14 @@ class _SplashScreenState extends State<SplashScreen>
     _orbit2 = Tween<double>(begin: 0.95, end: 1.05).animate(
         CurvedAnimation(parent: _orbitCtrl, curve: Curves.easeInOut));
 
-    // ── Glow pulse (1.6s) ────────────────────────────────────────────────────
     _pulseCtrl = AnimationController(
         vsync: this, duration: const Duration(milliseconds: 1600));
     _glow = Tween<double>(begin: 0.4, end: 1.0).animate(
         CurvedAnimation(parent: _pulseCtrl, curve: Curves.easeInOut));
 
-    // ── Outer ring rotation (10s full) ───────────────────────────────────────
     _rotateCtrl = AnimationController(
         vsync: this, duration: const Duration(seconds: 10));
 
-    // ── Dot bounce (900ms) ───────────────────────────────────────────────────
     _dotCtrl = AnimationController(
         vsync: this, duration: const Duration(milliseconds: 900));
     _dot1 = Tween<double>(begin: 0, end: -10).animate(
@@ -181,8 +169,6 @@ class _SplashScreenState extends State<SplashScreen>
     String? networkType;
     try {
       final results = await Connectivity().checkConnectivity();
-      // results is a List<ConnectivityResult> in connectivity_plus v6+
-      // Pick the best connection type from the list
       if (results.contains(ConnectivityResult.wifi)) {
         networkType = 'wifi';
       } else if (results.contains(ConnectivityResult.mobile)) {
@@ -233,7 +219,6 @@ class _SplashScreenState extends State<SplashScreen>
             brandLower.contains('genymotion')   || productLower.contains('nox') ||
             productLower.contains('bluestacks') || productLower.contains('ldmicro') ||
             productLower.contains('memu')       ||
-            // ── Additional emulator/PC detection ─────────────────────────────
             hwLower.contains('bliss')           || hwLower.contains('x86_64') ||
             hwLower.contains('qemu')            || productLower.contains('bliss') ||
             productLower.contains('qemu')       || modelLower.contains('qemu') ||
@@ -259,7 +244,6 @@ class _SplashScreenState extends State<SplashScreen>
           'supported_64bit_abis': a.supported64BitAbis,
           'app_version': pkgInfo.version, 'app_build_number': pkgInfo.buildNumber,
           'package_name': pkgInfo.packageName,
-          // Battery value of -2147483648 = Integer.MIN_VALUE = emulator/PC flag
           'is_physical_device': a.isPhysicalDevice,
           'is_emulator': isEmulator || (batteryLevel != null && batteryLevel < 0),
           'screen_resolution': screenResolution ?? '',
@@ -299,19 +283,151 @@ class _SplashScreenState extends State<SplashScreen>
     };
   }
 
+  // ── NEW: Nickname dialog (shows on first launch only) ──────────────────────
+  //
+  // Shown once after device registration, before navigating to HomeScreen.
+  // Stores the nickname in SharedPreferences as 'xissin_nickname'.
+  // Cannot be dismissed without entering a nickname.
+
+  Future<String> _showNicknameDialog(SharedPreferences prefs) async {
+    final ctrl = TextEditingController();
+    String? pickedNickname;
+
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,  // must enter a nickname
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialog) => AlertDialog(
+          backgroundColor: AppColors.surface,
+          shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(24)),
+          titlePadding: const EdgeInsets.fromLTRB(24, 28, 24, 0),
+          contentPadding: const EdgeInsets.fromLTRB(24, 16, 24, 0),
+          actionsPadding: const EdgeInsets.fromLTRB(24, 8, 24, 24),
+          title: Column(
+            children: [
+              const Text('👋', style: TextStyle(fontSize: 44)),
+              const SizedBox(height: 10),
+              const Text(
+                'Welcome to Xissin!',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color:      AppColors.textPrimary,
+                  fontSize:   20,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                'Choose a nickname so we know who you are.',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color:    AppColors.textSecondary,
+                  fontSize: 13,
+                  height:   1.4,
+                ),
+              ),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const SizedBox(height: 8),
+              TextField(
+                controller:           ctrl,
+                maxLength:            20,
+                autofocus:            true,
+                textCapitalization:   TextCapitalization.words,
+                style: const TextStyle(
+                    color: AppColors.textPrimary, fontSize: 15),
+                decoration: InputDecoration(
+                  hintText:  'e.g. John, XissinUser',
+                  hintStyle: TextStyle(
+                      color: AppColors.textSecondary.withOpacity(0.5)),
+                  filled:    true,
+                  fillColor: AppColors.background,
+                  counterStyle: TextStyle(
+                      color: AppColors.textSecondary, fontSize: 11),
+                  prefixIcon: const Icon(
+                      Icons.person_outline_rounded,
+                      color: AppColors.primary, size: 20),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(14),
+                    borderSide:
+                        BorderSide(color: AppColors.border),
+                  ),
+                  enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(14),
+                    borderSide:
+                        BorderSide(color: AppColors.border),
+                  ),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(14),
+                    borderSide: const BorderSide(
+                        color: AppColors.primary, width: 1.5),
+                  ),
+                ),
+                onChanged: (_) => setDialog(() {}),
+                onSubmitted: (v) {
+                  if (v.trim().isNotEmpty) {
+                    pickedNickname = v.trim();
+                    Navigator.pop(ctx);
+                  }
+                },
+              ),
+            ],
+          ),
+          actions: [
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.primary,
+                  foregroundColor: Colors.white,
+                  disabledBackgroundColor:
+                      AppColors.primary.withOpacity(0.25),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14)),
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  textStyle: const TextStyle(
+                      fontSize: 15, fontWeight: FontWeight.bold),
+                ),
+                onPressed: ctrl.text.trim().isEmpty
+                    ? null
+                    : () {
+                        pickedNickname = ctrl.text.trim();
+                        Navigator.pop(ctx);
+                      },
+                child: const Text('Let\'s Go →'),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    ctrl.dispose();
+
+    final finalNick = pickedNickname ?? '';
+    if (finalNick.isNotEmpty) {
+      await prefs.setString('xissin_nickname', finalNick);
+    }
+    return finalNick;
+  }
+
+  // ── Init app ───────────────────────────────────────────────────────────────
+
   Future<void> _initApp() async {
     setState(() { _showRetryButton = false; _errorMessage = null; });
     await Future.delayed(const Duration(milliseconds: 900));
 
     try {
-      // ── STEP 1: Get or create user ID FIRST ──────────────────────────────
-      // We need the userId before the status check so the backend can grant
-      // maintenance bypass to the owner's device.
+      // ── STEP 1: Get or create user ID ──────────────────────────────────────
       _setStatus('Setting up your profile...');
       final userId = await _getOrCreateUserId();
       ApiService.cacheUserId(userId);
 
-      // ── STEP 2: Check server status, passing userId for owner bypass ──────
+      // ── STEP 2: Check server status ────────────────────────────────────────
       _setStatus('Checking server...');
       try {
         final status = await ApiService.getStatus(userId: userId);
@@ -330,7 +446,8 @@ class _SplashScreenState extends State<SplashScreen>
         final apkNotes       = status['apk_version_notes']  as String?;
 
         if (_isVersionOutdated(currentVersion, minVersion)) {
-          _showForceUpdateDialog(currentVersion, minVersion, apkUrl, apkSha256); return;
+          _showForceUpdateDialog(currentVersion, minVersion, apkUrl, apkSha256);
+          return;
         }
         if (_isVersionOutdated(currentVersion, latestVersion)) {
           final ok = await _showOptionalUpdateDialog(
@@ -352,12 +469,30 @@ class _SplashScreenState extends State<SplashScreen>
         return;
       }
 
-      // ── STEP 3: Register device info ──────────────────────────────────────
+      // ── STEP 3: Register device info ───────────────────────────────────────
       _setStatus('Loading...');
       try {
         final deviceInfo = await _collectDeviceInfo();
         await ApiService.registerUser(userId: userId, deviceDetails: deviceInfo);
       } catch (_) {}
+
+      // ── STEP 4: Nickname (first launch only) ────────────────────────────────
+      final prefs    = await SharedPreferences.getInstance();
+      String nickname = prefs.getString('xissin_nickname') ?? '';
+      if (nickname.isEmpty && mounted) {
+        _setStatus('One more thing...');
+        nickname = await _showNicknameDialog(prefs);
+      }
+
+      // Also sync nickname to backend on every launch (so admin can see it)
+      if (nickname.isNotEmpty) {
+        try {
+          await ApiService.registerUser(
+            userId:   userId,
+            username: nickname,
+          );
+        } catch (_) {}
+      }
 
       _setStatus('Welcome to Xissin!');
       await Future.delayed(const Duration(milliseconds: 500));
@@ -367,7 +502,8 @@ class _SplashScreenState extends State<SplashScreen>
         context,
         PageRouteBuilder(
           transitionDuration: const Duration(milliseconds: 800),
-          pageBuilder: (_, __, ___) => HomeScreen(userId: userId),
+          pageBuilder: (_, __, ___) =>
+              HomeScreen(userId: userId, nickname: nickname),  // ← pass nickname
           transitionsBuilder: (_, anim, __, child) => FadeTransition(
             opacity: CurvedAnimation(parent: anim, curve: Curves.easeIn),
             child: child,
@@ -407,6 +543,7 @@ class _SplashScreenState extends State<SplashScreen>
   }
 
   // ── Dialogs ────────────────────────────────────────────────────────────────
+
   void _showMaintenanceDialog(String message) {
     showDialog(
       context: context, barrierDismissible: false,
@@ -547,7 +684,6 @@ class _SplashScreenState extends State<SplashScreen>
       backgroundColor: AppColors.background,
       body: Stack(
         children: [
-          // ── Ambient background glow ───────────────────────────────────────
           Positioned(
             top: size.height * 0.15,
             left: size.width * 0.5 - 150,
@@ -568,15 +704,12 @@ class _SplashScreenState extends State<SplashScreen>
             ),
           ),
 
-          // ── Main content ──────────────────────────────────────────────────
           Center(
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 32),
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-
-                  // ── Logo section ───────────────────────────────────────────
                   FadeTransition(
                     opacity: _logoFade,
                     child: ScaleTransition(
@@ -586,8 +719,6 @@ class _SplashScreenState extends State<SplashScreen>
                         child: Stack(
                           alignment: Alignment.center,
                           children: [
-
-                            // Outer slow-rotating dashed ring
                             AnimatedBuilder(
                               animation: _rotateCtrl,
                               builder: (_, __) => Transform.rotate(
@@ -602,8 +733,6 @@ class _SplashScreenState extends State<SplashScreen>
                                 ),
                               ),
                             ),
-
-                            // Orbit ring 1 (pulsing)
                             AnimatedBuilder(
                               animation: _orbitCtrl,
                               builder: (_, __) => Transform.scale(
@@ -620,8 +749,6 @@ class _SplashScreenState extends State<SplashScreen>
                                 ),
                               ),
                             ),
-
-                            // Orbit ring 2 (pulsing, faster)
                             AnimatedBuilder(
                               animation: _orbitCtrl,
                               builder: (_, __) => Transform.scale(
@@ -638,8 +765,6 @@ class _SplashScreenState extends State<SplashScreen>
                                 ),
                               ),
                             ),
-
-                            // Glow halo behind icon
                             AnimatedBuilder(
                               animation: _pulseCtrl,
                               builder: (_, __) => Container(
@@ -656,8 +781,6 @@ class _SplashScreenState extends State<SplashScreen>
                                 ),
                               ),
                             ),
-
-                            // ── Real app icon ──────────────────────────────
                             Container(
                               width: 72, height: 72,
                               decoration: BoxDecoration(
@@ -687,7 +810,6 @@ class _SplashScreenState extends State<SplashScreen>
                                 ),
                               ),
                             ),
-
                           ],
                         ),
                       ),
@@ -696,7 +818,6 @@ class _SplashScreenState extends State<SplashScreen>
 
                   const SizedBox(height: 40),
 
-                  // ── Title ──────────────────────────────────────────────────
                   FadeTransition(
                     opacity: _titleSlide,
                     child: Column(
@@ -731,9 +852,7 @@ class _SplashScreenState extends State<SplashScreen>
 
                   const SizedBox(height: 72),
 
-                  // ── Loading / Error state ──────────────────────────────────
                   if (!_showRetryButton) ...[
-                    // Bouncing dots
                     AnimatedBuilder(
                       animation: _dotCtrl,
                       builder: (_, __) => Row(
@@ -750,7 +869,6 @@ class _SplashScreenState extends State<SplashScreen>
 
                     const SizedBox(height: 20),
 
-                    // Status text with shimmer
                     Text(
                       _status,
                       style: TextStyle(
@@ -766,7 +884,6 @@ class _SplashScreenState extends State<SplashScreen>
                         color:    AppColors.primary.withOpacity(0.3),
                       ),
                   ] else ...[
-                    // Error state
                     const Icon(Icons.wifi_off_rounded,
                             color: AppColors.error, size: 36)
                         .animate().fadeIn(duration: 400.ms)
@@ -807,7 +924,6 @@ class _SplashScreenState extends State<SplashScreen>
             ),
           ),
 
-          // ── Version badge ─────────────────────────────────────────────────
           if (_appVersion.isNotEmpty)
             Positioned(
               bottom: 28, left: 0, right: 0,
@@ -826,7 +942,6 @@ class _SplashScreenState extends State<SplashScreen>
     );
   }
 
-  // ── Gradient dot ──────────────────────────────────────────────────────────
   Widget _buildDot(double offsetY, int index) {
     final colors = [AppColors.primary, AppColors.secondary, AppColors.primary];
     return Transform.translate(
@@ -869,7 +984,7 @@ class _DashedRingPainter extends CustomPainter {
 
     final center = Offset(size.width / 2, size.height / 2);
     final radius = (size.width / 2) - strokeWidth;
-    const gap    = 0.3; // radians gap between dashes
+    const gap    = 0.3;
 
     final step = (2 * math.pi) / dashCount;
     for (int i = 0; i < dashCount; i++) {

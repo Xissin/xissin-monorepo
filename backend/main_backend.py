@@ -84,7 +84,7 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     port = int(os.environ.get("PORT", 8000))
     logger.info("=" * 55)
-    logger.info("🚀  XISSIN BACKEND  v2.2.0  —  STARTING UP")
+    logger.info("🚀  XISSIN BACKEND  v2.3.0  —  STARTING UP")
     logger.info("=" * 55)
     logger.info(f"🌐  Listening on  0.0.0.0:{port}")
     logger.info(f"🔧  Environment : {os.environ.get('ENVIRONMENT', 'production')}")
@@ -103,7 +103,7 @@ async def lifespan(app: FastAPI):
     logger.info(f"    {'✅' if _HAS_ANNOUNCEMENTS       else '❌'}  /api/announcements")
     logger.info(f"    {'✅' if _HAS_SETTINGS            else '❌'}  /api/settings")
     logger.info(f"    {'✅' if _HAS_LOCATION            else '❌'}  /api/location         — User Map")
-    logger.info(f"    {'✅' if _HAS_PAYMENTS            else '❌'}  /api/payments         — Remove Ads")
+    logger.info(f"    {'✅' if _HAS_PAYMENTS            else '❌'}  /api/payments         — Premium Keys")  # ← updated
     logger.info(f"    {'✅' if _HAS_CRASH_REPORT        else '❌'}  /api/crash-report     — Crash Reports")
     logger.info(f"    {'✅' if _HAS_IP_TRACKER          else '❌'}  /api/ip-tracker       — IP Tracker")
     logger.info(f"    {'✅' if _HAS_USERNAME_TRACKER    else '❌'}  /api/username-tracker — Username Tracker")
@@ -122,7 +122,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Xissin App API",
     description="Backend API for the Xissin Multi-Tool Flutter App",
-    version="2.2.0",
+    version="2.3.0",
     lifespan=lifespan,
 )
 
@@ -211,7 +211,7 @@ def root():
     return {
         "status":  "online",
         "app":     "Xissin Multi-Tool API",
-        "version": "2.2.0",
+        "version": "2.3.0",
     }
 
 @app.get("/health")
@@ -227,13 +227,11 @@ def api_status(user_id: Optional[str] = Query(default=None)):
     if not maintenance:
         maintenance = os.environ.get("MAINTENANCE_MODE", "false").lower() == "true"
 
-    # ── Owner bypass — if the requesting device is in the bypass list,
-    #    they always see maintenance = False (owner's phone bypasses maintenance)
     is_owner = False
     if maintenance and user_id:
         bypass_ids = s.get("owner_bypass_ids") or []
         if user_id.strip() in [i.strip() for i in bypass_ids if i]:
-            is_owner   = True
+            is_owner    = True
             maintenance = False
             logger.info(f"🔑  Owner bypass: user_id={user_id[:12]}... skipped maintenance")
 
@@ -254,7 +252,7 @@ def api_status(user_id: Optional[str] = Query(default=None)):
                        os.environ.get("LATEST_APK_NOTES", ""))
 
     return {
-        "api_version":        "2.2.0",
+        "api_version":        "2.3.0",
         "min_app_version":    min_ver,
         "latest_app_version": lat_ver,
         "apk_download_url":   apk_url,
@@ -269,7 +267,7 @@ def api_status(user_id: Optional[str] = Query(default=None)):
             "ip_tracker":       _HAS_IP_TRACKER,
             "username_tracker": _HAS_USERNAME_TRACKER,
             "announcements":    _HAS_ANNOUNCEMENTS,
-            "remove_ads":       _HAS_PAYMENTS,
+            "premium_keys":     _HAS_PAYMENTS,
             "tool_logs":        _HAS_TOOLS,
         },
         "links": {
