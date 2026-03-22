@@ -82,6 +82,7 @@ class ApiService {
   // ── User ID cache ─────────────────────────────────────────────────────────
   static String? _cachedUserId;
   static void cacheUserId(String id) => _cachedUserId = id;
+  static String? get cachedUserId => _cachedUserId;
 
   // ── Session token cache ───────────────────────────────────────────────────
   static String? _sessionToken;

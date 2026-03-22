@@ -1,12 +1,10 @@
 // ============================================================
 //  app/lib/screens/url_remover_screen.dart
 //  🔗 URL Remover — 100% local, no backend, offline-safe ads
-//  Interstitial fires: AFTER processing + AFTER share/new file
 //
-//  CHANGES v3:
-//   [7] Fire-and-forget usage log to backend after processing
-//       → logs input/output/removed counts only (no file content)
-//       → silently skipped when offline, never blocks the UI
+//  Part 3: Line limits
+//   • Free    : 1,000 lines max (excess lines silently truncated)
+//   • Premium : Unlimited
 // ============================================================
 import 'dart:async';
 import 'dart:convert';
@@ -23,6 +21,9 @@ import '../services/ad_service.dart';
 import '../services/api_service.dart';
 import '../theme/app_theme.dart';
 
+// ── Part 3 constants ──────────────────────────────────────────────────────────
+const _kFreeLineCap = 1000; // Free tier: max lines to process
+
 class UrlRemoverScreen extends StatefulWidget {
   const UrlRemoverScreen({super.key});
 
@@ -33,32 +34,26 @@ class UrlRemoverScreen extends StatefulWidget {
 class _UrlRemoverScreenState extends State<UrlRemoverScreen>
     with TickerProviderStateMixin {
 
-  // ── State ───────────────────────────────────────────────────────────────────
   _Phase  _phase         = _Phase.idle;
   String? _pickedFileName;
   String? _rawContent;
   List<String> _result  = [];
-  int    _originalCount = 0;
+  int    _originalCount = 0;   // total non-empty lines in file
+  int    _processedCount = 0;  // lines actually fed to the processor (capped for free)
   double _progress      = 0.0;
   String? _errorMsg;
   File?  _outputFile;
 
-  // ── Connectivity ─────────────────────────────────────────────────────────────
   bool _isOnline = true;
   StreamSubscription<List<ConnectivityResult>>? _connSub;
-
-  // ── FIX [1]: Ticker stored as class field so dispose() can cancel it ─────────
   StreamSubscription<int>? _ticker;
 
-  // ── Local Banner Ad ──────────────────────────────────────────────────────────
   BannerAd? _bannerAd;
   bool      _bannerReady = false;
 
-  // ── Animations ───────────────────────────────────────────────────────────────
   late AnimationController _pulseCtrl;
   late Animation<double>   _pulseAnim;
 
-  // ── Protocol keywords (mirrors Python) ──────────────────────────────────────
   static const _protoKeywords = {
     'http', 'https', 'ftp', 'ftps', 'sftp', 'ssh', 'rtmp', 'rtsp',
   };
@@ -77,7 +72,6 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
     return false;
   }
 
-  // ── Core logic (exact port of Python bot) ────────────────────────────────────
   static List<String> _processLines(List<String> rawLines) {
     final out = <String>[];
     for (final line in rawLines) {
@@ -107,7 +101,20 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
   static Future<List<String>> _runInIsolate(List<String> lines) =>
       Isolate.run(() => _processLines(lines));
 
-  // ── Lifecycle ────────────────────────────────────────────────────────────────
+  // ── Helpers ───────────────────────────────────────────────────────────────
+
+  bool get _isPremium => AdService.instance.adsRemoved;
+
+  /// Total non-empty lines in the picked file
+  int get _totalLines =>
+      _rawContent?.split('\n').where((l) => l.trim().isNotEmpty).length ?? 0;
+
+  /// Lines that will be / were processed (capped for free)
+  int get _effectiveCap => _isPremium ? _totalLines : _kFreeLineCap.clamp(0, _totalLines);
+
+  bool get _isCapped => !_isPremium && _totalLines > _kFreeLineCap;
+
+  // ── Lifecycle ─────────────────────────────────────────────────────────────
 
   @override
   void initState() {
@@ -121,7 +128,6 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
     );
 
     AdService.instance.init();
-
     _checkConnectivity();
 
     _connSub = Connectivity().onConnectivityChanged.listen((results) {
@@ -142,9 +148,7 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
   Future<void> _checkConnectivity() async {
     final results = await Connectivity().checkConnectivity();
     if (!mounted) return;
-    setState(() {
-      _isOnline = !results.every((r) => r == ConnectivityResult.none);
-    });
+    setState(() => _isOnline = !results.every((r) => r == ConnectivityResult.none));
   }
 
   @override
@@ -157,7 +161,7 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
     super.dispose();
   }
 
-  // ── Banner Ad ─────────────────────────────────────────────────────────────────
+  // ── Banner Ad ─────────────────────────────────────────────────────────────
 
   void _onAdChanged() {
     if (!mounted) return;
@@ -169,9 +173,7 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
 
   void _initBanner() {
     if (!_isOnline || AdService.instance.adsRemoved) return;
-    _bannerAd?.dispose();
-    _bannerAd    = null;
-    _bannerReady = false;
+    _bannerAd?.dispose(); _bannerAd = null; _bannerReady = false;
     final ad = AdService.instance.createBannerAd(
       onLoaded: () {
         if (!mounted || AdService.instance.adsRemoved) {
@@ -182,9 +184,7 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
       onFailed: () {
         if (mounted) setState(() { _bannerAd = null; _bannerReady = false; });
         Future.delayed(const Duration(seconds: 30), () {
-          if (mounted && _isOnline && !AdService.instance.adsRemoved) {
-            _initBanner();
-          }
+          if (mounted && _isOnline && !AdService.instance.adsRemoved) _initBanner();
         });
       },
     );
@@ -194,10 +194,7 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
   }
 
   Widget _buildBannerAd() {
-    if (!_isOnline ||
-        AdService.instance.adsRemoved ||
-        !_bannerReady ||
-        _bannerAd == null) {
+    if (!_isOnline || AdService.instance.adsRemoved || !_bannerReady || _bannerAd == null) {
       return const SizedBox.shrink();
     }
     return SafeArea(
@@ -211,15 +208,13 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
     );
   }
 
-  // ── Interstitial helper ───────────────────────────────────────────────────────
-
   void _tryShowInterstitial() {
     if (_isOnline && !AdService.instance.adsRemoved) {
       AdService.instance.showInterstitial();
     }
   }
 
-  // ── Actions ──────────────────────────────────────────────────────────────────
+  // ── Actions ───────────────────────────────────────────────────────────────
 
   Future<void> _pickFile() async {
     try {
@@ -252,13 +247,21 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
   Future<void> _runProcess() async {
     if (_rawContent == null) return;
 
-    final lines = _rawContent!.split('\n');
+    final allLines = _rawContent!.split('\n');
+
+    // ── Part 3: Apply line cap for free users ──────────────────────────────
+    final isPremium    = _isPremium;
+    final nonEmpty     = allLines.where((l) => l.trim().isNotEmpty).toList();
+    final linesToProcess = isPremium
+        ? nonEmpty
+        : nonEmpty.take(_kFreeLineCap).toList();
 
     setState(() {
-      _originalCount = lines.where((l) => l.trim().isNotEmpty).length;
-      _phase         = _Phase.processing;
-      _progress      = 0.0;
-      _errorMsg      = null;
+      _originalCount  = nonEmpty.length;
+      _processedCount = linesToProcess.length;
+      _phase          = _Phase.processing;
+      _progress       = 0.0;
+      _errorMsg       = null;
     });
 
     _ticker?.cancel();
@@ -271,7 +274,7 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
     });
 
     try {
-      final result   = await _runInIsolate(lines);
+      final result = await _runInIsolate(linesToProcess);
       _ticker?.cancel();
       _ticker = null;
 
@@ -286,8 +289,7 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
       }
 
       final dir      = await getTemporaryDirectory();
-      final baseName = (_pickedFileName ?? 'output')
-          .replaceAll(RegExp(r'\.[^.]+$'), '');
+      final baseName = (_pickedFileName ?? 'output').replaceAll(RegExp(r'\.[^.]+$'), '');
       final outFile  = File('${dir.path}/${baseName}_url_removed.txt');
       await outFile.writeAsString(result.join('\n'));
 
@@ -299,22 +301,16 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
         _outputFile = outFile;
       });
 
-      // [7] Fire-and-forget usage log — only counts, no file content
-      // Runs silently after UI updates; errors are swallowed
       if (_isOnline) {
         ApiService.logToolUsage(
           tool:         'url_remover',
-          inputCount:   _originalCount,
+          inputCount:   _processedCount,
           outputCount:  result.length,
-          removedCount: _originalCount - result.length,
+          removedCount: _processedCount - result.length,
         ).catchError((_) {});
       }
 
-      // Interstitial ad after result card renders
-      Future.delayed(
-        const Duration(milliseconds: 600),
-        _tryShowInterstitial,
-      );
+      Future.delayed(const Duration(milliseconds: 600), _tryShowInterstitial);
 
     } catch (e) {
       _ticker?.cancel();
@@ -332,10 +328,7 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
       [XFile(_outputFile!.path)],
       subject: 'URL Removed — ${_outputFile!.path.split('/').last}',
     );
-    Future.delayed(
-      const Duration(milliseconds: 300),
-      _tryShowInterstitial,
-    );
+    Future.delayed(const Duration(milliseconds: 300), _tryShowInterstitial);
   }
 
   void _copyAll() {
@@ -352,8 +345,7 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
         margin:   const EdgeInsets.fromLTRB(16, 0, 16, 16),
         duration: const Duration(seconds: 2),
         content: Row(children: [
-          const Icon(Icons.check_circle_rounded,
-              color: Color(0xFF2ECC71), size: 16),
+          const Icon(Icons.check_circle_rounded, color: Color(0xFF2ECC71), size: 16),
           const SizedBox(width: 8),
           Text('${_result.length} lines copied to clipboard!',
               style: TextStyle(
@@ -377,10 +369,11 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
       _progress       = 0;
       _errorMsg       = null;
       _originalCount  = 0;
+      _processedCount = 0;
     });
   }
 
-  // ── Build ─────────────────────────────────────────────────────────────────────
+  // ── Build ─────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
@@ -419,14 +412,12 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
               margin: const EdgeInsets.only(right: 12),
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
               decoration: BoxDecoration(
-                color: const Color(0xFFFF6B6B).withOpacity(0.15),
+                color:  const Color(0xFFFF6B6B).withOpacity(0.15),
                 borderRadius: BorderRadius.circular(20),
-                border: Border.all(
-                    color: const Color(0xFFFF6B6B).withOpacity(0.4)),
+                border: Border.all(color: const Color(0xFFFF6B6B).withOpacity(0.4)),
               ),
               child: const Row(mainAxisSize: MainAxisSize.min, children: [
-                Icon(Icons.wifi_off_rounded,
-                    color: Color(0xFFFF6B6B), size: 11),
+                Icon(Icons.wifi_off_rounded, color: Color(0xFFFF6B6B), size: 11),
                 SizedBox(width: 4),
                 Text('Offline',
                     style: TextStyle(color: Color(0xFFFF6B6B),
@@ -453,19 +444,18 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
     );
   }
 
-  // ── Info Card ─────────────────────────────────────────────────────────────────
+  // ── Info Card ─────────────────────────────────────────────────────────────
 
   Widget _buildInfoCard(XissinColors c) => Container(
     padding: const EdgeInsets.all(16),
     decoration: BoxDecoration(
-      color: const Color(0xFF7B8CDE).withOpacity(0.08),
+      color:        const Color(0xFF7B8CDE).withOpacity(0.08),
       borderRadius: BorderRadius.circular(16),
       border: Border.all(color: const Color(0xFF7B8CDE).withOpacity(0.2)),
     ),
     child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       const Row(children: [
-        Icon(Icons.info_outline_rounded,
-            color: Color(0xFF7B8CDE), size: 16),
+        Icon(Icons.info_outline_rounded, color: Color(0xFF7B8CDE), size: 16),
         SizedBox(width: 8),
         Text('What does this do?',
             style: TextStyle(color: Color(0xFF7B8CDE),
@@ -478,34 +468,73 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
         '✦  Runs entirely on your device — no internet needed\n'
         '✦  Supports .txt · .csv · .list · .combo\n'
         '✦  Handles  |  and  \\t  separators automatically',
-        style: TextStyle(
-            color: c.textSecondary, fontSize: 12, height: 1.6),
+        style: TextStyle(color: c.textSecondary, fontSize: 12, height: 1.6),
       ),
+      const SizedBox(height: 10),
+      // ── Part 3: Line limit badge ──────────────────────────────────────────
+      _buildLineLimitBadge(c),
     ]),
   );
 
-  // ── Error Card ────────────────────────────────────────────────────────────────
+  Widget _buildLineLimitBadge(XissinColors c) {
+    final isPremium = _isPremium;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: isPremium
+            ? const Color(0xFFFFD700).withOpacity(0.08)
+            : const Color(0xFF7B8CDE).withOpacity(0.10),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(
+          color: isPremium
+              ? const Color(0xFFFFD700).withOpacity(0.35)
+              : const Color(0xFF7B8CDE).withOpacity(0.30),
+        ),
+      ),
+      child: Row(
+        children: [
+          Icon(
+            isPremium ? Icons.workspace_premium_rounded : Icons.lock_outline_rounded,
+            size:  14,
+            color: isPremium ? const Color(0xFFFFD700) : const Color(0xFF7B8CDE),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              isPremium
+                  ? '⭐ Premium — Unlimited lines'
+                  : '🔒 Free — Up to $_kFreeLineCap lines  ·  Get Premium for unlimited',
+              style: TextStyle(
+                color:    isPremium ? const Color(0xFFFFD700) : c.textSecondary,
+                fontSize: 11,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ── Error Card ────────────────────────────────────────────────────────────
 
   Widget _buildErrorCard() => Container(
-    margin: const EdgeInsets.only(bottom: 12),
+    margin:  const EdgeInsets.only(bottom: 12),
     padding: const EdgeInsets.all(14),
     decoration: BoxDecoration(
-      color: const Color(0xFFFF6B6B).withOpacity(0.1),
+      color:        const Color(0xFFFF6B6B).withOpacity(0.1),
       borderRadius: BorderRadius.circular(14),
-      border: Border.all(
-          color: const Color(0xFFFF6B6B).withOpacity(0.3)),
+      border: Border.all(color: const Color(0xFFFF6B6B).withOpacity(0.3)),
     ),
     child: Row(children: [
-      const Icon(Icons.error_outline_rounded,
-          color: Color(0xFFFF6B6B), size: 16),
+      const Icon(Icons.error_outline_rounded, color: Color(0xFFFF6B6B), size: 16),
       const SizedBox(width: 8),
       Expanded(child: Text(_errorMsg!,
-          style: const TextStyle(
-              color: Color(0xFFFF6B6B), fontSize: 12))),
+          style: const TextStyle(color: Color(0xFFFF6B6B), fontSize: 12))),
     ]),
   );
 
-  // ── Main Card ─────────────────────────────────────────────────────────────────
+  // ── Main Card ─────────────────────────────────────────────────────────────
 
   Widget _buildMainCard(XissinColors c) => Container(
     padding: const EdgeInsets.all(20),
@@ -514,8 +543,7 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
       borderRadius: BorderRadius.circular(20),
       border: Border.all(color: c.border),
       boxShadow: [BoxShadow(
-          color: Colors.black.withOpacity(0.1),
-          blurRadius: 20, offset: const Offset(0, 8))],
+          color: Colors.black.withOpacity(0.1), blurRadius: 20, offset: const Offset(0, 8))],
     ),
     child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
       if (_phase == _Phase.idle || _phase == _Phase.ready)
@@ -523,6 +551,11 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
       if (_pickedFileName != null) ...[
         const SizedBox(height: 14),
         _buildFileChip(c),
+      ],
+      // ── Part 3: Cap warning (shown when file exceeds free limit) ──────────
+      if (_phase == _Phase.ready && _isCapped) ...[
+        const SizedBox(height: 10),
+        _buildCapWarning(c),
       ],
       if (_phase == _Phase.processing) ...[
         const SizedBox(height: 20),
@@ -539,6 +572,44 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
     ]),
   );
 
+  // ── Part 3: Cap warning banner ────────────────────────────────────────────
+
+  Widget _buildCapWarning(XissinColors c) {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color:        const Color(0xFFFF9A44).withOpacity(0.08),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: const Color(0xFFFF9A44).withOpacity(0.35)),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.warning_amber_rounded,
+              color: Color(0xFFFF9A44), size: 15),
+          const SizedBox(width: 8),
+          Expanded(
+            child: RichText(
+              text: TextSpan(
+                style: TextStyle(color: c.textSecondary, fontSize: 11, height: 1.4),
+                children: [
+                  TextSpan(
+                    text: 'File has $_totalLines lines. ',
+                    style: const TextStyle(fontWeight: FontWeight.w600),
+                  ),
+                  const TextSpan(
+                    text: 'Free tier processes only the first '
+                        '$_kFreeLineCap lines. '
+                        'Get Premium to process all lines.',
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildPickButton(XissinColors c) => GestureDetector(
     onTap: _pickFile,
     child: Container(
@@ -546,8 +617,7 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
       decoration: BoxDecoration(
         color: const Color(0xFF7B8CDE).withOpacity(0.06),
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(
-            color: const Color(0xFF7B8CDE).withOpacity(0.3), width: 1.5),
+        border: Border.all(color: const Color(0xFF7B8CDE).withOpacity(0.3), width: 1.5),
       ),
       child: Column(children: [
         Icon(Icons.upload_file_rounded,
@@ -568,13 +638,25 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
     decoration: BoxDecoration(
         color: c.background, borderRadius: BorderRadius.circular(10)),
     child: Row(children: [
-      const Icon(Icons.insert_drive_file_rounded,
-          color: Color(0xFF7B8CDE), size: 16),
+      const Icon(Icons.insert_drive_file_rounded, color: Color(0xFF7B8CDE), size: 16),
       const SizedBox(width: 8),
       Expanded(
-        child: Text(_pickedFileName ?? '',
-            style: TextStyle(color: c.textSecondary, fontSize: 12),
-            overflow: TextOverflow.ellipsis),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(_pickedFileName ?? '',
+                style: TextStyle(color: c.textSecondary, fontSize: 12),
+                overflow: TextOverflow.ellipsis),
+            if (_rawContent != null)
+              Text(
+                '$_totalLines lines${_isCapped ? ' · processing first $_kFreeLineCap' : ''}',
+                style: TextStyle(
+                  color: _isCapped ? const Color(0xFFFF9A44) : c.textHint,
+                  fontSize: 10,
+                ),
+              ),
+          ],
+        ),
       ),
       if (_phase == _Phase.ready)
         GestureDetector(
@@ -593,8 +675,7 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
           builder: (_, __) => Opacity(
             opacity: _pulseAnim.value,
             child: const Row(children: [
-              Icon(Icons.link_off_rounded,
-                  color: Color(0xFF7B8CDE), size: 14),
+              Icon(Icons.link_off_rounded, color: Color(0xFF7B8CDE), size: 14),
               SizedBox(width: 6),
               Text('Removing URLs…',
                   style: TextStyle(color: Color(0xFF7B8CDE),
@@ -611,13 +692,15 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
         child: LinearProgressIndicator(
           value: _progress, minHeight: 6,
           backgroundColor: c.background,
-          valueColor:
-              const AlwaysStoppedAnimation(Color(0xFF7B8CDE)),
+          valueColor: const AlwaysStoppedAnimation(Color(0xFF7B8CDE)),
         ),
       ),
       const SizedBox(height: 10),
-      Text('Processing $_originalCount lines on your device…',
-          style: TextStyle(color: c.textHint, fontSize: 11)),
+      Text(
+        'Processing $_processedCount lines on your device…'
+        '${_isCapped ? ' (capped at $_kFreeLineCap for free tier)' : ''}',
+        style: TextStyle(color: c.textHint, fontSize: 11),
+      ),
     ],
   );
 
@@ -640,8 +723,7 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
           SizedBox(width: 8),
           Text('Remove URLs',
               style: TextStyle(color: Colors.white,
-                  fontSize: 15, fontWeight: FontWeight.w700,
-                  letterSpacing: 0.4)),
+                  fontSize: 15, fontWeight: FontWeight.w700, letterSpacing: 0.4)),
         ],
       ),
     ),
@@ -654,13 +736,11 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
         child: Container(
           padding: const EdgeInsets.symmetric(vertical: 13),
           decoration: BoxDecoration(
-              color: c.background,
-              borderRadius: BorderRadius.circular(12)),
+              color: c.background, borderRadius: BorderRadius.circular(12)),
           child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
             Icon(Icons.refresh_rounded, color: c.textSecondary, size: 16),
             const SizedBox(width: 6),
-            Text('New File',
-                style: TextStyle(color: c.textSecondary, fontSize: 13)),
+            Text('New File', style: TextStyle(color: c.textSecondary, fontSize: 13)),
           ]),
         ),
       ),
@@ -672,8 +752,7 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
         child: Container(
           padding: const EdgeInsets.symmetric(vertical: 13),
           decoration: BoxDecoration(
-            gradient: const LinearGradient(
-                colors: [Color(0xFF2ECC71), Color(0xFF27AE60)]),
+            gradient: const LinearGradient(colors: [Color(0xFF2ECC71), Color(0xFF27AE60)]),
             borderRadius: BorderRadius.circular(12),
             boxShadow: [BoxShadow(
                 color: const Color(0xFF2ECC71).withOpacity(0.3),
@@ -699,8 +778,7 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
         child: Container(
           padding: const EdgeInsets.symmetric(vertical: 13),
           decoration: BoxDecoration(
-            gradient: const LinearGradient(
-                colors: [Color(0xFF56CCF2), Color(0xFF2F80ED)]),
+            gradient: const LinearGradient(colors: [Color(0xFF56CCF2), Color(0xFF2F80ED)]),
             borderRadius: BorderRadius.circular(12),
             boxShadow: [BoxShadow(
                 color: const Color(0xFF56CCF2).withOpacity(0.3),
@@ -721,37 +799,73 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
     ),
   ]);
 
-  // ── Result Card ───────────────────────────────────────────────────────────────
+  // ── Result Card ───────────────────────────────────────────────────────────
 
   Widget _buildResultCard(XissinColors c) {
     final kept    = _result.length;
-    final removed = _originalCount - kept;
-    final pct     = _originalCount > 0
-        ? (removed / _originalCount * 100).toStringAsFixed(1)
+    final removed = _processedCount - kept;
+    final pct     = _processedCount > 0
+        ? (removed / _processedCount * 100).toStringAsFixed(1)
         : '0.0';
     return Container(
       padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
-        color: const Color(0xFF2ECC71).withOpacity(0.06),
+        color:        const Color(0xFF2ECC71).withOpacity(0.06),
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(
-            color: const Color(0xFF2ECC71).withOpacity(0.3)),
+        border: Border.all(color: const Color(0xFF2ECC71).withOpacity(0.3)),
       ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         const Row(children: [
-          Icon(Icons.check_circle_rounded,
-              color: Color(0xFF2ECC71), size: 18),
+          Icon(Icons.check_circle_rounded, color: Color(0xFF2ECC71), size: 18),
           SizedBox(width: 8),
-          Text('Done!',
-              style: TextStyle(color: Color(0xFF2ECC71),
-                  fontWeight: FontWeight.w800, fontSize: 15)),
+          Text('Done!', style: TextStyle(color: Color(0xFF2ECC71),
+              fontWeight: FontWeight.w800, fontSize: 15)),
         ]),
         const SizedBox(height: 14),
-        _statRow('Original lines',   '$_originalCount', c.textSecondary),
-        const SizedBox(height: 8),
-        _statRow('Clean lines kept', '$kept',           const Color(0xFF2ECC71)),
+        // Show original count + processed count if capped
+        if (_isCapped) ...[
+          _statRow('Total lines in file', '$_originalCount', c.textSecondary),
+          const SizedBox(height: 8),
+          _statRow('Lines processed (free cap)', '$_processedCount / $_kFreeLineCap',
+              const Color(0xFFFF9A44)),
+          const SizedBox(height: 8),
+        ] else ...[
+          _statRow('Original lines', '$_originalCount', c.textSecondary),
+          const SizedBox(height: 8),
+        ],
+        _statRow('Clean lines kept', '$kept',            const Color(0xFF2ECC71)),
         const SizedBox(height: 8),
         _statRow('URLs removed',     '$removed ($pct%)', const Color(0xFFFF6B6B)),
+
+        // Premium upsell if capped
+        if (_isCapped) ...[
+          const SizedBox(height: 12),
+          Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color:        const Color(0xFFFFD700).withOpacity(0.08),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: const Color(0xFFFFD700).withOpacity(0.30)),
+            ),
+            child: Row(children: [
+              const Icon(Icons.workspace_premium_rounded,
+                  color: Color(0xFFFFD700), size: 14),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  '${_originalCount - _processedCount} lines skipped. '
+                  'Get Premium to process all $_originalCount lines.',
+                  style: TextStyle(
+                    color:    c.textSecondary,
+                    fontSize: 11,
+                    height:   1.4,
+                  ),
+                ),
+              ),
+            ]),
+          ),
+        ],
+
         if (_result.isNotEmpty) ...[
           const SizedBox(height: 14),
           Divider(color: c.border),
@@ -766,8 +880,7 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
           )),
           const SizedBox(height: 10),
           Row(children: [
-            Icon(Icons.info_outline_rounded,
-                color: c.textHint, size: 12),
+            Icon(Icons.info_outline_rounded, color: c.textHint, size: 12),
             const SizedBox(width: 6),
             Text('Use "Copy All" for clipboard or "Share" to save as file',
                 style: TextStyle(color: c.textHint, fontSize: 10)),
@@ -779,8 +892,7 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
 
   Widget _statRow(String label, String value, Color valueColor) =>
       Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-        Text(label,
-            style: const TextStyle(color: Colors.white54, fontSize: 13)),
+        Text(label, style: const TextStyle(color: Colors.white54, fontSize: 13)),
         Text(value, style: TextStyle(color: valueColor,
             fontSize: 13, fontWeight: FontWeight.w700)),
       ]);

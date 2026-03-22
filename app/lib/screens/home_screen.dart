@@ -24,12 +24,12 @@ import 'username_tracker_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   final String userId;
-  final String nickname;   // ← NEW (Part 1): nickname from first-launch dialog
+  final String nickname;
 
   const HomeScreen({
     super.key,
     required this.userId,
-    this.nickname = '',    // default empty for backward compat
+    this.nickname = '',
   });
 
   @override
@@ -40,7 +40,6 @@ class _HomeScreenState extends State<HomeScreen> {
   List<Map<String, dynamic>> _announcements = [];
   final Set<String> _dismissed = {};
 
-  // ── Local Banner Ad ───────────────────────────────────────────────────────
   BannerAd? _bannerAd;
   bool      _bannerReady = false;
 
@@ -80,13 +79,10 @@ class _HomeScreenState extends State<HomeScreen> {
     _bannerAd?.dispose();
     _bannerAd    = null;
     _bannerReady = false;
-
     final ad = AdService.instance.createBannerAd(
       onLoaded: () {
         if (!mounted || AdService.instance.adsRemoved) {
-          _bannerAd?.dispose();
-          _bannerAd = null;
-          return;
+          _bannerAd?.dispose(); _bannerAd = null; return;
         }
         setState(() => _bannerReady = true);
       },
@@ -101,8 +97,6 @@ class _HomeScreenState extends State<HomeScreen> {
     _bannerAd = ad;
     _bannerAd!.load();
   }
-
-  // ── Data ───────────────────────────────────────────────────────────────────
 
   Future<void> _loadAnnouncements() async {
     try {
@@ -126,6 +120,7 @@ class _HomeScreenState extends State<HomeScreen> {
     _pushSlide(NglScreen(userId: widget.userId));
   }
 
+  /// Part 5: About lives in the AppBar ⓘ button
   void _goToAbout() {
     HapticFeedback.selectionClick();
     Navigator.push(
@@ -156,38 +151,13 @@ class _HomeScreenState extends State<HomeScreen> {
     _pushSlide(const UsernameTrackerScreen());
   }
 
-  void _showComingSoon(String name) {
-    HapticFeedback.lightImpact();
-    final c = context.c;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        behavior:        SnackBarBehavior.floating,
-        backgroundColor: c.surface,
-        shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(AppRadius.md)),
-        margin:   const EdgeInsets.fromLTRB(16, 0, 16, 16),
-        duration: const Duration(seconds: 2),
-        content: Row(children: [
-          Icon(Icons.construction_rounded, color: c.gold, size: 18),
-          const SizedBox(width: 10),
-          Text(
-            '$name — Coming Soon!',
-            style: TextStyle(
-                color: c.textPrimary, fontWeight: FontWeight.w600),
-          ),
-        ]),
-      ),
-    );
-  }
-
-  // ── Get Premium (was: Remove Ads) ──────────────────────────────────────────
+  // ── Get Premium ─────────────────────────────────────────────────────────────
 
   Future<void> _onRemoveAdsTap() async {
     HapticFeedback.mediumImpact();
     final adService = AdService.instance;
     final c = context.c;
 
-    // Already premium
     if (adService.adsRemoved) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -201,18 +171,15 @@ class _HomeScreenState extends State<HomeScreen> {
             const Icon(Icons.workspace_premium_rounded,
                 color: Color(0xFFFFD700), size: 18),
             const SizedBox(width: 10),
-            Text(
-              '✨ You\'re already premium! Enjoy Xissin!',
-              style: TextStyle(
-                  color: c.textPrimary, fontWeight: FontWeight.w600),
-            ),
+            Text('✨ You\'re already Premium! Enjoy Xissin!',
+                style: TextStyle(
+                    color: c.textPrimary, fontWeight: FontWeight.w600)),
           ]),
         ),
       );
       return;
     }
 
-    // Show Get Premium dialog (key entry + Telegram)
     final purchased = await PaymentService.showRemoveAdsDialog(
       context: context,
       userId:  widget.userId,
@@ -233,18 +200,14 @@ class _HomeScreenState extends State<HomeScreen> {
             const Icon(Icons.check_circle_rounded,
                 color: Color(0xFFFFD700), size: 18),
             const SizedBox(width: 10),
-            Text(
-              '🎉 Premium activated! Enjoy Xissin!',
-              style: TextStyle(
-                  color: c.textPrimary, fontWeight: FontWeight.w600),
-            ),
+            Text('🎉 Premium activated! Enjoy Xissin!',
+                style: TextStyle(
+                    color: c.textPrimary, fontWeight: FontWeight.w600)),
           ]),
         ),
       );
     }
   }
-
-  // ── Transition ─────────────────────────────────────────────────────────────
 
   Future<T?> _pushSlide<T>(Widget page) {
     return Navigator.push<T>(
@@ -262,8 +225,6 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
     );
   }
-
-  // ── Banner Ad ──────────────────────────────────────────────────────────────
 
   Widget _buildBannerAd() {
     if (AdService.instance.adsRemoved || !_bannerReady || _bannerAd == null) {
@@ -285,7 +246,6 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     final c = context.c;
-
     final visible = _announcements
         .where((a) => !_dismissed.contains(a['id']?.toString()))
         .toList();
@@ -304,7 +264,6 @@ class _HomeScreenState extends State<HomeScreen> {
             slivers: [
               SliverToBoxAdapter(child: _buildHeader(c)),
 
-              // ── Announcements ───────────────────────────────────────────────
               if (visible.isNotEmpty)
                 SliverToBoxAdapter(
                   child: Padding(
@@ -318,20 +277,18 @@ class _HomeScreenState extends State<HomeScreen> {
                             () => _dismissed.add(
                                 visible[i]['id']?.toString() ?? ''),
                           ),
-                          c:     c,
-                          index: i,
+                          c: c, index: i,
                         ),
                       ),
                     ),
                   ),
                 ),
 
-              // ── Premium / Get Premium banner ────────────────────────────────
+              // Premium / Get Premium banner
               SliverToBoxAdapter(
                 child: Consumer<AdService>(
                   builder: (_, adService, __) {
                     if (adService.adsRemoved) {
-                      // Premium badge
                       return Padding(
                         padding: const EdgeInsets.fromLTRB(22, 16, 22, 0),
                         child: Container(
@@ -355,18 +312,15 @@ class _HomeScreenState extends State<HomeScreen> {
                               Text(
                                 '⭐  Premium Active  —  Thank you for supporting Xissin!',
                                 style: TextStyle(
-                                  color:      c.gold,
-                                  fontSize:   12,
-                                  fontWeight: FontWeight.w600,
-                                ),
+                                    color:      c.gold,
+                                    fontSize:   12,
+                                    fontWeight: FontWeight.w600),
                               ),
                             ],
                           ),
                         ).animate().fadeIn(duration: 400.ms),
                       );
                     }
-
-                    // Get Premium promo
                     return Padding(
                       padding: const EdgeInsets.fromLTRB(22, 16, 22, 0),
                       child: GestureDetector(
@@ -392,19 +346,14 @@ class _HomeScreenState extends State<HomeScreen> {
                                 child: Column(
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
-                                    Text(
-                                      'Get Premium',
-                                      style: TextStyle(
-                                        color:      c.primary,
-                                        fontSize:   13,
-                                        fontWeight: FontWeight.bold,
-                                      ),
-                                    ),
-                                    Text(
-                                      'Tap to see benefits & redeem a key',
-                                      style: TextStyle(
-                                          color: c.textHint, fontSize: 11),
-                                    ),
+                                    Text('Get Premium',
+                                        style: TextStyle(
+                                            color:      c.primary,
+                                            fontSize:   13,
+                                            fontWeight: FontWeight.bold)),
+                                    Text('Tap to see benefits & redeem a key',
+                                        style: TextStyle(
+                                            color: c.textHint, fontSize: 11)),
                                   ],
                                 ),
                               ),
@@ -419,20 +368,18 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               ),
 
-              // ── Section heading ─────────────────────────────────────────────
+              // Section heading
               SliverToBoxAdapter(
                 child: Padding(
                   padding: const EdgeInsets.fromLTRB(22, 28, 22, 14),
                   child: Row(
                     children: [
-                      Text(
-                        'Tools',
-                        style: TextStyle(
-                          color:      c.textPrimary,
-                          fontSize:   18,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
+                      Text('Tools',
+                          style: TextStyle(
+                            color:      c.textPrimary,
+                            fontSize:   18,
+                            fontWeight: FontWeight.bold,
+                          )),
                       const SizedBox(width: 8),
                       Container(
                         padding: const EdgeInsets.symmetric(
@@ -441,100 +388,56 @@ class _HomeScreenState extends State<HomeScreen> {
                           color:        c.primary.withOpacity(0.15),
                           borderRadius: BorderRadius.circular(AppRadius.full),
                         ),
-                        child: Text(
-                          '7',
-                          style: TextStyle(
-                            color:      c.primary,
-                            fontSize:   11,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
+                        child: Text('6',   // ← Part 5: About removed from grid
+                            style: TextStyle(
+                              color:      c.primary,
+                              fontSize:   11,
+                              fontWeight: FontWeight.bold,
+                            )),
                       ),
                     ],
                   ),
                 ),
               ),
 
-              // ── Tools grid ─────────────────────────────────────────────────
+              // Tools grid — 6 tools, About is now in the AppBar ⓘ
               SliverPadding(
                 padding: const EdgeInsets.fromLTRB(16, 0, 16, 32),
                 sliver: SliverGrid(
                   delegate: SliverChildListDelegate([
                     _FeatureCard(
-                      icon:      Icons.sms_rounded,
-                      title:     'SMS Bomber',
-                      subtitle:  '14 PH Services',
-                      gradient:  AppColors.smsGradient,
-                      glowColor: c.primary,
-                      onTap:     _goToSms,
-                      index:     0,
+                      icon: Icons.sms_rounded, title: 'SMS Bomber',
+                      subtitle: '14 PH Services', gradient: AppColors.smsGradient,
+                      glowColor: c.primary, onTap: _goToSms, index: 0,
                     ),
                     _FeatureCard(
-                      icon:      Icons.chat_bubble_outline_rounded,
-                      title:     'NGL Bomber',
-                      subtitle:  'Anonymous Messages',
-                      gradient:  AppColors.nglGradient,
-                      glowColor: const Color(0xFFFF6EC7),
-                      onTap:     _goToNgl,
-                      index:     1,
+                      icon: Icons.chat_bubble_outline_rounded, title: 'NGL Bomber',
+                      subtitle: 'Anonymous Messages', gradient: AppColors.nglGradient,
+                      glowColor: const Color(0xFFFF6EC7), onTap: _goToNgl, index: 1,
                     ),
                     _FeatureCard(
-                      icon:      Icons.link_off_rounded,
-                      title:     'URL Remover',
-                      subtitle:  'Clean Combo Lists',
-                      gradient:  const [
-                        Color(0xFF7B8CDE),
-                        Color(0xFF4A5BAA),
-                      ],
-                      glowColor: const Color(0xFF7B8CDE),
-                      onTap:     _goToUrlRemover,
-                      index:     2,
+                      icon: Icons.link_off_rounded, title: 'URL Remover',
+                      subtitle: 'Clean Combo Lists',
+                      gradient: const [Color(0xFF7B8CDE), Color(0xFF4A5BAA)],
+                      glowColor: const Color(0xFF7B8CDE), onTap: _goToUrlRemover, index: 2,
                     ),
                     _FeatureCard(
-                      icon:      Icons.filter_list_off_rounded,
-                      title:     'Dup Remover',
-                      subtitle:  'Remove Duplicates',
-                      gradient:  const [
-                        Color(0xFFFFA94D),
-                        Color(0xFFE67E22),
-                      ],
-                      glowColor: const Color(0xFFFFA94D),
-                      onTap:     _goToDupRemover,
-                      index:     3,
+                      icon: Icons.filter_list_off_rounded, title: 'Dup Remover',
+                      subtitle: 'Remove Duplicates',
+                      gradient: const [Color(0xFFFFA94D), Color(0xFFE67E22)],
+                      glowColor: const Color(0xFFFFA94D), onTap: _goToDupRemover, index: 3,
                     ),
                     _FeatureCard(
-                      icon:      Icons.location_on_rounded,
-                      title:     'IP Tracker',
-                      subtitle:  'Locate & Info',
-                      gradient:  const [
-                        Color(0xFF00B4D8),
-                        Color(0xFF0077B6),
-                      ],
-                      glowColor: const Color(0xFF00B4D8),
-                      onTap:     _goToIpTracker,
-                      index:     4,
+                      icon: Icons.location_on_rounded, title: 'IP Tracker',
+                      subtitle: 'Locate & Info',
+                      gradient: const [Color(0xFF00B4D8), Color(0xFF0077B6)],
+                      glowColor: const Color(0xFF00B4D8), onTap: _goToIpTracker, index: 4,
                     ),
                     _FeatureCard(
-                      icon:      Icons.manage_accounts_rounded,
-                      title:     'User Tracker',
-                      subtitle:  '30+ Platforms',
-                      gradient:  const [
-                        Color(0xFF9B59B6),
-                        Color(0xFF6C3483),
-                      ],
-                      glowColor: const Color(0xFF9B59B6),
-                      onTap:     _goToUsernameTracker,
-                      index:     5,
-                    ),
-                    // About card — placed logically at bottom of grid
-                    _FeatureCard(
-                      icon:      Icons.info_outline_rounded,
-                      title:     'About',
-                      subtitle:  'App Info & Links',
-                      gradient:  AppColors.aboutGradient,
-                      glowColor: c.secondary,
-                      onTap:     _goToAbout,
-                      index:     6,
+                      icon: Icons.manage_accounts_rounded, title: 'User Tracker',
+                      subtitle: '30+ Platforms',
+                      gradient: const [Color(0xFF9B59B6), Color(0xFF6C3483)],
+                      glowColor: const Color(0xFF9B59B6), onTap: _goToUsernameTracker, index: 5,
                     ),
                   ]),
                   gridDelegate:
@@ -547,7 +450,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               ),
 
-              SliverToBoxAdapter(child: _buildFooter()),
+              SliverToBoxAdapter(child: const SizedBox(height: 8)),
               const SliverToBoxAdapter(child: SizedBox(height: 24)),
             ],
           ),
@@ -559,7 +462,6 @@ class _HomeScreenState extends State<HomeScreen> {
   // ── Header ─────────────────────────────────────────────────────────────────
 
   Widget _buildHeader(XissinColors c) {
-    // Show nickname if available, otherwise fallback to "Multi-Tool Suite"
     final subtitle = widget.nickname.isNotEmpty
         ? 'Hi, ${widget.nickname}! 👋'
         : 'Multi-Tool Suite';
@@ -569,7 +471,6 @@ class _HomeScreenState extends State<HomeScreen> {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          // Title + PRO badge
           Selector<AdService, bool>(
             selector: (_, s) => s.adsRemoved,
             builder: (_, adsRemoved, __) => Column(
@@ -577,25 +478,16 @@ class _HomeScreenState extends State<HomeScreen> {
               children: [
                 ShaderMask(
                   shaderCallback: (b) => LinearGradient(
-                    colors: [c.primary, c.secondary],
-                  ).createShader(b),
-                  child: const Text(
-                    'XISSIN',
-                    style: TextStyle(
-                      color:         Colors.white,
-                      fontSize:      28,
-                      fontWeight:    FontWeight.w900,
-                      letterSpacing: 4,
-                    ),
-                  ),
+                      colors: [c.primary, c.secondary]).createShader(b),
+                  child: const Text('XISSIN',
+                      style: TextStyle(
+                          color: Colors.white, fontSize: 28,
+                          fontWeight: FontWeight.w900, letterSpacing: 4)),
                 ),
                 Row(
                   children: [
-                    Text(
-                      subtitle,
-                      style: TextStyle(
-                          color: c.textSecondary, fontSize: 12),
-                    ),
+                    Text(subtitle,
+                        style: TextStyle(color: c.textSecondary, fontSize: 12)),
                     if (adsRemoved) ...[
                       const SizedBox(width: 6),
                       Container(
@@ -607,23 +499,16 @@ class _HomeScreenState extends State<HomeScreen> {
                           border: Border.all(
                               color: const Color(0xFFFFD700).withOpacity(0.40)),
                         ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            const Icon(Icons.workspace_premium_rounded,
-                                color: Color(0xFFFFD700), size: 9),
-                            const SizedBox(width: 3),
-                            Text(
-                              'PRO',
+                        child: Row(mainAxisSize: MainAxisSize.min, children: [
+                          const Icon(Icons.workspace_premium_rounded,
+                              color: Color(0xFFFFD700), size: 9),
+                          const SizedBox(width: 3),
+                          Text('PRO',
                               style: TextStyle(
-                                color:         c.gold,
-                                fontSize:      9,
-                                fontWeight:    FontWeight.bold,
-                                letterSpacing: 0.5,
-                              ),
-                            ),
-                          ],
-                        ),
+                                  color: c.gold, fontSize: 9,
+                                  fontWeight:    FontWeight.bold,
+                                  letterSpacing: 0.5)),
+                        ]),
                       ),
                     ],
                   ],
@@ -635,10 +520,9 @@ class _HomeScreenState extends State<HomeScreen> {
                 .slideX(begin: -0.2, end: 0, duration: 500.ms),
           ),
 
-          // Action buttons
           Row(
             children: [
-              // Get Premium button (only shown when NOT premium)
+              // Get Premium (hidden when premium)
               Selector<AdService, bool>(
                 selector: (_, s) => s.adsRemoved,
                 builder: (_, adsRemoved, __) => adsRemoved
@@ -651,9 +535,7 @@ class _HomeScreenState extends State<HomeScreen> {
                             color: c.primary.withOpacity(0.12),
                             borderRadius: BorderRadius.circular(AppRadius.md),
                             border: Border.all(
-                              color: c.primary.withOpacity(0.30),
-                              width: 1,
-                            ),
+                                color: c.primary.withOpacity(0.30), width: 1),
                           ),
                           child: Icon(Icons.workspace_premium_rounded,
                               size: 18, color: c.primary),
@@ -661,17 +543,36 @@ class _HomeScreenState extends State<HomeScreen> {
                       )
                         .animate(delay: 50.ms)
                         .fadeIn(duration: 500.ms)
-                        .scale(
-                            begin: const Offset(0.8, 0.8),
-                            duration: 400.ms),
+                        .scale(begin: const Offset(0.8, 0.8), duration: 400.ms),
               ),
               const SizedBox(width: 8),
+
+              // Telegram
               _TelegramButton(c: c)
                   .animate(delay: 100.ms)
                   .fadeIn(duration: 500.ms)
-                  .scale(
-                      begin: const Offset(0.8, 0.8), duration: 400.ms),
+                  .scale(begin: const Offset(0.8, 0.8), duration: 400.ms),
               const SizedBox(width: 8),
+
+              // ── Part 5: About ⓘ ─────────────────────────────────────────
+              GestureDetector(
+                onTap: _goToAbout,
+                child: Container(
+                  width: 40, height: 40,
+                  decoration: BoxDecoration(
+                    color:        c.surface,
+                    borderRadius: BorderRadius.circular(AppRadius.md),
+                    border:       Border.all(color: c.border),
+                  ),
+                  child: Icon(Icons.info_outline_rounded,
+                      size: 18, color: c.textSecondary),
+                ),
+              )
+                  .animate(delay: 120.ms)
+                  .fadeIn(duration: 500.ms)
+                  .scale(begin: const Offset(0.8, 0.8), duration: 400.ms),
+              const SizedBox(width: 8),
+
               // Theme toggle
               Selector<ThemeService, bool>(
                 selector: (_, s) => s.isDark,
@@ -689,16 +590,13 @@ class _HomeScreenState extends State<HomeScreen> {
               )
                   .animate(delay: 150.ms)
                   .fadeIn(duration: 500.ms)
-                  .scale(
-                      begin: const Offset(0.8, 0.8), duration: 400.ms),
+                  .scale(begin: const Offset(0.8, 0.8), duration: 400.ms),
             ],
           ),
         ],
       ),
     );
   }
-
-  Widget _buildFooter() => const SizedBox(height: 8);
 }
 
 // ── Telegram button ───────────────────────────────────────────────────────────
@@ -723,12 +621,9 @@ class _TelegramButton extends StatelessWidget {
           color: const Color(0xFF229ED9).withOpacity(0.15),
           borderRadius: BorderRadius.circular(AppRadius.md),
           border: Border.all(
-            color: const Color(0xFF229ED9).withOpacity(0.30),
-            width: 1,
-          ),
+              color: const Color(0xFF229ED9).withOpacity(0.30), width: 1),
         ),
-        child: const Icon(Icons.telegram, size: 20,
-            color: Color(0xFF229ED9)),
+        child: const Icon(Icons.telegram, size: 20, color: Color(0xFF229ED9)),
       ),
     );
   }
@@ -743,10 +638,8 @@ class _AnnouncementBanner extends StatelessWidget {
   final int                   index;
 
   const _AnnouncementBanner({
-    required this.announcement,
-    required this.onDismiss,
-    required this.c,
-    required this.index,
+    required this.announcement, required this.onDismiss,
+    required this.c, required this.index,
   });
 
   Color _typeColor(String? type) {
@@ -806,8 +699,7 @@ class _AnnouncementBanner extends StatelessWidget {
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Text(title,
-                                  style: TextStyle(
-                                      color: color, fontSize: 12,
+                                  style: TextStyle(color: color, fontSize: 12,
                                       fontWeight: FontWeight.bold)),
                               if (msg.isNotEmpty) ...[
                                 const SizedBox(height: 2),
@@ -859,14 +751,9 @@ class _FeatureCard extends StatelessWidget {
   final bool         comingSoon;
 
   const _FeatureCard({
-    required this.icon,
-    required this.title,
-    required this.subtitle,
-    required this.gradient,
-    required this.glowColor,
-    required this.onTap,
-    required this.index,
-    this.comingSoon = false,
+    required this.icon, required this.title, required this.subtitle,
+    required this.gradient, required this.glowColor,
+    required this.onTap, required this.index, this.comingSoon = false,
   });
 
   @override
@@ -884,48 +771,36 @@ class _FeatureCard extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               GlassIconContainer(
-                icon:      icon,
-                gradient:  gradient,
+                icon: icon, gradient: gradient,
                 glowColor: comingSoon ? Colors.transparent : glowColor,
               ),
               const Spacer(),
-              Text(
-                title,
-                style: TextStyle(
-                  color: comingSoon
-                      ? c.textSecondary
-                      : (isDark ? Colors.white : c.textPrimary),
-                  fontSize:   15,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
+              Text(title,
+                  style: TextStyle(
+                    color: comingSoon
+                        ? c.textSecondary
+                        : (isDark ? Colors.white : c.textPrimary),
+                    fontSize: 15, fontWeight: FontWeight.bold,
+                  )),
               const SizedBox(height: 3),
               Text(subtitle,
-                  style: TextStyle(
-                      color: c.textSecondary, fontSize: 12)),
+                  style: TextStyle(color: c.textSecondary, fontSize: 12)),
             ],
           ),
           if (comingSoon)
             Positioned(
               top: 0, right: 0,
               child: Container(
-                padding: const EdgeInsets.symmetric(
-                    horizontal: 7, vertical: 3),
+                padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
                 decoration: BoxDecoration(
-                  color: glowColor.withOpacity(0.18),
+                  color:        glowColor.withOpacity(0.18),
                   borderRadius: BorderRadius.circular(AppRadius.sm),
-                  border: Border.all(
-                      color: glowColor.withOpacity(0.40), width: 1),
+                  border: Border.all(color: glowColor.withOpacity(0.40), width: 1),
                 ),
-                child: Text(
-                  'SOON',
-                  style: TextStyle(
-                    color:         glowColor,
-                    fontSize:      9,
-                    fontWeight:    FontWeight.bold,
-                    letterSpacing: 0.5,
-                  ),
-                ),
+                child: Text('SOON',
+                    style: TextStyle(
+                        color: glowColor, fontSize: 9,
+                        fontWeight: FontWeight.bold, letterSpacing: 0.5)),
               ),
             ),
         ],
@@ -933,10 +808,6 @@ class _FeatureCard extends StatelessWidget {
     )
         .animate(delay: Duration(milliseconds: 80 + 100 * index))
         .fadeIn(duration: 400.ms)
-        .slideY(
-            begin:    0.2,
-            end:      0,
-            duration: 400.ms,
-            curve:    Curves.easeOutCubic);
+        .slideY(begin: 0.2, end: 0, duration: 400.ms, curve: Curves.easeOutCubic);
   }
 }
