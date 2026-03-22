@@ -1,13 +1,10 @@
 // ============================================================
 //  app/lib/screens/ip_tracker_screen.dart
 //  🌐 IP Tracker — calls ip-api.com directly from user's phone
-//  No backend · No API key · 45 req/min free
 //
-//  IMPORTANT: Uses HTTP (not HTTPS) — free tier limitation.
-//  network_security_config.xml allows HTTP for ip-api.com only.
-//
-//  Special: empty query → ip-api.com returns caller's own IP
-//  Logging: fire-and-forget to backend after every lookup
+//  Part 2: Reward ad gate for free users.
+//   • Free: Watch ad once per screen visit → unlock all lookups for session
+//   • Premium: No gate, no ad, instant access
 // ============================================================
 import 'dart:convert';
 import 'dart:async';
@@ -30,29 +27,31 @@ class IpTrackerScreen extends StatefulWidget {
 
 class _IpTrackerScreenState extends State<IpTrackerScreen> {
 
-  // ── Ad state ─────────────────────────────────────────────────────────────────
+  // ── Ad state ──────────────────────────────────────────────────────────────
   BannerAd? _bannerAd;
   bool      _bannerReady = false;
 
-  // ── Screen state ─────────────────────────────────────────────────────────────
-  final _queryCtrl     = TextEditingController();
+  // ── Part 2: Session-scoped grant ──────────────────────────────────────────
+  // Free user watches ad ONCE per screen visit → _adGranted = true
+  // They can then do unlimited lookups for this session.
+  // Premium users bypass this entirely.
+  bool _adGranted = false;
+
+  // ── Screen state ──────────────────────────────────────────────────────────
+  final _queryCtrl      = TextEditingController();
   bool                  _loading     = false;
   bool                  _myIpLoading = false;
   Map<String, dynamic>? _result;
   String?               _error;
   String?               _myIp;
 
-  // ── ip-api.com base (HTTP only on free tier) ──────────────────────────────
   static const _apiBase = 'http://ip-api.com/json';
   static const _fields  =
       'status,message,country,countryCode,regionName,city,'
       'zip,lat,lon,timezone,isp,org,as,query,mobile,proxy,hosting';
 
-  // ── Colors ───────────────────────────────────────────────────────────────────
   static const _accent  = Color(0xFF00B4D8);
   static const _accent2 = Color(0xFF0077B6);
-
-  // ── Lifecycle ─────────────────────────────────────────────────────────────────
 
   @override
   void initState() {
@@ -70,7 +69,7 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
     super.dispose();
   }
 
-  // ── Banner ────────────────────────────────────────────────────────────────────
+  // ── Banner ────────────────────────────────────────────────────────────────
 
   void _onAdChanged() {
     if (!mounted) return;
@@ -119,13 +118,31 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
     );
   }
 
-  // ── Core API call ─────────────────────────────────────────────────────────────
-  // Calls ip-api.com directly from the user's phone.
-  // Pass empty string → ip-api returns the caller's own IP.
-  // Pass IP/domain   → ip-api returns info for that target.
+  // ── Part 2: Watch ad to unlock session ────────────────────────────────────
+
+  void _watchAdToUnlock() {
+    HapticFeedback.selectionClick();
+    AdService.instance.showGatedInterstitial(
+      onGranted: () {
+        if (mounted) {
+          setState(() => _adGranted = true);
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: const Text('🔓 Unlocked! You can now track IPs.',
+                style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
+            backgroundColor: _accent,
+            behavior:        SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.md)),
+            margin:   const EdgeInsets.all(12),
+            duration: const Duration(seconds: 2),
+          ));
+        }
+      },
+    );
+  }
+
+  // ── Core API call ─────────────────────────────────────────────────────────
 
   Future<Map<String, dynamic>> _callApi(String query) async {
-    // Build URL: no query segment = caller's own IP
     final url = query.isEmpty
         ? '$_apiBase/?fields=$_fields'
         : '$_apiBase/$query?fields=$_fields';
@@ -143,8 +160,6 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
     return jsonDecode(resp.body) as Map<String, dynamic>;
   }
 
-  // ── Clean user input ──────────────────────────────────────────────────────────
-
   String _cleanInput(String raw) {
     var q = raw.trim();
     q = q.replaceAll(RegExp(r'^https?://', caseSensitive: false), '');
@@ -154,9 +169,15 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
     return q.trim();
   }
 
-  // ── Show My IP ────────────────────────────────────────────────────────────────
+  // ── Show My IP ─────────────────────────────────────────────────────────────
 
   Future<void> _showMyIp() async {
+    // Gate check for free users
+    if (!AdService.instance.adsRemoved && !_adGranted) {
+      _watchAdToUnlock();
+      return;
+    }
+
     if (_myIpLoading) return;
     HapticFeedback.mediumImpact();
     setState(() { _myIpLoading = true; _myIp = null; _error = null; });
@@ -167,16 +188,9 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
           _myIpLoading = false;
           _error = data['message'] as String? ?? 'Could not fetch your IP.';
         });
-        // Log failed lookup
         ApiService.logIpLookup(
-          query:      '',
-          resolvedIp: '',
-          country:    '',
-          city:       '',
-          isp:        '',
-          lat:        0.0,
-          lon:        0.0,
-          success:    false,
+          query: '', resolvedIp: '', country: '', city: '', isp: '',
+          lat: 0.0, lon: 0.0, success: false,
         );
         return;
       }
@@ -184,8 +198,6 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
         _myIp        = data['query'] as String? ?? '';
         _myIpLoading = false;
       });
-
-      // Fire-and-forget log to backend
       ApiService.logIpLookup(
         query:      '',
         resolvedIp: data['query']   as String? ?? '',
@@ -196,17 +208,10 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
         lon:        (data['lon'] as num?)?.toDouble() ?? 0.0,
         success:    true,
       );
-
     } on SocketException {
-      setState(() {
-        _myIpLoading = false;
-        _error = 'No internet connection.';
-      });
+      setState(() { _myIpLoading = false; _error = 'No internet connection.'; });
     } on TimeoutException {
-      setState(() {
-        _myIpLoading = false;
-        _error = 'Request timed out. Try again.';
-      });
+      setState(() { _myIpLoading = false; _error = 'Request timed out. Try again.'; });
     } catch (e) {
       setState(() {
         _myIpLoading = false;
@@ -215,9 +220,15 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
     }
   }
 
-  // ── Lookup ────────────────────────────────────────────────────────────────────
+  // ── Lookup ────────────────────────────────────────────────────────────────
 
   Future<void> _lookup([String? forceQuery]) async {
+    // Gate check for free users
+    if (!AdService.instance.adsRemoved && !_adGranted) {
+      _watchAdToUnlock();
+      return;
+    }
+
     final raw = forceQuery ?? _queryCtrl.text.trim();
     if (raw.isEmpty) return;
 
@@ -239,23 +250,15 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
           _loading = false;
           _error   = data['message'] as String? ?? 'Invalid IP or domain.';
         });
-        // Log failed lookup
         ApiService.logIpLookup(
-          query:      query,
-          resolvedIp: query,
-          country:    '',
-          city:       '',
-          isp:        '',
-          lat:        0.0,
-          lon:        0.0,
-          success:    false,
+          query: query, resolvedIp: query, country: '', city: '', isp: '',
+          lat: 0.0, lon: 0.0, success: false,
         );
         return;
       }
 
       setState(() { _loading = false; _result = data; });
 
-      // Fire-and-forget log to backend
       ApiService.logIpLookup(
         query:      query,
         resolvedIp: data['query']   as String? ?? query,
@@ -267,7 +270,7 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
         success:    true,
       );
 
-      // Interstitial after successful result
+      // Non-gated interstitial after successful result
       Future.delayed(const Duration(milliseconds: 600), () {
         if (!AdService.instance.adsRemoved) AdService.instance.showInterstitial();
       });
@@ -284,7 +287,7 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
     }
   }
 
-  // ── Helpers ───────────────────────────────────────────────────────────────────
+  // ── Helpers ───────────────────────────────────────────────────────────────
 
   Future<void> _launch(String url) async {
     final uri = Uri.parse(url);
@@ -297,17 +300,16 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
     Clipboard.setData(ClipboardData(text: text));
     HapticFeedback.selectionClick();
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text('$label copied!'),
-      duration: const Duration(seconds: 1),
+      content:         Text('$label copied!'),
+      duration:        const Duration(seconds: 1),
       backgroundColor: _accent,
-      behavior: SnackBarBehavior.floating,
-      shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(10)),
+      behavior:        SnackBarBehavior.floating,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
       margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
     ));
   }
 
-  // ── Build ─────────────────────────────────────────────────────────────────────
+  // ── Build ─────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
@@ -319,8 +321,7 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
         backgroundColor: Colors.transparent,
         elevation: 0,
         leading: IconButton(
-          icon: const Icon(Icons.arrow_back_ios_new_rounded,
-              color: _accent, size: 20),
+          icon: const Icon(Icons.arrow_back_ios_new_rounded, color: _accent, size: 20),
           onPressed: () => Navigator.pop(context),
         ),
         title: Row(mainAxisSize: MainAxisSize.min, children: [
@@ -330,31 +331,32 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
               color: _accent.withOpacity(0.15),
               borderRadius: BorderRadius.circular(10),
             ),
-            child: const Icon(Icons.location_on_rounded,
-                color: _accent, size: 18),
+            child: const Icon(Icons.location_on_rounded, color: _accent, size: 18),
           ),
           const SizedBox(width: 10),
           Text('IP Tracker',
               style: TextStyle(
                   color: c.textPrimary, fontSize: 17,
-                  fontWeight: FontWeight.w700,
-                  letterSpacing: 0.4)),
+                  fontWeight: FontWeight.w700, letterSpacing: 0.4)),
         ]),
         centerTitle: true,
       ),
       body: SingleChildScrollView(
-        padding: const EdgeInsets.symmetric(
-            horizontal: 20, vertical: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            // ── Part 2: Ad gate overlay (free users only, before first lookup)
+            if (!AdService.instance.adsRemoved && !_adGranted)
+              _buildAdGateCard(c),
+
             _buildMyIpCard(c),
             const SizedBox(height: 14),
             _buildSearchCard(c),
             const SizedBox(height: 16),
-            if (_error != null) _buildErrorCard(),
-            if (_loading)       _buildLoadingCard(c),
-            if (_result != null) ..._buildResultSection(c),
+            if (_error != null)   _buildErrorCard(),
+            if (_loading)         _buildLoadingCard(c),
+            if (_result != null)  ..._buildResultSection(c),
             const SizedBox(height: 40),
           ],
         ),
@@ -362,7 +364,61 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
     );
   }
 
-  // ── My IP Card ────────────────────────────────────────────────────────────────
+  // ── Part 2: Ad gate card ──────────────────────────────────────────────────
+
+  Widget _buildAdGateCard(XissinColors c) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 14),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color:        _accent.withOpacity(0.06),
+        borderRadius: BorderRadius.circular(18),
+        border:       Border.all(color: _accent.withOpacity(0.25)),
+      ),
+      child: Column(
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.lock_outline_rounded, color: _accent, size: 18),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  'Watch a short ad to unlock IP Tracker for this session.',
+                  style: TextStyle(
+                      color: c.textSecondary, fontSize: 12, height: 1.4),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton.icon(
+              onPressed: _watchAdToUnlock,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: _accent,
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12)),
+                elevation: 0,
+                padding: const EdgeInsets.symmetric(vertical: 12),
+              ),
+              icon:  const Icon(Icons.play_circle_rounded, size: 18),
+              label: const Text('Watch Ad to Unlock',
+                  style: TextStyle(fontWeight: FontWeight.w700, fontSize: 14)),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            '⭐ Get Premium to remove all ads permanently',
+            style: TextStyle(color: c.textHint, fontSize: 11),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ── My IP Card ─────────────────────────────────────────────────────────────
 
   Widget _buildMyIpCard(XissinColors c) => Container(
     padding: const EdgeInsets.all(16),
@@ -381,37 +437,26 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
             color: _accent.withOpacity(0.12),
             borderRadius: BorderRadius.circular(8),
           ),
-          child: const Icon(Icons.person_pin_circle_rounded,
-              color: _accent, size: 16),
+          child: const Icon(Icons.person_pin_circle_rounded, color: _accent, size: 16),
         ),
         const SizedBox(width: 8),
         const Text('Your Public IP',
-            style: TextStyle(
-                color: _accent,
-                fontSize: 13,
-                fontWeight: FontWeight.w700)),
+            style: TextStyle(color: _accent, fontSize: 13, fontWeight: FontWeight.w700)),
         const Spacer(),
         GestureDetector(
           onTap: _myIpLoading ? null : _showMyIp,
           child: Container(
-            padding: const EdgeInsets.symmetric(
-                horizontal: 12, vertical: 6),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
             decoration: BoxDecoration(
-              gradient: const LinearGradient(
-                  colors: [_accent, _accent2]),
+              gradient: const LinearGradient(colors: [_accent, _accent2]),
               borderRadius: BorderRadius.circular(20),
             ),
             child: _myIpLoading
                 ? const SizedBox(
                     width: 12, height: 12,
-                    child: CircularProgressIndicator(
-                        color: Colors.white,
-                        strokeWidth: 1.5))
+                    child: CircularProgressIndicator(color: Colors.white, strokeWidth: 1.5))
                 : const Text('Show My IP',
-                    style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 11,
-                        fontWeight: FontWeight.w700)),
+                    style: TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w700)),
           ),
         ),
       ]),
@@ -419,27 +464,21 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
       if (_myIp != null) ...[
         const SizedBox(height: 14),
         Container(
-          padding: const EdgeInsets.symmetric(
-              horizontal: 14, vertical: 12),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
           decoration: BoxDecoration(
-            color: _accent.withOpacity(0.06),
+            color:        _accent.withOpacity(0.06),
             borderRadius: BorderRadius.circular(12),
-            border: Border.all(
-                color: _accent.withOpacity(0.2)),
+            border:       Border.all(color: _accent.withOpacity(0.2)),
           ),
           child: Row(children: [
-            const Icon(Icons.wifi_rounded,
-                color: _accent, size: 16),
+            const Icon(Icons.wifi_rounded, color: _accent, size: 16),
             const SizedBox(width: 10),
             Expanded(
               child: Text(_myIp!,
                   style: const TextStyle(
-                      color: _accent,
-                      fontSize: 20,
-                      fontWeight: FontWeight.w800,
-                      letterSpacing: 1.0)),
+                      color: _accent, fontSize: 20,
+                      fontWeight: FontWeight.w800, letterSpacing: 1.0)),
             ),
-            // Copy
             GestureDetector(
               onTap: () => _copy(_myIp!, 'IP'),
               child: Container(
@@ -448,12 +487,10 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
                   color: _accent.withOpacity(0.12),
                   borderRadius: BorderRadius.circular(8),
                 ),
-                child: const Icon(Icons.copy_rounded,
-                    color: _accent, size: 14),
+                child: const Icon(Icons.copy_rounded, color: _accent, size: 14),
               ),
             ),
             const SizedBox(width: 8),
-            // Lookup my own IP
             GestureDetector(
               onTap: () {
                 _queryCtrl.text = _myIp!;
@@ -466,28 +503,23 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
                   color: _accent.withOpacity(0.12),
                   borderRadius: BorderRadius.circular(8),
                 ),
-                child: const Icon(
-                    Icons.manage_search_rounded,
-                    color: _accent, size: 14),
+                child: const Icon(Icons.manage_search_rounded, color: _accent, size: 14),
               ),
             ),
           ]),
         ),
         const SizedBox(height: 6),
         Text('Tap 🔍 to look up your own IP details',
-            style: TextStyle(
-                color: c.textHint, fontSize: 10)),
+            style: TextStyle(color: c.textHint, fontSize: 10)),
       ] else ...[
         const SizedBox(height: 8),
-        Text(
-          'Tap "Show My IP" to reveal your public IP address',
-          style: TextStyle(
-              color: c.textHint, fontSize: 11)),
+        Text('Tap "Show My IP" to reveal your public IP address',
+            style: TextStyle(color: c.textHint, fontSize: 11)),
       ],
     ]),
   );
 
-  // ── Search Card ───────────────────────────────────────────────────────────────
+  // ── Search Card ───────────────────────────────────────────────────────────
 
   Widget _buildSearchCard(XissinColors c) => Container(
     padding: const EdgeInsets.all(20),
@@ -496,9 +528,7 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
       borderRadius: BorderRadius.circular(20),
       border: Border.all(color: c.border),
       boxShadow: [BoxShadow(
-          color: Colors.black.withOpacity(0.08),
-          blurRadius: 20,
-          offset: const Offset(0, 8))],
+          color: Colors.black.withOpacity(0.08), blurRadius: 20, offset: const Offset(0, 8))],
     ),
     child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -507,34 +537,25 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
         Expanded(
           child: TextField(
             controller: _queryCtrl,
-            style: TextStyle(
-                color: c.textPrimary, fontSize: 14),
+            style: TextStyle(color: c.textPrimary, fontSize: 14),
             decoration: InputDecoration(
               hintText:  'Enter IP, domain, or URL…',
-              hintStyle: TextStyle(
-                  color: c.textHint, fontSize: 13),
+              hintStyle: TextStyle(color: c.textHint, fontSize: 13),
               filled:    true,
               fillColor: c.background,
               border: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(12),
                   borderSide: BorderSide.none),
-              prefixIcon: Icon(
-                  Icons.travel_explore_rounded,
-                  color: c.textHint, size: 18),
+              prefixIcon: Icon(Icons.travel_explore_rounded, color: c.textHint, size: 18),
               suffixIcon: _queryCtrl.text.isNotEmpty
                   ? GestureDetector(
                       onTap: () {
                         _queryCtrl.clear();
-                        setState(() {
-                          _result = null;
-                          _error  = null;
-                        });
+                        setState(() { _result = null; _error = null; });
                       },
-                      child: Icon(Icons.close_rounded,
-                          color: c.textHint, size: 16))
+                      child: Icon(Icons.close_rounded, color: c.textHint, size: 16))
                   : null,
-              contentPadding: const EdgeInsets.symmetric(
-                  horizontal: 14, vertical: 14),
+              contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
             ),
             onChanged:       (_) => setState(() {}),
             onSubmitted:     (_) => _lookup(),
@@ -548,102 +569,71 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
           child: Container(
             padding: const EdgeInsets.all(14),
             decoration: BoxDecoration(
-              gradient: const LinearGradient(
-                  colors: [_accent, _accent2]),
+              gradient: const LinearGradient(colors: [_accent, _accent2]),
               borderRadius: BorderRadius.circular(12),
               boxShadow: [BoxShadow(
-                  color: _accent.withOpacity(0.4),
-                  blurRadius: 10,
-                  offset: const Offset(0, 4))],
+                  color: _accent.withOpacity(0.4), blurRadius: 10, offset: const Offset(0, 4))],
             ),
-            child: const Icon(
-                Icons.my_location_rounded,
-                color: Colors.white, size: 20),
+            child: const Icon(Icons.my_location_rounded, color: Colors.white, size: 20),
           ),
         ),
       ]),
       const SizedBox(height: 14),
       Text('Quick examples',
-          style: TextStyle(
-              color: c.textHint,
-              fontSize: 10,
-              fontWeight: FontWeight.w600)),
+          style: TextStyle(color: c.textHint, fontSize: 10, fontWeight: FontWeight.w600)),
       const SizedBox(height: 8),
       Wrap(spacing: 8, runSpacing: 6, children: [
-        for (final ex in [
-          '8.8.8.8',
-          '112.198.0.1',
-          'facebook.com',
-          'shopee.ph',
-          'lazada.com.ph',
-        ])
+        for (final ex in ['8.8.8.8', '112.198.0.1', 'facebook.com', 'shopee.ph', 'lazada.com.ph'])
           GestureDetector(
-            onTap: () {
-              _queryCtrl.text = ex;
-              setState(() {});
-            },
+            onTap: () { _queryCtrl.text = ex; setState(() {}); },
             child: Container(
-              padding: const EdgeInsets.symmetric(
-                  horizontal: 10, vertical: 5),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
               decoration: BoxDecoration(
-                color: _accent.withOpacity(0.08),
+                color:        _accent.withOpacity(0.08),
                 borderRadius: BorderRadius.circular(20),
-                border: Border.all(
-                    color: _accent.withOpacity(0.25)),
+                border:       Border.all(color: _accent.withOpacity(0.25)),
               ),
-              child: Text(ex,
-                  style: const TextStyle(
-                      color: _accent, fontSize: 11)),
+              child: Text(ex, style: const TextStyle(color: _accent, fontSize: 11)),
             ),
           ),
       ]),
     ]),
   );
 
-  // ── Error Card ────────────────────────────────────────────────────────────────
+  // ── Error Card ────────────────────────────────────────────────────────────
 
   Widget _buildErrorCard() => Container(
-    margin: const EdgeInsets.only(bottom: 12),
+    margin:  const EdgeInsets.only(bottom: 12),
     padding: const EdgeInsets.all(14),
     decoration: BoxDecoration(
-      color: const Color(0xFFFF6B6B).withOpacity(0.1),
+      color:        const Color(0xFFFF6B6B).withOpacity(0.1),
       borderRadius: BorderRadius.circular(14),
-      border: Border.all(
-          color: const Color(0xFFFF6B6B).withOpacity(0.3)),
+      border:       Border.all(color: const Color(0xFFFF6B6B).withOpacity(0.3)),
     ),
     child: Row(children: [
-      const Icon(Icons.error_outline_rounded,
-          color: Color(0xFFFF6B6B), size: 16),
+      const Icon(Icons.error_outline_rounded, color: Color(0xFFFF6B6B), size: 16),
       const SizedBox(width: 8),
       Expanded(child: Text(_error!,
-          style: const TextStyle(
-              color: Color(0xFFFF6B6B), fontSize: 12))),
+          style: const TextStyle(color: Color(0xFFFF6B6B), fontSize: 12))),
     ]),
   );
 
-  // ── Loading Card ──────────────────────────────────────────────────────────────
+  // ── Loading Card ──────────────────────────────────────────────────────────
 
   Widget _buildLoadingCard(XissinColors c) => Container(
-    margin: const EdgeInsets.only(bottom: 12),
-    padding: const EdgeInsets.symmetric(vertical: 32),
-    decoration: BoxDecoration(
-        color: c.surface,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: c.border)),
-    child: Column(children: [
+    height: 100,
+    alignment: Alignment.center,
+    child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
       const SizedBox(
         width: 28, height: 28,
-        child: CircularProgressIndicator(
-            color: _accent, strokeWidth: 2.5),
+        child: CircularProgressIndicator(color: _accent, strokeWidth: 2.5),
       ),
       const SizedBox(height: 14),
-      Text('Locating…',
-          style: TextStyle(
-              color: c.textSecondary, fontSize: 13)),
+      Text('Locating…', style: TextStyle(color: c.textSecondary, fontSize: 13)),
     ]),
   );
 
-  // ── Result Section ────────────────────────────────────────────────────────────
+  // ── Result Section ────────────────────────────────────────────────────────
 
   List<Widget> _buildResultSection(XissinColors c) {
     final d           = _result!;
@@ -667,36 +657,24 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
         : '';
 
     return [
-      // Resolved IP chip
       Container(
         margin: const EdgeInsets.only(bottom: 12),
-        padding: const EdgeInsets.symmetric(
-            horizontal: 16, vertical: 12),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
         decoration: BoxDecoration(
-          color: _accent.withOpacity(0.08),
+          color:        _accent.withOpacity(0.08),
           borderRadius: BorderRadius.circular(14),
-          border: Border.all(
-              color: _accent.withOpacity(0.3)),
+          border:       Border.all(color: _accent.withOpacity(0.3)),
         ),
         child: Row(children: [
-          const Icon(Icons.dns_rounded,
-              color: _accent, size: 16),
+          const Icon(Icons.dns_rounded, color: _accent, size: 16),
           const SizedBox(width: 10),
           Expanded(
-            child: Column(
-                crossAxisAlignment:
-                    CrossAxisAlignment.start,
-                children: [
-              Text('Resolved IP',
-                  style: TextStyle(
-                      color: _accent.withOpacity(0.7),
-                      fontSize: 10)),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text('Resolved IP', style: TextStyle(color: _accent.withOpacity(0.7), fontSize: 10)),
               Text(resolvedIp,
                   style: const TextStyle(
-                      color: _accent,
-                      fontSize: 16,
-                      fontWeight: FontWeight.w800,
-                      letterSpacing: 0.8)),
+                      color: _accent, fontSize: 16,
+                      fontWeight: FontWeight.w800, letterSpacing: 0.8)),
             ]),
           ),
           GestureDetector(
@@ -707,60 +685,40 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
                 color: _accent.withOpacity(0.12),
                 borderRadius: BorderRadius.circular(8),
               ),
-              child: const Icon(Icons.copy_rounded,
-                  color: _accent, size: 14),
+              child: const Icon(Icons.copy_rounded, color: _accent, size: 14),
             ),
           ),
         ]),
       ),
 
-      // Location
-      _card(c: c, icon: Icons.place_rounded,
-          title: 'Location',
-          color: const Color(0xFF2ECC71),
-          children: [
+      _card(c: c, icon: Icons.place_rounded, title: 'Location',
+          color: const Color(0xFF2ECC71), children: [
         _infoRow(c, '🌍', 'Country',
-            countryCode.isNotEmpty
-                ? '$countryCode  $country' : country),
-        _infoRow(c, '🗺️', 'Region',
-            regionName.isNotEmpty ? regionName : '—'),
-        _infoRow(c, '🏙️', 'City',
-            city.isNotEmpty ? city : '—'),
-        _infoRow(c, '📮', 'ZIP Code',
-            zip.isNotEmpty ? zip : '—'),
+            countryCode.isNotEmpty ? '$countryCode  $country' : country),
+        _infoRow(c, '🗺️', 'Region',   regionName.isNotEmpty ? regionName : '—'),
+        _infoRow(c, '🏙️', 'City',     city.isNotEmpty ? city : '—'),
+        _infoRow(c, '📮', 'ZIP Code', zip.isNotEmpty  ? zip  : '—'),
         _infoRow(c, '🧭', 'Coordinates',
-            lat != 0
-                ? '${lat.toStringAsFixed(4)}, '
-                  '${lon.toStringAsFixed(4)}'
-                : '—'),
+            lat != 0 ? '${lat.toStringAsFixed(4)}, ${lon.toStringAsFixed(4)}' : '—'),
         if (mapsUrl.isNotEmpty) ...[
           const SizedBox(height: 10),
           GestureDetector(
             onTap: () => _launch(mapsUrl),
             child: Container(
-              padding: const EdgeInsets.symmetric(
-                  vertical: 11),
+              padding: const EdgeInsets.symmetric(vertical: 11),
               decoration: BoxDecoration(
-                color: const Color(0xFF2ECC71)
-                    .withOpacity(0.1),
+                color:        const Color(0xFF2ECC71).withOpacity(0.1),
                 borderRadius: BorderRadius.circular(10),
-                border: Border.all(
-                    color: const Color(0xFF2ECC71)
-                        .withOpacity(0.3)),
+                border: Border.all(color: const Color(0xFF2ECC71).withOpacity(0.3)),
               ),
               child: const Row(
-                mainAxisAlignment:
-                    MainAxisAlignment.center,
+                mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  Icon(Icons.map_rounded,
-                      color: Color(0xFF2ECC71),
-                      size: 15),
+                  Icon(Icons.map_rounded, color: Color(0xFF2ECC71), size: 15),
                   SizedBox(width: 6),
                   Text('Open in Google Maps',
                       style: TextStyle(
-                          color: Color(0xFF2ECC71),
-                          fontSize: 12,
-                          fontWeight: FontWeight.w700)),
+                          color: Color(0xFF2ECC71), fontSize: 12, fontWeight: FontWeight.w700)),
                 ],
               ),
             ),
@@ -768,16 +726,11 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
         ],
       ]),
 
-      // Network
-      _card(c: c, icon: Icons.cell_tower_rounded,
-          title: 'Network', color: _accent,
-          children: [
-        _infoRow(c, '📡', 'ISP',
-            isp.isNotEmpty ? isp : '—'),
-        _infoRow(c, '🏢', 'Organization',
-            org.isNotEmpty ? org : '—'),
-        _infoRow(c, '🔢', 'AS Info',
-            asInfo.isNotEmpty ? asInfo : '—'),
+      _card(c: c, icon: Icons.cell_tower_rounded, title: 'Network',
+          color: _accent, children: [
+        _infoRow(c, '📡', 'ISP',          isp.isNotEmpty    ? isp    : '—'),
+        _infoRow(c, '🏢', 'Organization', org.isNotEmpty    ? org    : '—'),
+        _infoRow(c, '🔢', 'AS Info',      asInfo.isNotEmpty ? asInfo : '—'),
         if (isp.isNotEmpty) ...[
           const SizedBox(height: 8),
           GestureDetector(
@@ -785,25 +738,16 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
             child: Align(
               alignment: Alignment.centerLeft,
               child: Container(
-                padding: const EdgeInsets.symmetric(
-                    horizontal: 10, vertical: 5),
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
                 decoration: BoxDecoration(
-                  color: _accent.withOpacity(0.08),
-                  borderRadius:
-                      BorderRadius.circular(20),
-                  border: Border.all(
-                      color: _accent.withOpacity(0.2)),
+                  color:        _accent.withOpacity(0.08),
+                  borderRadius: BorderRadius.circular(20),
+                  border:       Border.all(color: _accent.withOpacity(0.2)),
                 ),
-                child: const Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                  Icon(Icons.copy_rounded,
-                      color: _accent, size: 11),
+                child: const Row(mainAxisSize: MainAxisSize.min, children: [
+                  Icon(Icons.copy_rounded, color: _accent, size: 11),
                   SizedBox(width: 4),
-                  Text('Copy ISP',
-                      style: TextStyle(
-                          color: _accent,
-                          fontSize: 11)),
+                  Text('Copy ISP', style: TextStyle(color: _accent, fontSize: 11)),
                 ]),
               ),
             ),
@@ -811,15 +755,11 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
         ],
       ]),
 
-      // Details
-      _card(c: c, icon: Icons.manage_search_rounded,
-          title: 'Details',
-          color: const Color(0xFFFFA94D),
-          children: [
-        _infoRow(c, '🕐', 'Timezone',
-            timezone.isNotEmpty ? timezone : '—'),
-        _flagRow(c, '📱', 'Mobile Connection', mobile),
-        _flagRow(c, '🛡️', 'Proxy / VPN',       proxy),
+      _card(c: c, icon: Icons.manage_search_rounded, title: 'Details',
+          color: const Color(0xFFFFA94D), children: [
+        _infoRow(c, '🕐', 'Timezone', timezone.isNotEmpty ? timezone : '—'),
+        _flagRow(c, '📱', 'Mobile Connection',    mobile),
+        _flagRow(c, '🛡️', 'Proxy / VPN',          proxy),
         _flagRow(c, '🖥️', 'Hosting / Datacenter', hosting),
       ]),
 
@@ -827,104 +767,73 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
     ];
   }
 
-  // ── Card / Row builders ───────────────────────────────────────────────────────
-
   Widget _card({
     required XissinColors c,
     required IconData     icon,
     required String       title,
     required Color        color,
     required List<Widget> children,
-  }) =>
-      Container(
-        margin: const EdgeInsets.only(bottom: 12),
+  }) => Container(
+        margin:  const EdgeInsets.only(bottom: 12),
         padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
-          color: c.surface,
+          color:        c.surface,
           borderRadius: BorderRadius.circular(18),
-          border: Border.all(color: color.withOpacity(0.2)),
+          border:       Border.all(color: color.withOpacity(0.2)),
         ),
-        child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Row(children: [
             Container(
               padding: const EdgeInsets.all(6),
               decoration: BoxDecoration(
-                color: color.withOpacity(0.12),
+                color:        color.withOpacity(0.12),
                 borderRadius: BorderRadius.circular(8),
               ),
               child: Icon(icon, color: color, size: 14),
             ),
             const SizedBox(width: 8),
-            Text(title,
-                style: TextStyle(
-                    color: color, fontSize: 13,
-                    fontWeight: FontWeight.w700)),
+            Text(title, style: TextStyle(color: color, fontSize: 13, fontWeight: FontWeight.w700)),
           ]),
           const SizedBox(height: 12),
           ...children,
         ]),
       );
 
-  Widget _infoRow(XissinColors c, String emoji,
-      String label, String value) =>
+  Widget _infoRow(XissinColors c, String emoji, String label, String value) =>
       Padding(
         padding: const EdgeInsets.only(bottom: 9),
-        child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-          Text(emoji,
-              style: const TextStyle(fontSize: 13)),
+        child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(emoji, style: const TextStyle(fontSize: 13)),
           const SizedBox(width: 8),
           Expanded(
-            child: Column(
-                crossAxisAlignment:
-                    CrossAxisAlignment.start,
-                children: [
-              Text(label,
-                  style: TextStyle(
-                      color: c.textHint, fontSize: 10)),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(label, style: TextStyle(color: c.textHint, fontSize: 10)),
               const SizedBox(height: 1),
-              Text(value,
-                  style: TextStyle(
-                      color: c.textPrimary,
-                      fontSize: 13,
-                      fontWeight: FontWeight.w600)),
+              Text(value, style: TextStyle(
+                  color: c.textPrimary, fontSize: 13, fontWeight: FontWeight.w600)),
             ]),
           ),
         ]),
       );
 
-  Widget _flagRow(XissinColors c, String emoji,
-      String label, bool value) =>
+  Widget _flagRow(XissinColors c, String emoji, String label, bool value) =>
       Padding(
         padding: const EdgeInsets.only(bottom: 9),
         child: Row(children: [
-          Text(emoji,
-              style: const TextStyle(fontSize: 13)),
+          Text(emoji, style: const TextStyle(fontSize: 13)),
           const SizedBox(width: 8),
-          Expanded(
-              child: Text(label,
-                  style: TextStyle(
-                      color: c.textSecondary,
-                      fontSize: 13))),
+          Expanded(child: Text(label, style: TextStyle(color: c.textSecondary, fontSize: 13))),
           Container(
-            padding: const EdgeInsets.symmetric(
-                horizontal: 10, vertical: 4),
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
             decoration: BoxDecoration(
-              color: (value
-                      ? const Color(0xFFFF6B6B)
-                      : const Color(0xFF2ECC71))
+              color: (value ? const Color(0xFFFF6B6B) : const Color(0xFF2ECC71))
                   .withOpacity(0.12),
               borderRadius: BorderRadius.circular(20),
             ),
             child: Text(
               value ? 'YES' : 'NO',
               style: TextStyle(
-                color: value
-                    ? const Color(0xFFFF6B6B)
-                    : const Color(0xFF2ECC71),
+                color:         value ? const Color(0xFFFF6B6B) : const Color(0xFF2ECC71),
                 fontSize:      10,
                 fontWeight:    FontWeight.w800,
                 letterSpacing: 0.5,

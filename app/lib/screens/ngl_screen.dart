@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
 import 'package:provider/provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../theme/app_theme.dart';
 import '../services/ad_service.dart';
 import '../services/api_service.dart';
@@ -11,14 +12,17 @@ import '../services/ngl_service.dart';
 import '../widgets/glass_neumorphic_card.dart';
 import '../widgets/haptic_button.dart';
 
-// NGL now fires DIRECTLY from the user's phone (same as SMS Bomber).
-// No Railway backend involved — requests come from the user's device.
-// Backend is only called AFTER bombing to log the result for the admin panel.
-
 const _kPink   = Color(0xFFFF6EC7);
 const _kOrange = Color(0xFFFF9A44);
 const _kGreen  = Color(0xFF7EE7C1);
 const _kRed    = Color(0xFFFF6B6B);
+
+// ── Part 2 constants ──────────────────────────────────────────────────────────
+const _kNglLastSendKey = 'ngl_bomb_last_send';
+
+/// Free-tier cooldown: 30 minutes between sends.
+/// Premium users have NO cooldown.
+const _kNglCooldown = Duration(minutes: 30);
 
 class NglScreen extends StatefulWidget {
   final String userId;
@@ -39,21 +43,28 @@ class _NglScreenState extends State<NglScreen> {
   bool   _done       = false;
   int    _charCount  = 0;
 
-  // Final results (shown on result screen)
   int    _sent       = 0;
   int    _failed     = 0;
   String _resultMsg  = '';
   bool   _resultOk   = false;
 
-  // Live results (shown DURING an active send)
   List<NglResult> _liveResults = [];
   int             _liveSent    = 0;
   int             _liveFailed  = 0;
 
-  // Real progress (0.0 → 1.0) based on messages completed
   double _progress = 0.0;
 
-  // ── Local Banner Ad (owned by THIS screen only) ───────────────────────────
+  // ── Part 2: Ad gate + cooldown ────────────────────────────────────────────
+  bool      _adGranted = false;    // true after watching ad → 1 send allowed
+  DateTime? _lastSend;
+  Duration  _remaining = Duration.zero;
+
+  bool get _onCooldown {
+    if (AdService.instance.adsRemoved) return false; // premium: no cooldown
+    return _remaining > Duration.zero;
+  }
+
+  // ── Local Banner Ad ───────────────────────────────────────────────────────
   BannerAd? _bannerAd;
   bool      _bannerReady = false;
 
@@ -64,6 +75,7 @@ class _NglScreenState extends State<NglScreen> {
       final len = _messageCtrl.text.length;
       if (len != _charCount) setState(() => _charCount = len);
     });
+    _loadPersistedCooldown();
     AdService.instance.addListener(_onAdChanged);
     _initBanner();
   }
@@ -123,6 +135,55 @@ class _NglScreenState extends State<NglScreen> {
     );
   }
 
+  // ── Part 2: Cooldown persistence ───────────────────────────────────────────
+
+  Future<void> _loadPersistedCooldown() async {
+    final prefs  = await SharedPreferences.getInstance();
+    final lastMs = prefs.getInt(_kNglLastSendKey);
+    if (lastMs != null) {
+      _lastSend = DateTime.fromMillisecondsSinceEpoch(lastMs);
+      _tickCooldown();
+    }
+  }
+
+  Future<void> _saveLastSend() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt(_kNglLastSendKey, _lastSend!.millisecondsSinceEpoch);
+  }
+
+  void _tickCooldown() {
+    if (_lastSend == null || !mounted) return;
+    final elapsed = DateTime.now().difference(_lastSend!);
+    final rem     = _kNglCooldown - elapsed;
+    if (rem <= Duration.zero) {
+      if (mounted) setState(() => _remaining = Duration.zero);
+      return;
+    }
+    if (mounted) setState(() => _remaining = rem);
+    Future.delayed(const Duration(seconds: 1), _tickCooldown);
+  }
+
+  String _fmtCooldown(Duration d) {
+    final m = d.inMinutes.remainder(60).toString().padLeft(2, '0');
+    final s = d.inSeconds.remainder(60).toString().padLeft(2, '0');
+    return '$m:$s';
+  }
+
+  // ── Part 2: Watch ad to unlock ─────────────────────────────────────────────
+
+  void _watchAdToSend() {
+    HapticFeedback.selectionClick();
+    if (!_formKey.currentState!.validate()) return;
+    AdService.instance.showGatedInterstitial(
+      onGranted: () {
+        if (mounted) {
+          setState(() => _adGranted = true);
+          _snack('🔓 Unlocked! Tap Send to fire.');
+        }
+      },
+    );
+  }
+
   // ── Paste username ─────────────────────────────────────────────────────────
 
   Future<void> _pasteUsername() async {
@@ -144,6 +205,15 @@ class _NglScreenState extends State<NglScreen> {
 
   Future<void> _send() async {
     if (!_formKey.currentState!.validate()) return;
+
+    final isPremium = AdService.instance.adsRemoved;
+
+    // Free-tier gate: must watch ad first
+    if (!isPremium && !_adGranted) {
+      _snack('Watch an ad to send 🔒', error: true);
+      return;
+    }
+
     HapticFeedback.mediumImpact();
     FocusScope.of(context).unfocus();
 
@@ -163,7 +233,6 @@ class _NglScreenState extends State<NglScreen> {
     });
 
     try {
-      // ── Fires directly from the user's phone — no Railway IP geoblocking ──
       final result = await NglService.bombAll(
         username:  username,
         message:   message,
@@ -181,8 +250,16 @@ class _NglScreenState extends State<NglScreen> {
 
       if (!mounted) return;
 
+      // Start 30-min cooldown for free users after each send
+      if (!isPremium) {
+        _lastSend = DateTime.now();
+        await _saveLastSend();
+        _tickCooldown();
+      }
+
       final success = result.sent > 0;
       setState(() {
+        _adGranted = false; // ← reset ad grant after each send
         _loading   = false;
         _done      = true;
         _resultOk  = success;
@@ -194,7 +271,6 @@ class _NglScreenState extends State<NglScreen> {
       });
       HapticFeedback.heavyImpact();
 
-      // ── Log to backend for admin panel (non-blocking — failure is silent) ──
       ApiService.logNgl(
         userId:   widget.userId,
         username: username,
@@ -205,7 +281,6 @@ class _NglScreenState extends State<NglScreen> {
         results:  result.results.map((r) => r.toJson()).toList(),
       ).catchError((_) {});
 
-      // ── Interstitial ad after work completes ───────────────────────────────
       Future.delayed(const Duration(milliseconds: 600), () {
         if (!AdService.instance.adsRemoved) AdService.instance.showInterstitial();
       });
@@ -223,6 +298,17 @@ class _NglScreenState extends State<NglScreen> {
     }
   }
 
+  void _snack(String msg, {bool error = false}) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(msg, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
+      backgroundColor: error ? AppColors.error : AppColors.accent,
+      behavior: SnackBarBehavior.floating,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.md)),
+      margin: const EdgeInsets.all(12),
+    ));
+  }
+
   void _reset() {
     HapticFeedback.selectionClick();
     if (!AdService.instance.adsRemoved) AdService.instance.showInterstitial();
@@ -234,9 +320,174 @@ class _NglScreenState extends State<NglScreen> {
       _liveResults = [];
       _resultMsg   = '';
       _charCount   = 0;
+      _adGranted   = false; // also reset on "Send Again"
     });
     _usernameCtrl.clear();
     _messageCtrl.clear();
+  }
+
+  // ── Part 2: Send area (ad gate + send button) ──────────────────────────────
+
+  Widget _buildSendArea(XissinColors c) {
+    final isPremium = AdService.instance.adsRemoved;
+
+    // Premium: normal send button, no gate
+    if (isPremium) {
+      return _SendButton(loading: _loading, onPressed: _send);
+    }
+
+    // Free + ad granted: send button (1 use)
+    if (_adGranted) {
+      return Column(
+        children: [
+          Container(
+            margin: const EdgeInsets.only(bottom: 8),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+            decoration: BoxDecoration(
+              color:        AppColors.accent.withOpacity(0.10),
+              borderRadius: BorderRadius.circular(AppRadius.md),
+              border: Border.all(color: AppColors.accent.withOpacity(0.30)),
+            ),
+            child: const Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(Icons.check_circle_outline_rounded,
+                    color: AppColors.accent, size: 14),
+                SizedBox(width: 6),
+                Text('🔓 Ad watched — send ready!',
+                    style: TextStyle(
+                        color:      AppColors.accent,
+                        fontSize:   12,
+                        fontWeight: FontWeight.w600)),
+              ],
+            ),
+          ),
+          _SendButton(loading: _loading, onPressed: _send),
+        ],
+      );
+    }
+
+    // Free + cooldown active: show countdown + bypass option
+    if (_onCooldown) {
+      return Column(
+        children: [
+          // Cooldown button (disabled)
+          SizedBox(
+            width: double.infinity, height: 54,
+            child: ElevatedButton(
+              onPressed: null,
+              style: ElevatedButton.styleFrom(
+                disabledBackgroundColor: c.surface,
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(AppRadius.lg)),
+                elevation: 0,
+                side: BorderSide(color: _kPink.withOpacity(0.4)),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.timer_outlined, size: 18, color: c.textSecondary),
+                  const SizedBox(width: 8),
+                  Text(
+                    'Cooldown  ${_fmtCooldown(_remaining)}',
+                    style: TextStyle(
+                        fontSize:   15,
+                        fontWeight: FontWeight.bold,
+                        color:      c.textSecondary,
+                        letterSpacing: 1),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 6),
+          // Cooldown progress bar
+          ClipRRect(
+            borderRadius: BorderRadius.circular(AppRadius.xs),
+            child: LinearProgressIndicator(
+              value: 1.0 - (_remaining.inMilliseconds / _kNglCooldown.inMilliseconds),
+              minHeight: 5,
+              backgroundColor: _kPink.withOpacity(0.12),
+              valueColor: const AlwaysStoppedAnimation<Color>(_kPink),
+            ),
+          ),
+          const SizedBox(height: 12),
+          // Watch ad to bypass
+          GestureDetector(
+            onTap: _watchAdToSend,
+            child: Container(
+              padding: const EdgeInsets.symmetric(vertical: 12),
+              decoration: BoxDecoration(
+                color:        _kOrange.withOpacity(0.08),
+                borderRadius: BorderRadius.circular(AppRadius.md),
+                border: Border.all(color: _kOrange.withOpacity(0.35)),
+              ),
+              child: const Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.play_circle_outline_rounded,
+                      color: _kOrange, size: 18),
+                  SizedBox(width: 8),
+                  Text('Watch an ad to send now →',
+                      style: TextStyle(
+                          color:      _kOrange,
+                          fontSize:   13,
+                          fontWeight: FontWeight.w600)),
+                ],
+              ),
+            ),
+          ),
+        ],
+      );
+    }
+
+    // Free + no cooldown + no ad grant: Watch Ad to Send
+    return Column(
+      children: [
+        Container(
+          margin: const EdgeInsets.only(bottom: 10),
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color:        c.surface,
+            borderRadius: BorderRadius.circular(AppRadius.md),
+            border: Border.all(color: c.border),
+          ),
+          child: Row(
+            children: [
+              const Icon(Icons.lock_outline_rounded,
+                  color: AppColors.textSecondary, size: 15),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'Free: Watch a short ad to send • Premium: no ads, no cooldown',
+                  style: TextStyle(
+                      color: AppColors.textSecondary,
+                      fontSize: 11,
+                      height:   1.4),
+                ),
+              ),
+            ],
+          ),
+        ),
+        SizedBox(
+          width: double.infinity, height: 54,
+          child: ElevatedButton.icon(
+            onPressed: _watchAdToSend,
+            style: ElevatedButton.styleFrom(
+              backgroundColor: _kOrange,
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(AppRadius.lg)),
+              elevation: 0,
+            ),
+            icon:  const Icon(Icons.play_circle_rounded, size: 20),
+            label: const Text('Watch Ad to Send',
+                style: TextStyle(
+                    fontSize: 15, fontWeight: FontWeight.w700)),
+          ),
+        ),
+      ],
+    );
   }
 
   // ── Build ──────────────────────────────────────────────────────────────────
@@ -296,7 +547,6 @@ class _NglScreenState extends State<NglScreen> {
           _InfoBanner(c: c),
           const SizedBox(height: 22),
 
-          // Username
           _Label('NGL Username', c),
           const SizedBox(height: 8),
           _buildUsernameField(c)
@@ -305,7 +555,6 @@ class _NglScreenState extends State<NglScreen> {
               .slideY(begin: 0.08, end: 0),
           const SizedBox(height: 18),
 
-          // Message + char counter
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
@@ -320,7 +569,6 @@ class _NglScreenState extends State<NglScreen> {
               .slideY(begin: 0.08, end: 0),
           const SizedBox(height: 20),
 
-          // Quantity
           _QuantityLabel(quantity: _quantity, c: c),
           const SizedBox(height: 6),
           _buildQuantitySlider(c)
@@ -328,18 +576,16 @@ class _NglScreenState extends State<NglScreen> {
               .fadeIn(duration: 350.ms, delay: 120.ms),
           const SizedBox(height: 28),
 
-          // ── Live progress while sending ──────────────────────────────────
+          // Live progress while sending
           if (_loading) ...[
             _GradientProgressBar(
-              progress:    _progress,
-              sent:        _liveSent,
-              failed:      _liveFailed,
-              total:       _quantity,
-              c:           c,
+              progress: _progress,
+              sent:     _liveSent,
+              failed:   _liveFailed,
+              total:    _quantity,
+              c:        c,
             ).animate().fadeIn(duration: 300.ms),
             const SizedBox(height: 12),
-
-            // Live result stream (last 8 results)
             if (_liveResults.isNotEmpty)
               _LiveResultsList(results: _liveResults, c: c)
                   .animate()
@@ -347,14 +593,13 @@ class _NglScreenState extends State<NglScreen> {
             const SizedBox(height: 20),
           ],
 
-          // Send button
-          _SendButton(loading: _loading, onPressed: _send)
+          // ── Part 2: Ad-gated send area ────────────────────────────────
+          _buildSendArea(c)
               .animate()
               .fadeIn(duration: 350.ms, delay: 160.ms),
 
           const SizedBox(height: 24),
 
-          // Tips section (only shown when not loading)
           if (!_loading)
             _TipsCard(c: c)
                 .animate(delay: 300.ms)
@@ -409,7 +654,13 @@ class _NglScreenState extends State<NglScreen> {
     );
   }
 
+  // ── Part 2: slider max = 50 free / 100 premium ────────────────────────────
   Widget _buildQuantitySlider(XissinColors c) {
+    final isPremium = AdService.instance.adsRemoved;
+    final maxQty    = isPremium ? 100 : 50;
+    // Clamp quantity if user just lost premium
+    if (_quantity > maxQty) _quantity = maxQty;
+
     return Column(
       children: [
         SliderTheme(
@@ -427,8 +678,8 @@ class _NglScreenState extends State<NglScreen> {
           child: Slider(
             value:     _quantity.toDouble(),
             min:       1,
-            max:       50,
-            divisions: 49,
+            max:       maxQty.toDouble(),
+            divisions: maxQty - 1,
             onChanged: (v) => setState(() => _quantity = v.toInt()),
           ),
         ),
@@ -436,7 +687,9 @@ class _NglScreenState extends State<NglScreen> {
           padding: const EdgeInsets.symmetric(horizontal: 12),
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [1, 10, 20, 30, 40, 50]
+            children: (isPremium
+                    ? [1, 20, 40, 60, 80, 100]
+                    : [1, 10, 20, 30, 40, 50])
                 .map((n) => Text(
                       '$n',
                       style: TextStyle(
@@ -452,6 +705,17 @@ class _NglScreenState extends State<NglScreen> {
                 .toList(),
           ),
         ),
+        if (isPremium)
+          Padding(
+            padding: const EdgeInsets.only(top: 4),
+            child: Text(
+              '⭐ Premium: up to 100 messages, no cooldown',
+              style: TextStyle(
+                  color:      c.gold,
+                  fontSize:   10,
+                  fontWeight: FontWeight.w500),
+            ),
+          ),
       ],
     );
   }
@@ -496,8 +760,7 @@ class _NglScreenState extends State<NglScreen> {
         const SizedBox(height: 32),
 
         Container(
-          width:  96,
-          height: 96,
+          width: 96, height: 96,
           decoration: BoxDecoration(
             shape:     BoxShape.circle,
             color:     color.withOpacity(0.10),
@@ -508,25 +771,18 @@ class _NglScreenState extends State<NglScreen> {
             _resultOk
                 ? Icons.check_circle_outline_rounded
                 : Icons.error_outline_rounded,
-            size:  48,
-            color: color,
+            size: 48, color: color,
           ),
         )
             .animate()
-            .scale(
-                begin:    const Offset(0.4, 0.4),
-                duration: 550.ms,
-                curve:    Curves.elasticOut)
+            .scale(begin: const Offset(0.4, 0.4), duration: 550.ms, curve: Curves.elasticOut)
             .fadeIn(duration: 300.ms),
 
         const SizedBox(height: 24),
 
         Text(
           _resultOk ? '🎉  Done!' : '❌  Failed',
-          style: TextStyle(
-              color:      color,
-              fontSize:   24,
-              fontWeight: FontWeight.w800),
+          style: TextStyle(color: color, fontSize: 24, fontWeight: FontWeight.w800),
         ).animate().fadeIn(duration: 350.ms, delay: 150.ms),
 
         const SizedBox(height: 10),
@@ -536,8 +792,7 @@ class _NglScreenState extends State<NglScreen> {
           child: Text(
             _resultMsg,
             textAlign: TextAlign.center,
-            style: TextStyle(
-                color: c.textSecondary, fontSize: 14, height: 1.5),
+            style: TextStyle(color: c.textSecondary, fontSize: 14, height: 1.5),
           ),
         ).animate().fadeIn(duration: 350.ms, delay: 200.ms),
 
@@ -555,17 +810,14 @@ class _NglScreenState extends State<NglScreen> {
           const SizedBox(height: 28),
         ],
 
-        // ── Breakdown of individual message results ───────────────────────
         if (_liveResults.isNotEmpty) ...[
           Align(
             alignment: Alignment.centerLeft,
-            child: Text(
-              'Message Breakdown',
-              style: TextStyle(
-                  color:      c.textPrimary,
-                  fontSize:   13,
-                  fontWeight: FontWeight.w600),
-            ),
+            child: Text('Message Breakdown',
+                style: TextStyle(
+                    color:      c.textPrimary,
+                    fontSize:   13,
+                    fontWeight: FontWeight.w600)),
           ),
           const SizedBox(height: 10),
           ...(_liveResults.take(20).toList().asMap().entries.map(
@@ -574,18 +826,14 @@ class _NglScreenState extends State<NglScreen> {
           if (_liveResults.length > 20)
             Padding(
               padding: const EdgeInsets.only(top: 6),
-              child: Text(
-                '+ ${_liveResults.length - 20} more messages',
-                style: TextStyle(
-                    color: c.textSecondary, fontSize: 11),
-              ),
+              child: Text('+ ${_liveResults.length - 20} more messages',
+                  style: TextStyle(color: c.textSecondary, fontSize: 11)),
             ),
           const SizedBox(height: 28),
         ],
 
         SizedBox(
-          width:  double.infinity,
-          height: 52,
+          width: double.infinity, height: 52,
           child: ElevatedButton.icon(
             onPressed: _reset,
             style: ElevatedButton.styleFrom(
@@ -605,7 +853,7 @@ class _NglScreenState extends State<NglScreen> {
   }
 }
 
-// ── Live Results List (shown during send) ─────────────────────────────────────
+// ── Static widgets (unchanged) ────────────────────────────────────────────────
 
 class _LiveResultsList extends StatelessWidget {
   final List<NglResult> results;
@@ -614,13 +862,12 @@ class _LiveResultsList extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Show only the last 6 results to keep UI compact while loading
     final visible = results.length <= 6
         ? results
         : results.sublist(results.length - 6);
     return Container(
-      padding:      const EdgeInsets.all(10),
-      decoration:   BoxDecoration(
+      padding:    const EdgeInsets.all(10),
+      decoration: BoxDecoration(
         color:        c.surface,
         borderRadius: BorderRadius.circular(AppRadius.lg),
         border:       Border.all(color: c.border, width: 1),
@@ -637,17 +884,11 @@ class _LiveResultsList extends StatelessWidget {
   }
 }
 
-// ── Single result row ─────────────────────────────────────────────────────────
-
 class _NglResultRow extends StatelessWidget {
   final NglResult    result;
   final int          index;
   final XissinColors c;
-  const _NglResultRow({
-    required this.result,
-    required this.index,
-    required this.c,
-  });
+  const _NglResultRow({required this.result, required this.index, required this.c});
 
   @override
   Widget build(BuildContext context) {
@@ -663,27 +904,14 @@ class _NglResultRow extends StatelessWidget {
       ),
       child: Row(
         children: [
-          Icon(
-            ok ? Icons.check_circle_outline_rounded : Icons.cancel_outlined,
-            size:  14,
-            color: color,
-          ),
+          Icon(ok ? Icons.check_circle_outline_rounded : Icons.cancel_outlined,
+              size: 14, color: color),
           const SizedBox(width: 8),
-          Text(
-            'Msg #${result.index + 1}',
-            style: TextStyle(
-                color:      c.textPrimary,
-                fontSize:   12,
-                fontWeight: FontWeight.w600),
-          ),
+          Text('Msg #${result.index + 1}',
+              style: TextStyle(color: c.textPrimary, fontSize: 12, fontWeight: FontWeight.w600)),
           const Spacer(),
-          Text(
-            result.message,
-            style: TextStyle(
-                color:    color,
-                fontSize: 11,
-                fontWeight: FontWeight.w500),
-          ),
+          Text(result.message,
+              style: TextStyle(color: color, fontSize: 11, fontWeight: FontWeight.w500)),
         ],
       ),
     )
@@ -693,8 +921,6 @@ class _NglResultRow extends StatelessWidget {
   }
 }
 
-// ── Progress bar (real progress — not fake) ───────────────────────────────────
-
 class _GradientProgressBar extends StatelessWidget {
   final double       progress;
   final int          sent;
@@ -702,11 +928,8 @@ class _GradientProgressBar extends StatelessWidget {
   final int          total;
   final XissinColors c;
   const _GradientProgressBar({
-    required this.progress,
-    required this.sent,
-    required this.failed,
-    required this.total,
-    required this.c,
+    required this.progress, required this.sent,
+    required this.failed, required this.total, required this.c,
   });
 
   @override
@@ -718,20 +941,10 @@ class _GradientProgressBar extends StatelessWidget {
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            Text(
-              'Sending from your phone...',
-              style: TextStyle(
-                  color:      c.textSecondary,
-                  fontSize:   12,
-                  fontWeight: FontWeight.w500),
-            ),
-            Text(
-              '$done / $total',
-              style: const TextStyle(
-                  color:      _kPink,
-                  fontSize:   12,
-                  fontWeight: FontWeight.w700),
-            ),
+            Text('Sending from your phone...',
+                style: TextStyle(color: c.textSecondary, fontSize: 12, fontWeight: FontWeight.w500)),
+            Text('$done / $total',
+                style: const TextStyle(color: _kPink, fontSize: 12, fontWeight: FontWeight.w700)),
           ],
         ),
         const SizedBox(height: 8),
@@ -745,9 +958,7 @@ class _GradientProgressBar extends StatelessWidget {
                 child: Container(
                   height: 8,
                   decoration: const BoxDecoration(
-                    gradient: LinearGradient(
-                      colors: [_kPink, _kOrange],
-                    ),
+                    gradient: LinearGradient(colors: [_kPink, _kOrange]),
                   ),
                 ),
               ),
@@ -757,7 +968,7 @@ class _GradientProgressBar extends StatelessWidget {
         const SizedBox(height: 6),
         Row(
           children: [
-            _MiniChip(label: '✓ $sent sent',    color: _kGreen),
+            _MiniChip(label: '✓ $sent sent',     color: _kGreen),
             const SizedBox(width: 8),
             _MiniChip(label: '✗ $failed failed', color: _kRed),
           ],
@@ -779,44 +990,29 @@ class _MiniChip extends StatelessWidget {
           color:        color.withOpacity(0.12),
           borderRadius: BorderRadius.circular(AppRadius.full),
         ),
-        child: Text(
-          label,
-          style: TextStyle(
-              color:      color,
-              fontSize:   10,
-              fontWeight: FontWeight.w600),
-        ),
+        child: Text(label,
+            style: TextStyle(color: color, fontSize: 10, fontWeight: FontWeight.w600)),
       );
 }
-
-// ── Static helper widgets ─────────────────────────────────────────────────────
 
 class _Label extends StatelessWidget {
   final String text;
   final XissinColors c;
   const _Label(this.text, this.c);
-
   @override
-  Widget build(BuildContext context) => Text(
-        text,
-        style: TextStyle(
-            color: c.textPrimary, fontWeight: FontWeight.w600, fontSize: 14),
-      );
+  Widget build(BuildContext context) => Text(text,
+      style: TextStyle(color: c.textPrimary, fontWeight: FontWeight.w600, fontSize: 14));
 }
 
 class _QuantityLabel extends StatelessWidget {
   final int quantity;
   final XissinColors c;
   const _QuantityLabel({required this.quantity, required this.c});
-
   @override
   Widget build(BuildContext context) => Row(
         children: [
-          Text(
-            'Quantity: ',
-            style: TextStyle(
-                color: c.textPrimary, fontWeight: FontWeight.w600, fontSize: 14),
-          ),
+          Text('Quantity: ',
+              style: TextStyle(color: c.textPrimary, fontWeight: FontWeight.w600, fontSize: 14)),
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
             decoration: BoxDecoration(
@@ -824,14 +1020,8 @@ class _QuantityLabel extends StatelessWidget {
               borderRadius: BorderRadius.circular(AppRadius.full),
               border: Border.all(color: _kPink.withOpacity(0.35), width: 1),
             ),
-            child: Text(
-              '$quantity msg${quantity == 1 ? '' : 's'}',
-              style: const TextStyle(
-                color:      _kPink,
-                fontSize:   12,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
+            child: Text('$quantity msg${quantity == 1 ? '' : 's'}',
+                style: const TextStyle(color: _kPink, fontSize: 12, fontWeight: FontWeight.bold)),
           ),
         ],
       );
@@ -842,20 +1032,17 @@ class _CharCounter extends StatelessWidget {
   final int max;
   final XissinColors c;
   const _CharCounter({required this.count, required this.max, required this.c});
-
   Color get _color {
     final ratio = count / max;
     if (ratio > 0.9) return _kRed;
     if (ratio > 0.8) return _kOrange;
     return c.textSecondary;
   }
-
   @override
   Widget build(BuildContext context) => Row(
         children: [
           SizedBox(
-            width:  20,
-            height: 20,
+            width: 20, height: 20,
             child: CircularProgressIndicator(
               value:           count / max,
               strokeWidth:     2.5,
@@ -864,14 +1051,8 @@ class _CharCounter extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 6),
-          Text(
-            '$count / $max',
-            style: TextStyle(
-              color:      _color,
-              fontSize:   11,
-              fontWeight: FontWeight.w500,
-            ),
-          ),
+          Text('$count / $max',
+              style: TextStyle(color: _color, fontSize: 11, fontWeight: FontWeight.w500)),
         ],
       );
 }
@@ -879,7 +1060,6 @@ class _CharCounter extends StatelessWidget {
 class _InfoBanner extends StatelessWidget {
   final XissinColors c;
   const _InfoBanner({required this.c});
-
   @override
   Widget build(BuildContext context) {
     return Container(
@@ -897,8 +1077,7 @@ class _InfoBanner extends StatelessWidget {
             child: Text(
               'Sends anonymous messages to any NGL profile.\n'
               'Fires directly from your phone — max 50 per send.',
-              style: TextStyle(
-                  color: c.textSecondary, fontSize: 12, height: 1.45),
+              style: TextStyle(color: c.textSecondary, fontSize: 12, height: 1.45),
             ),
           ),
         ],
@@ -910,7 +1089,6 @@ class _InfoBanner extends StatelessWidget {
 class _TipsCard extends StatelessWidget {
   final XissinColors c;
   const _TipsCard({required this.c});
-
   @override
   Widget build(BuildContext context) {
     return Container(
@@ -924,37 +1102,27 @@ class _TipsCard extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(children: [
-            const Icon(Icons.lightbulb_outline_rounded,
-                size: 15, color: _kOrange),
+            const Icon(Icons.lightbulb_outline_rounded, size: 15, color: _kOrange),
             const SizedBox(width: 6),
-            Text('Tips',
-                style: TextStyle(
-                  color:      c.textPrimary,
-                  fontSize:   13,
-                  fontWeight: FontWeight.bold,
-                )),
+            Text('Tips', style: TextStyle(color: c.textPrimary, fontSize: 13, fontWeight: FontWeight.bold)),
           ]),
           const SizedBox(height: 10),
           _tip('Enter only the username, not the full ngl.link URL', c),
           _tip('Use the paste button to auto-clean copied links', c),
           _tip('Requests fire from your phone — not blocked by Railway IP', c),
-          _tip('Max 50 messages per send to avoid rate limits', c),
+          _tip('Max 50 messages (free) / 100 messages (premium) per send', c),
         ],
       ),
     );
   }
-
   Widget _tip(String text, XissinColors c) => Padding(
         padding: const EdgeInsets.only(bottom: 6),
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const Text('• ', style: TextStyle(color: _kPink, fontSize: 13)),
-            Expanded(
-              child: Text(text,
-                  style: TextStyle(
-                      color: c.textSecondary, fontSize: 12, height: 1.4)),
-            ),
+            Expanded(child: Text(text,
+                style: TextStyle(color: c.textSecondary, fontSize: 12, height: 1.4))),
           ],
         ),
       );
@@ -968,8 +1136,7 @@ class _SendButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return SizedBox(
-      width:  double.infinity,
-      height: 54,
+      width: double.infinity, height: 54,
       child: ElevatedButton.icon(
         onPressed: loading ? null : onPressed,
         style: ElevatedButton.styleFrom(
@@ -981,33 +1148,21 @@ class _SendButton extends StatelessWidget {
           elevation: 0,
         ),
         icon: loading
-            ? const SizedBox(
-                width:  18,
-                height: 18,
-                child:  CircularProgressIndicator(
-                    strokeWidth: 2, color: Colors.white),
-              )
+            ? const SizedBox(width: 18, height: 18,
+                child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
             : const Icon(Icons.send_rounded, size: 20),
-        label: Text(
-          loading ? 'Sending...' : 'Send Messages',
-          style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 15),
-        ),
+        label: Text(loading ? 'Sending...' : 'Send Messages',
+            style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 15)),
       ),
     );
   }
 }
 
 class _StatChip extends StatelessWidget {
-  final String label;
-  final String value;
+  final String label, value;
   final Color  color;
   final XissinColors c;
-  const _StatChip({
-    required this.label,
-    required this.value,
-    required this.color,
-    required this.c,
-  });
+  const _StatChip({required this.label, required this.value, required this.color, required this.c});
 
   @override
   Widget build(BuildContext context) {
@@ -1021,17 +1176,9 @@ class _StatChip extends StatelessWidget {
       ),
       child: Column(
         children: [
-          Text(value,
-              style: TextStyle(
-                  color:      color,
-                  fontSize:   28,
-                  fontWeight: FontWeight.w800)),
+          Text(value, style: TextStyle(color: color, fontSize: 28, fontWeight: FontWeight.w800)),
           const SizedBox(height: 4),
-          Text(label,
-              style: TextStyle(
-                  color:      c.textSecondary,
-                  fontSize:   12,
-                  fontWeight: FontWeight.w500)),
+          Text(label, style: TextStyle(color: c.textSecondary, fontSize: 12, fontWeight: FontWeight.w500)),
         ],
       ),
     );

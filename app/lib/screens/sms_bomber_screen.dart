@@ -7,12 +7,9 @@ import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../theme/app_theme.dart';
 import '../services/ad_service.dart';
-import '../services/api_service.dart';       // ← for logSmsBomb (admin panel logging)
-import '../services/sms_service.dart';       // ← client-side, fires from user's phone
+import '../services/api_service.dart';
+import '../services/sms_service.dart';
 import '../widgets/glass_neumorphic_card.dart';
-
-// ApiService import removed — SMS now fires from user's phone, not Railway backend.
-// Results are shown live as each service responds.
 
 const _kSmsRed    = Color(0xFFFF4E4E);
 const _kSmsOrange = Color(0xFFFF9A44);
@@ -70,10 +67,14 @@ class _AttackRecord {
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const _kHistoryKey  = 'sms_bomb_history';
-const _kLastFireKey = 'sms_bomb_last_fire';
-const _kCooldown    = Duration(seconds: 10);
-const _kMaxHistory  = 10;
+const _kHistoryKey   = 'sms_bomb_history';
+const _kLastFireKey  = 'sms_bomb_last_fire';
+
+/// Free-tier cooldown: 45 minutes between fires.
+/// Premium users have NO cooldown.
+const _kCooldown = Duration(minutes: 45);
+
+const _kMaxHistory = 10;
 
 // ── Screen ────────────────────────────────────────────────────────────────────
 
@@ -92,18 +93,28 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
   int  _rounds  = 1;
   bool _loading = false;
 
-  // Live results shown DURING an active attack
-  List<SmsResult> _liveResults  = [];
-  int             _liveSent     = 0;
-  int             _liveFailed   = 0;
+  List<SmsResult> _liveResults = [];
+  int             _liveSent    = 0;
+  int             _liveFailed  = 0;
 
   List<_AttackRecord> _history = [];
 
   DateTime? _lastFire;
   Duration  _remaining = Duration.zero;
-  bool get  _onCooldown => _remaining > Duration.zero;
 
-  // ── Local Banner Ad (owned by THIS screen only) ───────────────────────────
+  // ── Part 2: Ad gate for free users ───────────────────────────────────────
+  // _adGranted = true after watching an ad → allows exactly 1 fire.
+  // Resets to false after each fire.
+  // Premium users bypass this entirely.
+  bool _adGranted = false;
+
+  // Free-tier cooldown: only active when NOT premium
+  bool get _onCooldown {
+    if (AdService.instance.adsRemoved) return false; // premium: no cooldown
+    return _remaining > Duration.zero;
+  }
+
+  // ── Local Banner Ad ───────────────────────────────────────────────────────
   BannerAd? _bannerAd;
   bool      _bannerReady = false;
 
@@ -124,36 +135,23 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
     super.dispose();
   }
 
-  // ── Ad Service listener ────────────────────────────────────────────────────
-
   void _onAdServiceChanged() {
     if (!mounted) return;
     if (AdService.instance.adsRemoved && _bannerAd != null) {
       _bannerAd?.dispose();
-      setState(() {
-        _bannerAd    = null;
-        _bannerReady = false;
-      });
+      setState(() { _bannerAd = null; _bannerReady = false; });
     }
   }
 
-  // ── Banner init ────────────────────────────────────────────────────────────
-  // FIX: createBannerAd() now returns BannerAd? — must null-check before .load()
-
   void _initBanner() {
     if (AdService.instance.adsRemoved) return;
-
     _bannerAd?.dispose();
     _bannerAd    = null;
     _bannerReady = false;
-
-    // createBannerAd returns null if SDK not ready or user is premium
     final ad = AdService.instance.createBannerAd(
       onLoaded: () {
         if (!mounted || AdService.instance.adsRemoved) {
-          _bannerAd?.dispose();
-          _bannerAd = null;
-          return;
+          _bannerAd?.dispose(); _bannerAd = null; return;
         }
         setState(() => _bannerReady = true);
       },
@@ -164,8 +162,7 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
         });
       },
     );
-
-    if (ad == null) return; // SDK not ready yet — ad_service will retry
+    if (ad == null) return;
     _bannerAd = ad;
     _bannerAd!.load();
   }
@@ -218,17 +215,43 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
   }
 
   String _fmtCooldown(Duration d) {
-    final s = d.inSeconds.remainder(60);
-    return '${d.inMinutes}:${s.toString().padLeft(2, '0')}';
+    final m = d.inMinutes.remainder(60).toString().padLeft(2, '0');
+    final s = d.inSeconds.remainder(60).toString().padLeft(2, '0');
+    return '$m:$s';
   }
 
-  // ── Fire (client-side — all requests fire from user's phone) ───────────────
+  // ── Part 2: Watch ad to unlock ────────────────────────────────────────────
+
+  void _watchAdToFire() {
+    HapticFeedback.selectionClick();
+    _snack('Loading ad... please wait', error: false);
+    AdService.instance.showGatedInterstitial(
+      onGranted: () {
+        if (mounted) {
+          setState(() => _adGranted = true);
+          _snack('🔓 Unlocked! Tap FIRE to send.', error: false);
+        }
+      },
+    );
+  }
+
+  // ── Fire ───────────────────────────────────────────────────────────────────
 
   Future<void> _fire() async {
+    final isPremium = AdService.instance.adsRemoved;
+
+    // Free-tier gate: must watch ad first
+    if (!isPremium && !_adGranted) {
+      _snack('Watch an ad to fire 🔒', error: true);
+      return;
+    }
+
+    // Free-tier cooldown gate (after already having adGranted before)
     if (_onCooldown) {
       _snack('Cooldown active — wait ${_fmtCooldown(_remaining)}', error: true);
       return;
     }
+
     final phone = _phoneCtrl.text.trim();
     if (phone.isEmpty) { _snack('Enter a phone number', error: true); return; }
     if (phone.length != 10 ||
@@ -247,12 +270,10 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
     });
 
     try {
-      // ── Fires directly from the user's phone — no Railway IP geoblocking ──
       final result = await SmsService.bombAll(
         phone:  phone,
         rounds: _rounds,
         onServiceDone: (smsResult, sent, failed) {
-          // Called immediately as each service responds — live update!
           if (!mounted) return;
           setState(() {
             _liveResults = [..._liveResults, smsResult];
@@ -272,16 +293,19 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
         results: result.results,
       );
 
-      _lastFire = DateTime.now();
-      await _saveLastFire();
-      _tickCooldown();
+      // Start 45-min cooldown for free users after each fire
+      if (!isPremium) {
+        _lastFire = DateTime.now();
+        await _saveLastFire();
+        _tickCooldown();
+      }
 
       setState(() {
+        _adGranted = false;  // ← reset ad grant after each fire
         _history.insert(0, record);
         if (_history.length > _kMaxHistory) {
           _history = _history.take(_kMaxHistory).toList();
         }
-        // Clear live panel — results are now in the history card
         _liveResults = [];
         _liveSent    = 0;
         _liveFailed  = 0;
@@ -289,12 +313,10 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
 
       await _saveHistory();
 
-      // Show interstitial after successful attack
+      // Interstitial after successful attack (non-gated)
       AdService.instance.showInterstitial();
 
-      // ── Log to admin panel (fire-and-forget) ────────────────────────────
-      // SMS fired from user's phone, so Railway never saw it.
-      // This call sends the results to the backend so the admin panel logs it.
+      // Log to admin panel (fire-and-forget)
       ApiService.logSmsBomb(
         userId:      widget.userId,
         phone:       phone,
@@ -356,7 +378,7 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
     );
   }
 
-  // ── Live progress panel (shown while attack is running) ───────────────────
+  // ── Live progress panel ────────────────────────────────────────────────────
 
   Widget _buildLivePanel() {
     if (!_loading && _liveResults.isEmpty) return const SizedBox.shrink();
@@ -368,8 +390,6 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const SizedBox(height: 24),
-
-        // Header row
         Row(
           children: [
             const Icon(Icons.bolt_rounded, color: _kSmsOrange, size: 16),
@@ -392,10 +412,7 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
                     color: AppColors.textSecondary, fontSize: 11)),
           ],
         ),
-
         const SizedBox(height: 8),
-
-        // Overall progress bar
         ClipRRect(
           borderRadius: BorderRadius.circular(AppRadius.xs),
           child: LinearProgressIndicator(
@@ -405,10 +422,7 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
             valueColor:      const AlwaysStoppedAnimation<Color>(AppColors.accent),
           ),
         ),
-
         const SizedBox(height: 10),
-
-        // Live service rows
         ...List.generate(_liveResults.length, (i) {
           final r = _liveResults[i];
           return _ServiceRow(
@@ -418,6 +432,228 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
         }),
       ],
     ).animate().fadeIn(duration: 300.ms);
+  }
+
+  // ── Part 2: Action area (ad gate + fire button) ───────────────────────────
+
+  Widget _buildActionArea(XissinColors c) {
+    final isPremium = AdService.instance.adsRemoved;
+
+    // ── Premium: fire button, no cooldown, no ad gate
+    if (isPremium) {
+      return _buildFireButton(c, onPressed: _loading ? null : _fire);
+    }
+
+    // ── Free + ad granted: FIRE button (1 use)
+    if (_adGranted) {
+      return Column(
+        children: [
+          // "1 use ready" badge
+          Container(
+            margin: const EdgeInsets.only(bottom: 8),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+            decoration: BoxDecoration(
+              color:        AppColors.accent.withOpacity(0.12),
+              borderRadius: BorderRadius.circular(AppRadius.md),
+              border: Border.all(color: AppColors.accent.withOpacity(0.35)),
+            ),
+            child: const Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(Icons.check_circle_outline_rounded,
+                    color: AppColors.accent, size: 14),
+                SizedBox(width: 6),
+                Text(
+                  '🔓 Ad watched — 1 fire ready!',
+                  style: TextStyle(
+                      color:      AppColors.accent,
+                      fontSize:   12,
+                      fontWeight: FontWeight.w600),
+                ),
+              ],
+            ),
+          ),
+          _buildFireButton(c, onPressed: _loading ? null : _fire),
+        ],
+      );
+    }
+
+    // ── Free + cooldown active: show countdown + watch-ad link
+    if (_onCooldown) {
+      return Column(
+        children: [
+          // Cooldown button (disabled)
+          SizedBox(
+            width: double.infinity, height: 56,
+            child: ElevatedButton(
+              onPressed: null,
+              style: ElevatedButton.styleFrom(
+                disabledBackgroundColor: c.surface,
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(AppRadius.lg)),
+                elevation: 0,
+                side: BorderSide(color: c.primary.withOpacity(0.4)),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.timer_outlined, size: 18, color: c.textSecondary),
+                  const SizedBox(width: 8),
+                  Text(
+                    'Cooldown  ${_fmtCooldown(_remaining)}',
+                    style: TextStyle(
+                      fontSize:   15,
+                      fontWeight: FontWeight.bold,
+                      color:      c.textSecondary,
+                      letterSpacing: 1,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          // Cooldown progress bar
+          const SizedBox(height: 6),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(AppRadius.xs),
+            child: LinearProgressIndicator(
+              value: 1.0 - (_remaining.inMilliseconds / _kCooldown.inMilliseconds),
+              minHeight: 5,
+              backgroundColor: c.primary.withOpacity(0.12),
+              valueColor: AlwaysStoppedAnimation<Color>(c.primary),
+            ),
+          ),
+          // Watch ad to bypass cooldown
+          const SizedBox(height: 12),
+          GestureDetector(
+            onTap: _watchAdToFire,
+            child: Container(
+              padding: const EdgeInsets.symmetric(vertical: 12),
+              decoration: BoxDecoration(
+                color:        _kSmsOrange.withOpacity(0.08),
+                borderRadius: BorderRadius.circular(AppRadius.md),
+                border: Border.all(color: _kSmsOrange.withOpacity(0.35)),
+              ),
+              child: const Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.play_circle_outline_rounded,
+                      color: _kSmsOrange, size: 18),
+                  SizedBox(width: 8),
+                  Text(
+                    'Watch an ad to fire now →',
+                    style: TextStyle(
+                      color:      _kSmsOrange,
+                      fontSize:   13,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      );
+    }
+
+    // ── Free + no cooldown + no ad grant: Watch Ad to Fire
+    return Column(
+      children: [
+        Container(
+          margin: const EdgeInsets.only(bottom: 10),
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color:        c.surface,
+            borderRadius: BorderRadius.circular(AppRadius.md),
+            border: Border.all(color: c.border),
+          ),
+          child: Row(
+            children: [
+              const Icon(Icons.lock_outline_rounded,
+                  color: AppColors.textSecondary, size: 15),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'Free: Watch a short ad to fire • Premium: no ads, no cooldown',
+                  style: TextStyle(
+                      color:    AppColors.textSecondary,
+                      fontSize: 11,
+                      height:   1.4),
+                ),
+              ),
+            ],
+          ),
+        ),
+        SizedBox(
+          width: double.infinity, height: 56,
+          child: ElevatedButton.icon(
+            onPressed: _watchAdToFire,
+            style: ElevatedButton.styleFrom(
+              backgroundColor: _kSmsOrange,
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(AppRadius.lg)),
+              elevation: 0,
+            ),
+            icon:  const Icon(Icons.play_circle_rounded, size: 20),
+            label: const Text(
+              'Watch Ad to Fire',
+              style: TextStyle(
+                  fontSize:      16,
+                  fontWeight:    FontWeight.w800,
+                  letterSpacing: 1),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildFireButton(XissinColors c, {VoidCallback? onPressed}) {
+    return SizedBox(
+      width: double.infinity, height: 56,
+      child: AnimatedContainer(
+        duration: AppDurations.normal,
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(AppRadius.lg),
+          boxShadow: onPressed != null
+              ? AppShadows.doubleGlow(AppColors.primary)
+              : null,
+        ),
+        child: ElevatedButton(
+          onPressed: onPressed,
+          style: ElevatedButton.styleFrom(
+            backgroundColor:         AppColors.primary,
+            disabledBackgroundColor: AppColors.primary.withOpacity(0.4),
+            shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(AppRadius.lg)),
+            elevation: 0,
+          ),
+          child: _loading
+              ? const SizedBox(
+                  width: 22, height: 22,
+                  child: CircularProgressIndicator(
+                      color: Colors.white, strokeWidth: 2.5),
+                )
+              : const Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(Icons.send_rounded, size: 18, color: Colors.white),
+                    SizedBox(width: 8),
+                    Text(
+                      'FIRE',
+                      style: TextStyle(
+                        fontSize:      16,
+                        fontWeight:    FontWeight.w900,
+                        letterSpacing: 3,
+                        color:         Colors.white,
+                      ),
+                    ),
+                  ],
+                ),
+        ),
+      ),
+    );
   }
 
   // ── Build ──────────────────────────────────────────────────────────────────
@@ -458,7 +694,7 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
 
-            // ── Warning banner ─────────────────────────────────────────
+            // ── Warning banner ──────────────────────────────────────────
             Container(
               padding: const EdgeInsets.all(14),
               decoration: BoxDecoration(
@@ -486,7 +722,7 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
 
             const SizedBox(height: 26),
 
-            // ── Target number ──────────────────────────────────────────
+            // ── Target number ───────────────────────────────────────────
             Text('Target Number',
                 style: TextStyle(
                     color:      c.textSecondary,
@@ -538,7 +774,7 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
 
             const SizedBox(height: 26),
 
-            // ── Rounds selector ────────────────────────────────────────
+            // ── Rounds selector ─────────────────────────────────────────
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
@@ -624,104 +860,18 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
 
             const SizedBox(height: 32),
 
-            // ── FIRE button ────────────────────────────────────────────
-            SizedBox(
-              width:  double.infinity,
-              height: 56,
-              child: AnimatedContainer(
-                duration: AppDurations.normal,
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(AppRadius.lg),
-                  boxShadow: (!_loading && !_onCooldown)
-                      ? AppShadows.doubleGlow(AppColors.primary)
-                      : null,
-                ),
-                child: ElevatedButton(
-                  onPressed: (_loading || _onCooldown) ? null : _fire,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: _onCooldown
-                        ? c.surface
-                        : AppColors.primary,
-                    disabledBackgroundColor: _onCooldown
-                        ? c.surface
-                        : AppColors.primary.withOpacity(0.4),
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(AppRadius.lg)),
-                    elevation: 0,
-                    side: _onCooldown
-                        ? BorderSide(color: c.primary.withOpacity(0.4))
-                        : BorderSide.none,
-                  ),
-                  child: _loading
-                      ? const SizedBox(
-                          width: 22, height: 22,
-                          child: CircularProgressIndicator(
-                              color: Colors.white, strokeWidth: 2.5),
-                        )
-                      : _onCooldown
-                          ? Row(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                Icon(Icons.timer_outlined,
-                                    size: 18, color: c.textSecondary),
-                                const SizedBox(width: 8),
-                                Text(
-                                  'Cooldown  ${_fmtCooldown(_remaining)}',
-                                  style: TextStyle(
-                                    fontSize:   15,
-                                    fontWeight: FontWeight.bold,
-                                    color:      c.textSecondary,
-                                    letterSpacing: 1,
-                                  ),
-                                ),
-                              ],
-                            )
-                          : const Row(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                Icon(Icons.send_rounded,
-                                    size: 18, color: Colors.white),
-                                SizedBox(width: 8),
-                                Text(
-                                  'FIRE',
-                                  style: TextStyle(
-                                    fontSize:      16,
-                                    fontWeight:    FontWeight.w900,
-                                    letterSpacing: 3,
-                                    color:         Colors.white,
-                                  ),
-                                ),
-                              ],
-                            ),
-                ),
-              ),
-            )
+            // ── Action area (Part 2: ad gate + fire button) ─────────────
+            _buildActionArea(c)
                 .animate(delay: 300.ms)
                 .fadeIn(duration: 400.ms)
                 .slideY(begin: 0.2, end: 0, duration: 400.ms),
 
-            // ── Cooldown progress bar ──────────────────────────────────
-            if (_onCooldown) ...[
-              const SizedBox(height: 8),
-              ClipRRect(
-                borderRadius: BorderRadius.circular(AppRadius.xs),
-                child: LinearProgressIndicator(
-                  value: 1.0 -
-                      (_remaining.inMilliseconds /
-                          _kCooldown.inMilliseconds),
-                  minHeight: 5,
-                  backgroundColor: c.primary.withOpacity(0.12),
-                  valueColor: AlwaysStoppedAnimation<Color>(c.primary),
-                ),
-              ),
-            ],
-
-            // ── Live results panel (shows during active attack) ────────
+            // ── Live results panel ──────────────────────────────────────
             _buildLivePanel(),
 
             const SizedBox(height: 32),
 
-            // ── Attack History ─────────────────────────────────────────
+            // ── Attack History ──────────────────────────────────────────
             if (_history.isNotEmpty) ...[
               Row(
                 children: [
@@ -846,7 +996,6 @@ class _HistoryCardState extends State<_HistoryCard> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Header
           Row(
             children: [
               Container(
@@ -884,7 +1033,6 @@ class _HistoryCardState extends State<_HistoryCard> {
 
           const SizedBox(height: 10),
 
-          // Stat chips
           Row(
             children: [
               _MiniStat(label: 'Rounds',    value: '${r.rounds}', color: AppColors.primary),
@@ -916,7 +1064,6 @@ class _HistoryCardState extends State<_HistoryCard> {
 
           const SizedBox(height: 12),
 
-          // Footer row
           Row(
             children: [
               GestureDetector(
