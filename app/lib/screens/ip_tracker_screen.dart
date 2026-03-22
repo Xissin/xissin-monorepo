@@ -1,18 +1,31 @@
 // ============================================================
 //  app/lib/screens/ip_tracker_screen.dart
-//  🌐 IP Tracker — calls ip-api.com directly from user's phone
+//  🌐 IP Tracker
 //
-//  Part 2: Reward ad gate for free users.
-//   • Free: Watch ad once per screen visit → unlock all lookups for session
-//   • Premium: No gate, no ad, instant access
+//  FIXES:
+//   • No more direct http://ip-api.com calls from Flutter.
+//     Android 11+ blocks cleartext HTTP — all lookups now go
+//     through backend /api/ip-tracker/lookup (HTTPS).
+//   • "Show My IP" uses https://api.ipify.org (HTTPS, free).
+//   • Removed duplicate logIpLookup() — backend logs automatically.
+//
+//  IMPROVEMENTS:
+//   • Share result button in AppBar + bottom action row.
+//   • Backend response field names used throughout (country_code,
+//     region_name, zip_code, as_info, maps_url, success, error).
+//
+//  Ad pattern:
+//   • Free: watch ad once per screen visit → unlock all lookups
+//   • Premium: instant access, no gate
 // ============================================================
-import 'dart:convert';
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:google_mobile_ads/google_mobile_ads.dart';
+import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../services/ad_service.dart';
 import '../services/api_service.dart';
@@ -31,10 +44,7 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
   BannerAd? _bannerAd;
   bool      _bannerReady = false;
 
-  // ── Part 2: Session-scoped grant ──────────────────────────────────────────
-  // Free user watches ad ONCE per screen visit → _adGranted = true
-  // They can then do unlimited lookups for this session.
-  // Premium users bypass this entirely.
+  // ── Session-scoped grant for free users ───────────────────────────────────
   bool _adGranted = false;
 
   // ── Screen state ──────────────────────────────────────────────────────────
@@ -44,11 +54,6 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
   Map<String, dynamic>? _result;
   String?               _error;
   String?               _myIp;
-
-  static const _apiBase = 'http://ip-api.com/json';
-  static const _fields  =
-      'status,message,country,countryCode,regionName,city,'
-      'zip,lat,lon,timezone,isp,org,as,query,mobile,proxy,hosting';
 
   static const _accent  = Color(0xFF00B4D8);
   static const _accent2 = Color(0xFF0077B6);
@@ -118,7 +123,7 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
     );
   }
 
-  // ── Part 2: Watch ad to unlock session ────────────────────────────────────
+  // ── Ad gate ───────────────────────────────────────────────────────────────
 
   void _watchAdToUnlock() {
     HapticFeedback.selectionClick();
@@ -140,141 +145,80 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
     );
   }
 
-  // ── Core API call ─────────────────────────────────────────────────────────
-
-  Future<Map<String, dynamic>> _callApi(String query) async {
-    final url = query.isEmpty
-        ? '$_apiBase/?fields=$_fields'
-        : '$_apiBase/$query?fields=$_fields';
-
-    final resp = await http
-        .get(Uri.parse(url))
-        .timeout(const Duration(seconds: 10));
-
-    if (resp.statusCode == 429) {
-      throw Exception('Rate limit reached (45/min). Wait a moment.');
-    }
-    if (resp.statusCode != 200) {
-      throw Exception('Service error (${resp.statusCode})');
-    }
-    return jsonDecode(resp.body) as Map<String, dynamic>;
-  }
-
-  String _cleanInput(String raw) {
-    var q = raw.trim();
-    q = q.replaceAll(RegExp(r'^https?://', caseSensitive: false), '');
-    q = q.split('/').first.split('?').first.split('#').first;
-    final isIpv4 = RegExp(r'^\d{1,3}(\.\d{1,3}){3}$').hasMatch(q);
-    if (!isIpv4) q = q.split(':').first;
-    return q.trim();
-  }
-
   // ── Show My IP ─────────────────────────────────────────────────────────────
+  // FIX: Uses https://api.ipify.org instead of http://ip-api.com
+  // api.ipify.org supports HTTPS and returns {"ip": "x.x.x.x"} — simple.
 
   Future<void> _showMyIp() async {
-    // Gate check for free users
     if (!AdService.instance.adsRemoved && !_adGranted) {
       _watchAdToUnlock();
       return;
     }
-
     if (_myIpLoading) return;
     HapticFeedback.mediumImpact();
     setState(() { _myIpLoading = true; _myIp = null; _error = null; });
     try {
-      final data = await _callApi('');
-      if (data['status'] == 'fail') {
-        setState(() {
-          _myIpLoading = false;
-          _error = data['message'] as String? ?? 'Could not fetch your IP.';
-        });
-        ApiService.logIpLookup(
-          query: '', resolvedIp: '', country: '', city: '', isp: '',
-          lat: 0.0, lon: 0.0, success: false,
-        );
-        return;
+      final resp = await http
+          .get(Uri.parse('https://api.ipify.org?format=json'))
+          .timeout(const Duration(seconds: 8));
+      if (resp.statusCode == 200) {
+        final data = jsonDecode(resp.body);
+        final ip   = data['ip'] as String? ?? '';
+        if (ip.isNotEmpty) {
+          setState(() { _myIp = ip; _myIpLoading = false; });
+          return;
+        }
       }
-      setState(() {
-        _myIp        = data['query'] as String? ?? '';
-        _myIpLoading = false;
-      });
-      ApiService.logIpLookup(
-        query:      '',
-        resolvedIp: data['query']   as String? ?? '',
-        country:    data['country'] as String? ?? '',
-        city:       data['city']    as String? ?? '',
-        isp:        data['isp']     as String? ?? '',
-        lat:        (data['lat'] as num?)?.toDouble() ?? 0.0,
-        lon:        (data['lon'] as num?)?.toDouble() ?? 0.0,
-        success:    true,
-      );
+      setState(() { _myIpLoading = false; _error = 'Could not fetch your IP.'; });
     } on SocketException {
       setState(() { _myIpLoading = false; _error = 'No internet connection.'; });
     } on TimeoutException {
-      setState(() { _myIpLoading = false; _error = 'Request timed out. Try again.'; });
-    } catch (e) {
-      setState(() {
-        _myIpLoading = false;
-        _error = e.toString().replaceAll('Exception: ', '');
-      });
+      setState(() { _myIpLoading = false; _error = 'Request timed out.'; });
+    } catch (_) {
+      setState(() { _myIpLoading = false; _error = 'Could not fetch your IP.'; });
     }
   }
 
   // ── Lookup ────────────────────────────────────────────────────────────────
+  // FIX: All lookups go through the backend (HTTPS).
+  // Backend proxies to ip-api.com server-side — no Android cleartext block.
+  // Backend also handles logging automatically.
 
   Future<void> _lookup([String? forceQuery]) async {
-    // Gate check for free users
     if (!AdService.instance.adsRemoved && !_adGranted) {
       _watchAdToUnlock();
       return;
     }
 
-    final raw = forceQuery ?? _queryCtrl.text.trim();
-    if (raw.isEmpty) return;
-
-    final query = _cleanInput(raw);
-    if (query.isEmpty) {
-      setState(() => _error = 'Invalid input.');
-      return;
-    }
+    final query = (forceQuery ?? _queryCtrl.text).trim();
+    if (query.isEmpty) return;
 
     HapticFeedback.mediumImpact();
     FocusScope.of(context).unfocus();
     setState(() { _loading = true; _error = null; _result = null; });
 
     try {
-      final data = await _callApi(query);
+      final data = await ApiService.lookupIp(query);
 
-      if (data['status'] == 'fail') {
+      if (data['success'] == false) {
         setState(() {
           _loading = false;
-          _error   = data['message'] as String? ?? 'Invalid IP or domain.';
+          _error   = data['error'] as String? ?? 'Invalid IP or domain.';
         });
-        ApiService.logIpLookup(
-          query: query, resolvedIp: query, country: '', city: '', isp: '',
-          lat: 0.0, lon: 0.0, success: false,
-        );
         return;
       }
 
       setState(() { _loading = false; _result = data; });
 
-      ApiService.logIpLookup(
-        query:      query,
-        resolvedIp: data['query']   as String? ?? query,
-        country:    data['country'] as String? ?? '',
-        city:       data['city']    as String? ?? '',
-        isp:        data['isp']     as String? ?? '',
-        lat:        (data['lat'] as num?)?.toDouble() ?? 0.0,
-        lon:        (data['lon'] as num?)?.toDouble() ?? 0.0,
-        success:    true,
-      );
-
-      // Non-gated interstitial after successful result
+      // Show interstitial after successful result (non-gated)
       Future.delayed(const Duration(milliseconds: 600), () {
-        if (!AdService.instance.adsRemoved) AdService.instance.showInterstitial();
+        if (mounted && !AdService.instance.adsRemoved) {
+          AdService.instance.showInterstitial();
+        }
       });
 
+    } on ApiException catch (e) {
+      setState(() { _loading = false; _error = e.userMessage; });
     } on SocketException {
       setState(() { _loading = false; _error = 'No internet connection.'; });
     } on TimeoutException {
@@ -285,6 +229,39 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
         _error   = e.toString().replaceAll('Exception: ', '');
       });
     }
+  }
+
+  // ── Share result ──────────────────────────────────────────────────────────
+
+  void _shareResult() {
+    if (_result == null) return;
+    if (!AdService.instance.adsRemoved) AdService.instance.showInterstitial();
+    HapticFeedback.selectionClick();
+
+    final d = _result!;
+    final buf = StringBuffer()
+      ..writeln('🌐 IP Tracker Result — Xissin')
+      ..writeln('═══════════════════════════')
+      ..writeln('📡 IP: ${d['query'] ?? ''}')
+      ..writeln('🌍 Country: ${d['country_code'] ?? ''}  ${d['country'] ?? ''}')
+      ..writeln('🗺️  Region: ${d['region_name'] ?? ''}')
+      ..writeln('🏙️  City: ${d['city'] ?? ''}')
+      ..writeln('📮 ZIP: ${d['zip_code'] ?? ''}')
+      ..writeln('📡 ISP: ${d['isp'] ?? ''}')
+      ..writeln('🏢 Org: ${d['org'] ?? ''}')
+      ..writeln('🕐 Timezone: ${d['timezone'] ?? ''}')
+      ..writeln('📱 Mobile: ${d['mobile'] == true ? 'YES' : 'NO'}')
+      ..writeln('🛡️  Proxy/VPN: ${d['proxy'] == true ? 'YES' : 'NO'}')
+      ..writeln('🖥️  Hosting: ${d['hosting'] == true ? 'YES' : 'NO'}');
+
+    final mapsUrl = d['maps_url'] as String? ?? '';
+    if (mapsUrl.isNotEmpty) {
+      buf.writeln('🗺️  Maps: $mapsUrl');
+    }
+    buf.writeln('═══════════════════════════');
+    buf.writeln('Tracked with Xissin — t.me/Xissin_0');
+
+    Share.share(buf.toString(), subject: 'IP Tracker Result — ${d['query'] ?? ''}');
   }
 
   // ── Helpers ───────────────────────────────────────────────────────────────
@@ -340,13 +317,22 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
                   fontWeight: FontWeight.w700, letterSpacing: 0.4)),
         ]),
         centerTitle: true,
+        // Share button — only visible when we have a result
+        actions: [
+          if (_result != null)
+            IconButton(
+              icon: const Icon(Icons.share_rounded, color: _accent, size: 20),
+              tooltip: 'Share result',
+              onPressed: _shareResult,
+            ),
+        ],
       ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // ── Part 2: Ad gate overlay (free users only, before first lookup)
+            // Ad gate (free users only, before first lookup)
             if (!AdService.instance.adsRemoved && !_adGranted)
               _buildAdGateCard(c),
 
@@ -364,7 +350,7 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
     );
   }
 
-  // ── Part 2: Ad gate card ──────────────────────────────────────────────────
+  // ── Ad gate card ──────────────────────────────────────────────────────────
 
   Widget _buildAdGateCard(XissinColors c) {
     return Container(
@@ -634,29 +620,32 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
   );
 
   // ── Result Section ────────────────────────────────────────────────────────
+  // FIX: Uses backend response field names:
+  //   country_code (was countryCode), region_name (was regionName),
+  //   zip_code (was zip), as_info (was as), maps_url (pre-built by backend),
+  //   success/error (was status/message).
 
   List<Widget> _buildResultSection(XissinColors c) {
     final d           = _result!;
     final resolvedIp  = d['query']       as String? ?? '';
     final country     = d['country']     as String? ?? '';
-    final countryCode = d['countryCode'] as String? ?? '';
-    final regionName  = d['regionName']  as String? ?? '';
-    final city        = d['city']        as String? ?? '';
-    final zip         = d['zip']         as String? ?? '';
+    final countryCode = d['country_code'] as String? ?? '';
+    final regionName  = d['region_name']  as String? ?? '';
+    final city        = d['city']         as String? ?? '';
+    final zip         = d['zip_code']     as String? ?? '';
     final lat         = (d['lat']  as num?)?.toDouble() ?? 0.0;
     final lon         = (d['lon']  as num?)?.toDouble() ?? 0.0;
-    final timezone    = d['timezone']    as String? ?? '';
-    final isp         = d['isp']         as String? ?? '';
-    final org         = d['org']         as String? ?? '';
-    final asInfo      = d['as']          as String? ?? '';
-    final mobile      = d['mobile']      as bool?   ?? false;
-    final proxy       = d['proxy']       as bool?   ?? false;
-    final hosting     = d['hosting']     as bool?   ?? false;
-    final mapsUrl     = (lat != 0 || lon != 0)
-        ? 'https://www.google.com/maps?q=$lat,$lon'
-        : '';
+    final timezone    = d['timezone']     as String? ?? '';
+    final isp         = d['isp']          as String? ?? '';
+    final org         = d['org']          as String? ?? '';
+    final asInfo      = d['as_info']      as String? ?? '';
+    final mobile      = d['mobile']       as bool?   ?? false;
+    final proxy       = d['proxy']        as bool?   ?? false;
+    final hosting     = d['hosting']      as bool?   ?? false;
+    final mapsUrl     = d['maps_url']     as String? ?? '';
 
     return [
+      // ── Resolved IP header ───────────────────────────────────────────────
       Container(
         margin: const EdgeInsets.only(bottom: 12),
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
@@ -691,6 +680,7 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
         ]),
       ),
 
+      // ── Location card ────────────────────────────────────────────────────
       _card(c: c, icon: Icons.place_rounded, title: 'Location',
           color: const Color(0xFF2ECC71), children: [
         _infoRow(c, '🌍', 'Country',
@@ -726,6 +716,7 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
         ],
       ]),
 
+      // ── Network card ─────────────────────────────────────────────────────
       _card(c: c, icon: Icons.cell_tower_rounded, title: 'Network',
           color: _accent, children: [
         _infoRow(c, '📡', 'ISP',          isp.isNotEmpty    ? isp    : '—'),
@@ -755,6 +746,7 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
         ],
       ]),
 
+      // ── Details card ─────────────────────────────────────────────────────
       _card(c: c, icon: Icons.manage_search_rounded, title: 'Details',
           color: const Color(0xFFFFA94D), children: [
         _infoRow(c, '🕐', 'Timezone', timezone.isNotEmpty ? timezone : '—'),
@@ -762,6 +754,54 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
         _flagRow(c, '🛡️', 'Proxy / VPN',          proxy),
         _flagRow(c, '🖥️', 'Hosting / Datacenter', hosting),
       ]),
+
+      // ── Share / Copy action row ───────────────────────────────────────────
+      Container(
+        margin: const EdgeInsets.only(bottom: 12),
+        child: Row(children: [
+          Expanded(
+            child: GestureDetector(
+              onTap: () => _copy(
+                '$resolvedIp | $city, $country | ISP: $isp',
+                'Summary',
+              ),
+              child: Container(
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                decoration: BoxDecoration(
+                  color:        c.surface,
+                  borderRadius: BorderRadius.circular(12),
+                  border:       Border.all(color: c.border),
+                ),
+                child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+                  Icon(Icons.copy_rounded, size: 15, color: c.textSecondary),
+                  const SizedBox(width: 6),
+                  Text('Copy Summary',
+                      style: TextStyle(color: c.textSecondary, fontSize: 13, fontWeight: FontWeight.w600)),
+                ]),
+              ),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: GestureDetector(
+              onTap: _shareResult,
+              child: Container(
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                decoration: BoxDecoration(
+                  gradient: const LinearGradient(colors: [_accent, _accent2]),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: const Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+                  Icon(Icons.share_rounded, size: 15, color: Colors.white),
+                  SizedBox(width: 6),
+                  Text('Share Result',
+                      style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600)),
+                ]),
+              ),
+            ),
+          ),
+        ]),
+      ),
 
       const SizedBox(height: 4),
     ];

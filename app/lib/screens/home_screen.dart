@@ -22,6 +22,9 @@ import 'duplicate_remover_screen.dart';
 import 'ip_tracker_screen.dart';
 import 'username_tracker_screen.dart';
 
+// UPDATE THIS CONSTANT WHEN ADDING NEW TOOLS TO THE GRID
+const int _kToolCount = 6;
+
 class HomeScreen extends StatefulWidget {
   final String userId;
   final String nickname;
@@ -50,11 +53,11 @@ class _HomeScreenState extends State<HomeScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       LocationService.tryCollectAndSend(widget.userId);
     });
-    AdService.instance.init(userId: widget.userId).then((_) {
-      if (mounted && !AdService.instance.adsRemoved && !_bannerReady) {
-        _initBanner();
-      }
-    });
+
+    // FIX: init() is fire-and-forget — do NOT call _initBanner() inside
+    // .then() because _initBanner() already runs on the next line.
+    // The old code called _initBanner() twice, creating 2 banner ad objects.
+    AdService.instance.init(userId: widget.userId);
     AdService.instance.addListener(_onAdServiceChanged);
     _initBanner();
   }
@@ -120,7 +123,6 @@ class _HomeScreenState extends State<HomeScreen> {
     _pushSlide(NglScreen(userId: widget.userId));
   }
 
-  /// Part 5: About lives in the AppBar ⓘ button
   void _goToAbout() {
     HapticFeedback.selectionClick();
     Navigator.push(
@@ -388,7 +390,7 @@ class _HomeScreenState extends State<HomeScreen> {
                           color:        c.primary.withOpacity(0.15),
                           borderRadius: BorderRadius.circular(AppRadius.full),
                         ),
-                        child: Text('6',   // ← Part 5: About removed from grid
+                        child: Text('$_kToolCount',
                             style: TextStyle(
                               color:      c.primary,
                               fontSize:   11,
@@ -400,7 +402,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               ),
 
-              // Tools grid — 6 tools, About is now in the AppBar ⓘ
+              // Tools grid
               SliverPadding(
                 padding: const EdgeInsets.fromLTRB(16, 0, 16, 32),
                 sliver: SliverGrid(
@@ -554,7 +556,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   .scale(begin: const Offset(0.8, 0.8), duration: 400.ms),
               const SizedBox(width: 8),
 
-              // ── Part 5: About ⓘ ─────────────────────────────────────────
+              // About ⓘ
               GestureDetector(
                 onTap: _goToAbout,
                 child: Container(

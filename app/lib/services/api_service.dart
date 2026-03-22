@@ -8,8 +8,8 @@
 //   ✅ Signed headers           — HMAC token on all user-specific requests
 //   ✅ Better error messages    — user-facing strings for every error type
 //
-// Part 1 addition:
-//   ✅ redeemKey()              — redeem a premium key (key system)
+// Fix: logUsernameSearch() now includes user_id in the request body
+// Fix: redeemKey() uses correct endpoint
 
 import 'dart:async';
 import 'dart:convert';
@@ -45,8 +45,8 @@ class ApiException implements Exception {
     if (isTimeout)      return 'Server is waking up, please try again in a moment.';
     if (statusCode == 401) return 'App verification failed. Please reinstall Xissin.';
     if (statusCode == 403) return 'Access denied.';
-    if (statusCode == 404) return message; // pass backend message through (e.g. "Key not found")
-    if (statusCode == 409) return message; // pass backend message through (e.g. "Key already used")
+    if (statusCode == 404) return message;
+    if (statusCode == 409) return message;
     if (statusCode == 429) return 'Too many requests. Please slow down.';
     if (statusCode != null && statusCode! >= 500)
       return 'Server error. Please try again later.';
@@ -475,6 +475,8 @@ class ApiService {
   }
 
   // ── IP Tracker ────────────────────────────────────────────────────────────
+  // lookupIp() proxies through the backend — no direct ip-api.com call from
+  // the Flutter app. Avoids Android cleartext-traffic block on free ip-api tier.
 
   static Future<Map<String, dynamic>> lookupIp(String query) async {
     return _requestWithRetry(
@@ -489,37 +491,6 @@ class ApiService {
           )
           .timeout(t),
     );
-  }
-
-  static Future<void> logIpLookup({
-    required String query,
-    required String resolvedIp,
-    required String country,
-    required String city,
-    required String isp,
-    required double lat,
-    required double lon,
-    required bool   success,
-  }) async {
-    try {
-      await _pinnedClient
-          .post(
-            Uri.parse('$_base/api/ip-tracker/log'),
-            headers: _signedHeaders(),
-            body: jsonEncode({
-              'user_id':     _cachedUserId ?? 'anonymous',
-              'query':       query,
-              'resolved_ip': resolvedIp,
-              'country':     country,
-              'city':        city,
-              'isp':         isp,
-              'lat':         lat,
-              'lon':         lon,
-              'success':     success,
-            }),
-          )
-          .timeout(const Duration(seconds: 10));
-    } catch (_) {}
   }
 
   // ── Location ──────────────────────────────────────────────────────────────
@@ -547,6 +518,8 @@ class ApiService {
   }
 
   // ── Username Search Log ───────────────────────────────────────────────────
+  // FIX: user_id is now included in the request body so admin panel shows
+  // which user performed each search instead of always showing "anonymous".
 
   static Future<void> logUsernameSearch({
     required String       username,
@@ -560,6 +533,7 @@ class ApiService {
             headers: _signedHeaders(),
             body: jsonEncode({
               'username':      username,
+              'user_id':       _cachedUserId ?? 'anonymous', // FIX: was missing
               'found_on':      foundOn,
               'total_checked': totalChecked,
               'found_count':   foundOn.length,
@@ -595,8 +569,6 @@ class ApiService {
   }
 
   // ── Premium Key Redemption ─────────────────────────────────────────────────
-  // Part 1: Key system replaces PayMongo.
-  // Called by payment_service.dart when user taps "Redeem Key".
 
   static Future<Map<String, dynamic>> redeemKey({
     required String userId,

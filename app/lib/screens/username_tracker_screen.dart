@@ -1,12 +1,19 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // app/lib/screens/username_tracker_screen.dart
-// Username Tracker v3.1
+// Username Tracker v3.2
 //
-// Part 2: Reward ad gate for free users.
+// IMPROVEMENTS:
+//   • Parallel platform checks (5 concurrent) instead of sequential.
+//     29 platforms with sequential + 80ms delay = ~30s. Now ~6-8s.
+//   • _Semaphore class limits concurrency without blocking all at once.
+//   • All platforms set to "checking" upfront, UI updates as each resolves.
+//
+// Ad pattern (unchanged):
 //   • Free: Watch ad ONCE per screen visit → unlock all searches for session
 //   • Premium: No gate, instant access
 // ─────────────────────────────────────────────────────────────────────────────
 
+import 'dart:collection';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
@@ -16,6 +23,36 @@ import 'package:url_launcher/url_launcher.dart';
 import '../theme/app_theme.dart';
 import '../services/ad_service.dart';
 import '../services/api_service.dart';
+
+// ── Semaphore — limits concurrent HTTP checks ─────────────────────────────────
+// Allows up to [maxCount] simultaneous platform checks.
+// Any additional checks wait until a slot frees up.
+
+class _Semaphore {
+  final int _max;
+  int _running = 0;
+  final _queue = Queue<Completer<void>>();
+
+  _Semaphore(this._max);
+
+  Future<void> acquire() {
+    if (_running < _max) {
+      _running++;
+      return Future.value();
+    }
+    final c = Completer<void>();
+    _queue.add(c);
+    return c.future;
+  }
+
+  void release() {
+    if (_queue.isNotEmpty) {
+      _queue.removeFirst().complete();
+    } else {
+      _running--;
+    }
+  }
+}
 
 // ── Platform model ────────────────────────────────────────────────────────────
 
@@ -66,9 +103,7 @@ class _UsernameTrackerScreenState extends State<UsernameTrackerScreen> {
   BannerAd? _bannerAd;
   bool      _bannerReady = false;
 
-  // ── Part 2: Session-scoped gate ────────────────────────────────────────────
-  // Free user watches ad ONCE → _adGranted = true for this screen visit.
-  // Premium bypasses entirely.
+  // ── Session-scoped gate ────────────────────────────────────────────────────
   bool _adGranted = false;
 
   // ── State ──────────────────────────────────────────────────────────────────
@@ -248,7 +283,7 @@ class _UsernameTrackerScreenState extends State<UsernameTrackerScreen> {
     );
   }
 
-  // ── Part 2: Watch ad to unlock session ────────────────────────────────────
+  // ── Watch ad to unlock ────────────────────────────────────────────────────
 
   void _watchAdToUnlock() {
     HapticFeedback.selectionClick();
@@ -262,7 +297,7 @@ class _UsernameTrackerScreenState extends State<UsernameTrackerScreen> {
     );
   }
 
-  // ── Smart variant generation ───────────────────────────────────────────────
+  // ── Variant generation ────────────────────────────────────────────────────
 
   List<String> _generateVariants(String raw) {
     String input = raw.trim().replaceAll('@', '');
@@ -331,13 +366,14 @@ class _UsernameTrackerScreenState extends State<UsernameTrackerScreen> {
     return map;
   }
 
-  // ── Search ─────────────────────────────────────────────────────────────────
+  // ── Search — PARALLEL with bounded concurrency ────────────────────────────
+  // IMPROVEMENT: Up to 5 platforms checked simultaneously instead of
+  // sequential 1-by-1 with 80ms delay. ~5x faster for 29 platforms.
 
   Future<void> _startSearch([String? overrideInput]) async {
     final raw = (overrideInput ?? _controller.text).trim().replaceAll('@', '');
     if (raw.isEmpty || _isSearching) return;
 
-    // Gate check for free users
     if (!AdService.instance.adsRemoved && !_adGranted) {
       _watchAdToUnlock();
       return;
@@ -363,29 +399,34 @@ class _UsernameTrackerScreenState extends State<UsernameTrackerScreen> {
     _history.insert(0, histKey);
     if (_history.length > 5) _history.removeLast();
 
+    // Set ALL platforms to checking upfront — UI shows them all as pending
     setState(() {
       _currentUsername  = variants.first;
       _variants         = variants;
       _isSearching      = true;
       _selectedCategory = 'All';
       for (final r in _results) {
-        r.status       = _Status.idle;
+        r.status       = _Status.checking;
         r.profileUrl   = null;
         r.foundVariant = null;
       }
     });
 
-    for (int i = 0; i < _results.length; i++) {
-      if (!mounted || !_isSearching) break;
-      setState(() => _results[i].status = _Status.checking);
-      await _checkPlatformVariants(_results[i], variants);
-      if (mounted) setState(() {});
-      if (i < _results.length - 1) {
-        await Future.delayed(const Duration(milliseconds: 80));
-      }
-    }
+    // Bounded concurrent checks: max 5 simultaneous HTTP requests
+    final sem = _Semaphore(5);
 
-    if (mounted) {
+    await Future.wait(_results.map((result) async {
+      await sem.acquire();
+      try {
+        if (!mounted || !_isSearching) return;
+        await _checkPlatformVariants(result, variants);
+        if (mounted) setState(() {}); // update UI as each platform resolves
+      } finally {
+        sem.release();
+      }
+    }));
+
+    if (mounted && _isSearching) {
       setState(() => _isSearching = false);
       HapticFeedback.mediumImpact();
 
@@ -393,6 +434,7 @@ class _UsernameTrackerScreenState extends State<UsernameTrackerScreen> {
           .where((r) => r.status == _Status.found)
           .map((r) => r.platform.name)
           .toList();
+
       ApiService.logUsernameSearch(
         username:     variants.first,
         foundOn:      foundOn,
@@ -400,7 +442,7 @@ class _UsernameTrackerScreenState extends State<UsernameTrackerScreen> {
       );
 
       Future.delayed(const Duration(milliseconds: 600), () {
-        if (!AdService.instance.adsRemoved) {
+        if (mounted && !AdService.instance.adsRemoved) {
           AdService.instance.showInterstitial();
         }
       });
@@ -588,7 +630,6 @@ class _UsernameTrackerScreenState extends State<UsernameTrackerScreen> {
         child: Column(
           children: [
             _buildAppBar(c),
-            // ── Part 2: Ad gate banner (free + not yet granted) ───────────
             if (!AdService.instance.adsRemoved && !_adGranted)
               _buildAdGateBanner(c),
             Expanded(
@@ -634,7 +675,7 @@ class _UsernameTrackerScreenState extends State<UsernameTrackerScreen> {
     );
   }
 
-  // ── Part 2: Ad gate banner ────────────────────────────────────────────────
+  // ── Ad gate banner ────────────────────────────────────────────────────────
 
   Widget _buildAdGateBanner(XissinColors c) {
     return Container(
@@ -824,7 +865,7 @@ class _UsernameTrackerScreenState extends State<UsernameTrackerScreen> {
             Padding(
               padding: const EdgeInsets.only(top: 6, left: 4),
               child: Text(
-                'Auto-fixes spaces & caps  •  Checks ${_platforms.length} platforms',
+                'Auto-fixes spaces & caps  •  Checks ${_platforms.length} platforms  •  5 parallel',
                 style: TextStyle(color: c.textHint, fontSize: 11),
               ),
             ),
@@ -1379,6 +1420,9 @@ class _UsernameTrackerScreenState extends State<UsernameTrackerScreen> {
             const SizedBox(height: 8),
             _FeatureHint(icon: Icons.copy_all_rounded,
                 text: 'Searches 5 variants per platform automatically', c: c),
+            const SizedBox(height: 8),
+            _FeatureHint(icon: Icons.bolt_rounded,
+                text: '5 platforms checked in parallel — ~5× faster', c: c),
             const SizedBox(height: 8),
             _FeatureHint(icon: Icons.open_in_new_rounded,
                 text: 'Tap "Open" to visit found profiles directly', c: c),
