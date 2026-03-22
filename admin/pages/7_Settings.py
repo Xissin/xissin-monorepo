@@ -6,7 +6,7 @@ import re
 
 import streamlit as st
 from utils.api import get, post
-from utils.theme import inject_theme, page_header, auth_guard
+from utils.theme import inject_theme, page_header, auth_guard, notify
 
 st.set_page_config(page_title="Settings · Xissin Admin", page_icon="⚙️", layout="wide")
 inject_theme()
@@ -30,13 +30,14 @@ col_refresh, _ = st.columns([1, 5])
 with col_refresh:
     if st.button("🔄 Refresh", use_container_width=True):
         st.cache_data.clear()
+        notify("Settings refreshed.", kind="info")
         st.rerun()
 
 with st.spinner("Loading settings..."):
     try:
         s = load_settings()
     except Exception as e:
-        st.error(f"Failed to load settings: {e}")
+        notify(f"Failed to load settings: {e}", kind="error")
         st.stop()
 
 # ── Status banner ──────────────────────────────────────────────────────────────
@@ -138,8 +139,7 @@ st.divider()
 st.markdown("### 🔑 Owner Bypass Devices")
 st.caption(
     "Device IDs listed here will **bypass maintenance mode** and always access the app normally. "
-    "Add your own phone's device ID here so you can test the app even during maintenance. "
-    "The device ID is the Android device ID (shown in Device Info page of the admin panel)."
+    "Add your own phone's device ID here so you can test the app even during maintenance."
 )
 
 with st.container(border=True):
@@ -173,7 +173,7 @@ with st.container(border=True):
         if parsed_bypass:
             st.success(f"✅ {len(parsed_bypass)} device(s) will bypass maintenance.")
         else:
-            st.info("No bypass devices set. Only you (as admin) can turn off maintenance.")
+            st.info("No bypass devices set.")
 
 st.divider()
 
@@ -209,7 +209,6 @@ with ra_col1:
             "🏷 Banner Label (shown in home screen)",
             value=s.get("remove_ads_label") or f"Remove Ads — ₱{int(current_price_php)} Lifetime",
             placeholder="Remove Ads — ₱99 Lifetime",
-            help="Short label shown on the promo banner on the home screen.",
         )
         remove_ads_subtitle = st.text_input(
             "📝 Banner Subtitle",
@@ -221,16 +220,12 @@ with ra_col1:
             value=s.get("remove_ads_description") or "Enjoy Xissin completely ad-free — forever.",
             height=80,
             placeholder="Enjoy Xissin completely ad-free — forever.",
-            help="Shown at the top of the Remove Ads purchase dialog.",
         )
 
 with ra_col2:
     with st.container(border=True):
         st.markdown("#### ✅ Benefits List")
-        st.caption(
-            "Each line = one benefit bullet shown in the Remove Ads dialog. "
-            "Add as many as you want — one per line."
-        )
+        st.caption("Each line = one benefit bullet shown in the Remove Ads dialog.")
 
         current_benefits = s.get("remove_ads_benefits") or [
             "No more banner ads",
@@ -312,9 +307,7 @@ with col_save:
                 "apk_download_url":       raw_apk_url.strip(),
                 "apk_version_notes":      apk_version_notes.strip(),
                 "apk_sha256":             apk_sha256.strip(),
-                # ── Owner bypass ─────────────────────────────────────────────
                 "owner_bypass_ids":       parsed_byp,
-                # ── Remove Ads ──────────────────────────────────────────────
                 "remove_ads_price":       price_centavos,
                 "remove_ads_label":       remove_ads_label.strip(),
                 "remove_ads_subtitle":    remove_ads_subtitle.strip(),
@@ -322,8 +315,14 @@ with col_save:
                 "remove_ads_benefits":    parsed_ben,
             }
             post("/api/settings/", payload)
-            st.success("✓ All settings saved successfully!")
+
+            # ── Notify based on what changed ──────────────────────────────────
+            if maintenance:
+                notify("🔴 Maintenance mode ON — users are now blocked.", kind="warning")
+            else:
+                notify("✅ Settings saved successfully!", kind="success")
+
             st.cache_data.clear()
             st.rerun()
         except Exception as e:
-            st.error(f"Error saving settings: {e}")
+            notify(f"Failed to save: {e}", kind="error")
