@@ -21,8 +21,8 @@ New fields displayed:
 import streamlit as st
 import pandas as pd
 from collections import Counter
-from utils.api import get
-from utils.theme import inject_theme, page_header, auth_guard
+from utils.api import get, post
+from utils.theme import inject_theme, page_header, auth_guard, notify, render_notify
 
 st.set_page_config(
     page_title="Device Info · Xissin Admin",
@@ -32,6 +32,7 @@ st.set_page_config(
 inject_theme()
 auth_guard()
 
+render_notify()  # ← shows queued toasts after rerun
 page_header("📱", "Device Info", "HARDWARE · OS · BATTERY · NETWORK · SECURITY")
 
 # ── Load ───────────────────────────────────────────────────────────────────────
@@ -52,6 +53,7 @@ with col_d:
     st.markdown("<br>", unsafe_allow_html=True)
     if st.button("🔄 Refresh", use_container_width=True):
         st.cache_data.clear()
+        notify("Device info refreshed.", kind="info")
         st.rerun()
 
 with st.spinner("Loading device info..."):
@@ -261,6 +263,26 @@ with tab_cards:
                     f"</div>"
                 )
                 st.markdown(html, unsafe_allow_html=True)
+
+                # ── 🔑 Owner Bypass button ────────────────────────────────
+                if not is_emulator:
+                    btn_label = f"🔑 Set as Owner Bypass"
+                    if st.button(btn_label, key=f"bypass_{user_id}_{i}_{j}",
+                                 use_container_width=True):
+                        try:
+                            s = get("/api/settings/")
+                            existing = s.get("owner_bypass_ids") or []
+                            if user_id not in existing:
+                                existing.append(user_id)
+                                s["owner_bypass_ids"] = existing
+                                post("/api/settings/", s)
+                                notify(f"✅ {user_id[:20]} added to Owner Bypass!", kind="success")
+                            else:
+                                notify(f"ℹ️ Already in Owner Bypass list.", kind="info")
+                            st.rerun()
+                        except Exception as e:
+                            notify(f"Failed: {e}", kind="error")
+                            st.rerun()
 
 
 # ─────────────────────────────────────────────────────────────────────────────

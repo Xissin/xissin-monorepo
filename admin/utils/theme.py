@@ -294,52 +294,6 @@ h1, h2, h3 {
 .stWarning  { background: rgba(255,149,0,.08)  !important; border-color: rgba(255,149,0,.3)  !important; color: var(--orange) !important; }
 .stInfo     { background: rgba(0,229,255,.06)  !important; border-color: rgba(0,229,255,.25) !important; color: var(--cyan-dim) !important; }
 
-/* ── Toast notifications (cyberpunk styled) ────────────────────────────────── */
-[data-testid="stToast"] {
-  background: var(--bg3) !important;
-  border-radius: 12px !important;
-  font-family: var(--body) !important;
-  font-weight: 600 !important;
-  font-size: 14px !important;
-  letter-spacing: .4px !important;
-  color: var(--text-bright) !important;
-  box-shadow: 0 0 32px rgba(0,0,0,.6), 0 0 0 1px var(--border-glow) !important;
-  animation: toastIn .3s cubic-bezier(0.34,1.56,0.64,1) both !important;
-  min-width: 280px !important;
-  padding: 14px 18px !important;
-}
-[data-testid="stToast"]::before {
-  content: '';
-  position: absolute;
-  top: 0; left: 0; right: 0;
-  height: 2px;
-  border-radius: 12px 12px 0 0;
-  background: linear-gradient(90deg, var(--cyan), var(--purple));
-}
-
-/* Toast kind-specific border colors */
-[data-testid="stToast"][data-kind="success"] {
-  border: 1px solid rgba(0,255,157,.35) !important;
-}
-[data-testid="stToast"][data-kind="success"]::before {
-  background: linear-gradient(90deg, var(--green), var(--cyan)) !important;
-}
-[data-testid="stToast"][data-kind="error"] {
-  border: 1px solid rgba(255,71,87,.35) !important;
-}
-[data-testid="stToast"][data-kind="error"]::before {
-  background: linear-gradient(90deg, var(--red), var(--pink)) !important;
-}
-[data-testid="stToast"][data-kind="warning"] {
-  border: 1px solid rgba(255,149,0,.35) !important;
-}
-[data-testid="stToast"][data-kind="warning"]::before {
-  background: linear-gradient(90deg, var(--orange), var(--pink)) !important;
-}
-[data-testid="stToast"][data-kind="info"] {
-  border: 1px solid rgba(0,229,255,.35) !important;
-}
-
 /* ── Divider ───────────────────────────────────────────────────────────────── */
 hr {
   border: none !important;
@@ -420,10 +374,6 @@ code, pre, [data-testid="stCode"] {
 @keyframes spin {
   to { transform: rotate(360deg); }
 }
-@keyframes toastIn {
-  from { opacity: 0; transform: translateX(40px) scale(.92); }
-  to   { opacity: 1; transform: translateX(0)   scale(1); }
-}
 </style>
 """
 
@@ -435,25 +385,37 @@ def inject_theme():
 
 def notify(message: str, kind: str = "success"):
     """
-    Show a themed toast notification in the bottom-right corner.
+    Queue a toast notification that survives st.rerun().
 
-    Usage:
-        notify("Settings saved!")                  # ✅ green
-        notify("User deleted.", kind="success")    # ✅ green
-        notify("Something went wrong.", kind="error")    # ❌ red
-        notify("Check your input.", kind="warning")      # ⚠️ orange
-        notify("Refreshing data...", kind="info")        # ℹ️ cyan
+    Call this BEFORE st.rerun() — the toast fires on the next render via
+    render_notify(), which must be placed near the top of every page that
+    uses notify().
 
-    kind options: "success" | "error" | "warning" | "info"
+    kind: "success" | "error" | "warning" | "info"
     """
-    _icons = {
-        "success": "✅",
-        "error":   "❌",
-        "warning": "⚠️",
-        "info":    "ℹ️",
-    }
-    icon = _icons.get(kind, "✅")
-    st.toast(f"{message}", icon=icon)
+    st.session_state["_xissin_notify"] = (message, kind)
+
+
+def render_notify():
+    """
+    Show any queued toast from notify(). Call this near the top of each
+    admin page, right after inject_theme() + auth_guard().
+
+    Pattern in every page:
+        inject_theme()
+        auth_guard()
+        render_notify()   ← add this line
+    """
+    key = "_xissin_notify"
+    if key in st.session_state:
+        message, kind = st.session_state.pop(key)
+        _icons = {
+            "success": "✅",
+            "error":   "❌",
+            "warning": "⚠️",
+            "info":    "ℹ️",
+        }
+        st.toast(message, icon=_icons.get(kind, "✅"))
 
 
 def page_header(icon: str, title: str, subtitle: str = ""):

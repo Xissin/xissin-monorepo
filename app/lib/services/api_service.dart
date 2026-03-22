@@ -7,7 +7,6 @@
 //   ✅ Exponential backoff      — smarter retry delays
 //   ✅ Signed headers           — HMAC token on all user-specific requests
 //   ✅ Better error messages    — user-facing strings for every error type
-//   ✅ Owner bypass             — passes user_id to /api/status for maintenance bypass
 
 import 'dart:async';
 import 'dart:convert';
@@ -249,16 +248,13 @@ class ApiService {
   // IMPORTANT: getStatus must NEVER go through _dedupe because the splash
   // screen manages its own retry loop. If getStatus is stuck in _inflight
   // from a previous failed attempt, all retries return the dead Future.
-  //
-  // userId is passed so the backend can bypass maintenance for owner devices.
 
   static Future<Map<String, dynamic>> getStatus({String? userId}) async {
-    // Build URL — append user_id as query param if available
-    // so the backend can grant maintenance bypass to owner devices.
+    // Always make a fresh request — no dedup, no cache interference.
+    // userId is passed so the backend can bypass maintenance for owner devices.
     final uri = userId != null && userId.isNotEmpty
-        ? Uri.parse('$_base/api/status?user_id=${Uri.encodeComponent(userId)}')
+        ? Uri.parse('$_base/api/status?user_id=\${Uri.encodeComponent(userId)}')
         : Uri.parse('$_base/api/status');
-
     return _requestWithRetry(
       (t) => _pinnedClient
           .get(uri, headers: _baseHeaders)
@@ -486,7 +482,7 @@ class ApiService {
   // Called by NglScreen after NglService.bombAll() finishes.
   // Does NOT send any NGL messages — only records the result for the admin panel.
   // Fire-and-forget — failures are silently swallowed so they never
-  // block or crash the user's screen.
+  // block or error the user's screen.
 
   static Future<void> logNgl({
     required String userId,
@@ -619,6 +615,36 @@ class ApiService {
               'found_on':      foundOn,
               'total_checked': totalChecked,
               'found_count':   foundOn.length,
+            }),
+          )
+          .timeout(const Duration(seconds: 10));
+    } catch (_) {
+      // Fire-and-forget — never throw, never block the user
+    }
+  }
+
+  // ── Tool Usage Log (fire-and-forget) ─────────────────────────────────────
+  // Called by local tools (url_remover, dup_remover, etc.) after processing.
+  // Sends only counts — never any file content.
+  // Fire-and-forget — failures are silently swallowed.
+
+  static Future<void> logToolUsage({
+    required String tool,
+    required int    inputCount,
+    required int    outputCount,
+    required int    removedCount,
+  }) async {
+    try {
+      await _pinnedClient
+          .post(
+            Uri.parse('$_base/api/tools/log'),
+            headers: _signedHeaders(),
+            body: jsonEncode({
+              'user_id':       _cachedUserId ?? 'anonymous',
+              'tool':          tool,
+              'input_count':   inputCount,
+              'output_count':  outputCount,
+              'removed_count': removedCount,
             }),
           )
           .timeout(const Duration(seconds: 10));
