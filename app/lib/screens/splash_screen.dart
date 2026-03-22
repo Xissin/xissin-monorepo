@@ -311,6 +311,18 @@ class _SplashScreenState extends State<SplashScreen>
       final userId = await _getOrCreateUserId();
       ApiService.cacheUserId(userId);
 
+      // ── DEBUG: show actual user_id being sent (remove after confirming bypass) ──
+      debugPrint('🔑 XISSIN userId being sent: $userId');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Device ID: $userId', style: const TextStyle(fontSize: 11)),
+            duration: const Duration(seconds: 6),
+            backgroundColor: const Color(0xFF0a1628),
+          ),
+        );
+      }
+
       // ── STEP 2: Check server status, passing userId for owner bypass ──────
       _setStatus('Checking server...');
       try {

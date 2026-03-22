@@ -170,9 +170,13 @@ def _redis_get(key: str):
 
 
 def _redis_set(key: str, data) -> bool:
-    loop = _get_bg_loop()
-    asyncio.run_coroutine_threadsafe(_redis_set_async(key, data), loop)
-    return True
+    loop   = _get_bg_loop()
+    future = asyncio.run_coroutine_threadsafe(_redis_set_async(key, data), loop)
+    try:
+        return future.result(timeout=15)   # ← WAIT for write to complete
+    except Exception as e:
+        logger.error(f"_redis_set({key}) timeout/error: {e}")
+        return False
 
 
 def _redis_delete(key: str) -> bool:
