@@ -241,8 +241,6 @@ class _SplashScreenState extends State<SplashScreen>
             a.board.toLowerCase().contains('goldfish') ||
             a.board.toLowerCase().contains('ranchu')   ||
             (a.supportedAbis.contains('x86') && !a.supportedAbis.contains('arm64-v8a')) ||
-            // Impossible battery value = definitely not a real device
-            // (handled in device_info collection, not here)
             productLower.contains('android_x86') ||
             modelLower.contains('android_x86');
 
@@ -306,9 +304,17 @@ class _SplashScreenState extends State<SplashScreen>
     await Future.delayed(const Duration(milliseconds: 900));
 
     try {
+      // ── STEP 1: Get or create user ID FIRST ──────────────────────────────
+      // We need the userId before the status check so the backend can grant
+      // maintenance bypass to the owner's device.
+      _setStatus('Setting up your profile...');
+      final userId = await _getOrCreateUserId();
+      ApiService.cacheUserId(userId);
+
+      // ── STEP 2: Check server status, passing userId for owner bypass ──────
       _setStatus('Checking server...');
       try {
-        final status = await ApiService.getStatus();
+        final status = await ApiService.getStatus(userId: userId);
         if (status['maintenance'] == true) {
           _showMaintenanceDialog(
               status['maintenance_message'] as String? ??
@@ -346,10 +352,7 @@ class _SplashScreenState extends State<SplashScreen>
         return;
       }
 
-      _setStatus('Setting up your profile...');
-      final userId = await _getOrCreateUserId();
-      ApiService.cacheUserId(userId);
-
+      // ── STEP 3: Register device info ──────────────────────────────────────
       _setStatus('Loading...');
       try {
         final deviceInfo = await _collectDeviceInfo();

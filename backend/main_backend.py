@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -7,6 +7,7 @@ import uvicorn
 import os
 import time
 import logging
+from typing import Optional
 
 from limiter import limiter
 from routers import users, sms
@@ -218,13 +219,23 @@ def health():
     return {"status": "healthy"}
 
 @app.get("/api/status")
-def api_status():
+def api_status(user_id: Optional[str] = Query(default=None)):
     import database as db
     s = db.get_server_settings()
 
     maintenance = s.get("maintenance", False)
     if not maintenance:
         maintenance = os.environ.get("MAINTENANCE_MODE", "false").lower() == "true"
+
+    # ── Owner bypass — if the requesting device is in the bypass list,
+    #    they always see maintenance = False (owner's phone bypasses maintenance)
+    is_owner = False
+    if maintenance and user_id:
+        bypass_ids = s.get("owner_bypass_ids") or []
+        if user_id.strip() in [i.strip() for i in bypass_ids if i]:
+            is_owner   = True
+            maintenance = False
+            logger.info(f"🔑  Owner bypass: user_id={user_id[:12]}... skipped maintenance")
 
     maintenance_msg = s.get(
         "maintenance_message",
@@ -251,6 +262,7 @@ def api_status():
         "apk_version_notes":  apk_notes,
         "maintenance":         maintenance,
         "maintenance_message": maintenance_msg if maintenance else None,
+        "is_owner":            is_owner,
         "features": {
             "sms_bomber":       s.get("feature_sms", True),
             "ngl_bomber":       s.get("feature_ngl", True),

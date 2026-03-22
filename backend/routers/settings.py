@@ -36,6 +36,8 @@ class ServerSettings(BaseModel):
     feature_ngl:             bool            = True
     apk_download_url:        Optional[str]   = ""
     apk_version_notes:       Optional[str]   = ""
+    # ── Owner bypass — these device IDs skip maintenance mode ────────────────
+    owner_bypass_ids:        Optional[List[str]] = []
     # ── Remove Ads product settings ──────────────────────────────────────────
     remove_ads_price:        Optional[int]   = 9900          # in centavos (₱99.00)
     remove_ads_label:        Optional[str]   = "Remove Ads — ₱99 Lifetime"
@@ -61,6 +63,12 @@ def save_settings(req: ServerSettings):
     # Auto-convert the Drive URL before storing
     if data.get("apk_download_url"):
         data["apk_download_url"] = _normalize_drive_url(data["apk_download_url"])
+
+    # Clean up bypass IDs — strip whitespace, remove empty strings
+    if data.get("owner_bypass_ids"):
+        data["owner_bypass_ids"] = [
+            i.strip() for i in data["owner_bypass_ids"] if i and i.strip()
+        ]
 
     db.save_server_settings(data)
     db.append_log({"action": "settings_updated", "maintenance": req.maintenance})
