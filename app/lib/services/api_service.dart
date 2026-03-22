@@ -253,7 +253,7 @@ class ApiService {
     // Always make a fresh request — no dedup, no cache interference.
     // userId is passed so the backend can bypass maintenance for owner devices.
     final uri = userId != null && userId.isNotEmpty
-        ? Uri.parse('$_base/api/status?user_id=\${Uri.encodeComponent(userId)}')
+        ? Uri.parse('$_base/api/status?user_id=${Uri.encodeComponent(userId)}')
         : Uri.parse('$_base/api/status');
     return _requestWithRetry(
       (t) => _pinnedClient
