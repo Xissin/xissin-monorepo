@@ -113,13 +113,11 @@ class _HomeScreenState extends State<HomeScreen> {
 
   void _goToSms() {
     HapticFeedback.mediumImpact();
-    AdService.instance.showInterstitial();
     _pushSlide(SmsBomberScreen(userId: widget.userId));
   }
 
   void _goToNgl() {
     HapticFeedback.mediumImpact();
-    AdService.instance.showInterstitial();
     _pushSlide(NglScreen(userId: widget.userId));
   }
 
@@ -131,25 +129,21 @@ class _HomeScreenState extends State<HomeScreen> {
 
   void _goToUrlRemover() {
     HapticFeedback.mediumImpact();
-    AdService.instance.showInterstitial();
     _pushSlide(const UrlRemoverScreen());
   }
 
   void _goToDupRemover() {
     HapticFeedback.mediumImpact();
-    AdService.instance.showInterstitial();
     _pushSlide(const DuplicateRemoverScreen());
   }
 
   void _goToIpTracker() {
     HapticFeedback.mediumImpact();
-    AdService.instance.showInterstitial();
     _pushSlide(const IpTrackerScreen());
   }
 
   void _goToUsernameTracker() {
     HapticFeedback.mediumImpact();
-    AdService.instance.showInterstitial();
     _pushSlide(const UsernameTrackerScreen());
   }
 

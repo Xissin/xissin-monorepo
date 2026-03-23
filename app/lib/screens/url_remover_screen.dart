@@ -48,6 +48,9 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
   StreamSubscription<List<ConnectivityResult>>? _connSub;
   StreamSubscription<int>? _ticker;
 
+  // ── Watch-ad gate (free users) ────────────────────────────────────────────
+  bool _adGranted = false; // true after watching ad → one process allowed
+
   BannerAd? _bannerAd;
   bool      _bannerReady = false;
 
@@ -214,6 +217,28 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
     }
   }
 
+  // ── Watch-ad gate ─────────────────────────────────────────────────────
+
+  void _watchAdToProcess() {
+    HapticFeedback.selectionClick();
+    AdService.instance.showGatedInterstitial(
+      onGranted: () {
+        if (mounted) {
+          setState(() => _adGranted = true);
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: const Text('🔓 Unlocked! Tap Remove URLs to process.',
+                style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
+            backgroundColor: const Color(0xFF7B8CDE),
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.md)),
+            margin: const EdgeInsets.all(12),
+            duration: const Duration(seconds: 2),
+          ));
+        }
+      },
+    );
+  }
+
   // ── Actions ───────────────────────────────────────────────────────────────
 
   Future<void> _pickFile() async {
@@ -299,6 +324,7 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
         _phase      = _Phase.done;
         _progress   = 1.0;
         _outputFile = outFile;
+        _adGranted  = false; // reset gate after each process
       });
 
       if (_isOnline) {
@@ -704,7 +730,86 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
     ],
   );
 
-  Widget _buildRunButton() => GestureDetector(
+  Widget _buildRunButton() {
+    final isPremium = _isPremium;
+
+    // Premium: direct run button
+    if (isPremium) {
+      return _directRunButton();
+    }
+
+    // Free + ad already watched: show the run button
+    if (_adGranted) {
+      return Column(
+        children: [
+          Container(
+            margin: const EdgeInsets.only(bottom: 8),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+            decoration: BoxDecoration(
+              color: const Color(0xFF7B8CDE).withOpacity(0.10),
+              borderRadius: BorderRadius.circular(AppRadius.md),
+              border: Border.all(color: const Color(0xFF7B8CDE).withOpacity(0.30)),
+            ),
+            child: const Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(Icons.check_circle_outline_rounded, color: Color(0xFF7B8CDE), size: 14),
+                SizedBox(width: 6),
+                Text('🔓 Ad watched — ready to process!',
+                    style: TextStyle(color: Color(0xFF7B8CDE), fontSize: 12, fontWeight: FontWeight.w600)),
+              ],
+            ),
+          ),
+          _directRunButton(),
+        ],
+      );
+    }
+
+    // Free + no ad yet: show watch-ad button
+    return Column(
+      children: [
+        Container(
+          margin: const EdgeInsets.only(bottom: 8),
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: const Color(0xFF7B8CDE).withOpacity(0.06),
+            borderRadius: BorderRadius.circular(AppRadius.md),
+            border: Border.all(color: const Color(0xFF7B8CDE).withOpacity(0.2)),
+          ),
+          child: const Row(
+            children: [
+              Icon(Icons.lock_outline_rounded, color: AppColors.textSecondary, size: 15),
+              SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'Free: Watch a short ad to process • Premium: instant access',
+                  style: TextStyle(color: AppColors.textSecondary, fontSize: 11, height: 1.4),
+                ),
+              ),
+            ],
+          ),
+        ),
+        SizedBox(
+          width: double.infinity,
+          height: 52,
+          child: ElevatedButton.icon(
+            onPressed: _watchAdToProcess,
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF7B8CDE),
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.lg)),
+              elevation: 0,
+            ),
+            icon:  const Icon(Icons.play_circle_rounded, size: 20),
+            label: const Text('Watch Ad to Process',
+                style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _directRunButton() => GestureDetector(
     onTap: () { HapticFeedback.mediumImpact(); _runProcess(); },
     child: Container(
       padding: const EdgeInsets.symmetric(vertical: 15),

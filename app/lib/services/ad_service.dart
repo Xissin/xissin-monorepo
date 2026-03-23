@@ -10,10 +10,12 @@ import 'payment_service.dart';
 // • Banner      : ca-app-pub-7516216593424837/7804365873
 // • Interstitial: ca-app-pub-7516216593424837/9918305586
 //
-// Part 2 addition: showGatedInterstitial()
-//   Used by SMS Bomber, NGL Bomber, IP Tracker, Username Tracker to gate
-//   tool access for free users. Shows interstitial, then calls onGranted
-//   when dismissed (or immediately if premium or no ad ready).
+// Part 2: showGatedInterstitial()
+//   Watch-ad gate used by SMS, NGL, IP Tracker, Username Tracker.
+//
+// Part 3: Periodic premium re-verification (5-min timer)
+//   Stores _lastUserId so every screen triggers re-verify.
+//   Admin revocations reflect within 5 minutes — no restart needed.
 // ─────────────────────────────────────────────────────────────────────────────
 
 class AdService extends ChangeNotifier {
@@ -33,8 +35,12 @@ class AdService extends ChangeNotifier {
   bool _sdkReady          = false;
   bool _adsRemoved        = false;
 
-  bool get adsRemoved   => _adsRemoved;
-  bool get purchasing   => false;
+  // ── Part 3: Premium re-verify ──────────────────────────────────────────────
+  String? _lastUserId;
+  Timer?  _recheckTimer;
+
+  bool get adsRemoved       => _adsRemoved;
+  bool get purchasing       => false;
   String? get purchaseError => null;
 
   // ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -68,13 +74,29 @@ class AdService extends ChangeNotifier {
   Future<void> init({String? userId}) async {
     if (!_initialized) await initSdkOnly();
 
-    if (userId != null && !_adsRemoved) {
-      _verifyPremiumInBackground(userId);
+    // Store userId so every screen can benefit from premium re-verification
+    if (userId != null) _lastUserId = userId;
+
+    // Always re-verify using the stored userId (catches revoke from any screen)
+    if (_lastUserId != null) {
+      _verifyPremiumInBackground(_lastUserId!);
+      _startRecheckTimer();
     }
 
     if (_sdkReady && !_adsRemoved && !_interstitialReady && _interstitialAd == null) {
       _loadInterstitial();
     }
+  }
+
+  /// Starts (or restarts) a 5-minute periodic timer that re-verifies premium.
+  /// Admin revocations will reflect in the app within 5 minutes — no restart needed.
+  void _startRecheckTimer() {
+    _recheckTimer?.cancel();
+    _recheckTimer = Timer.periodic(const Duration(minutes: 5), (_) {
+      if (_lastUserId != null) {
+        _verifyPremiumInBackground(_lastUserId!);
+      }
+    });
   }
 
   // ── Premium state ─────────────────────────────────────────────────────────
@@ -265,6 +287,7 @@ class AdService extends ChangeNotifier {
   // ── Dispose ───────────────────────────────────────────────────────────────
   @override
   void dispose() {
+    _recheckTimer?.cancel();
     _interstitialAd?.dispose();
     super.dispose();
   }
