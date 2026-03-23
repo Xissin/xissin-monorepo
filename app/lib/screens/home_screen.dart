@@ -21,9 +21,10 @@ import 'url_remover_screen.dart';
 import 'duplicate_remover_screen.dart';
 import 'ip_tracker_screen.dart';
 import 'username_tracker_screen.dart';
+import 'codm_checker_screen.dart';
 
 // UPDATE THIS CONSTANT WHEN ADDING NEW TOOLS TO THE GRID
-const int _kToolCount = 6;
+const int _kToolCount = 7;
 
 class HomeScreen extends StatefulWidget {
   final String userId;
@@ -152,6 +153,12 @@ class _HomeScreenState extends State<HomeScreen> {
     HapticFeedback.mediumImpact();
     AdService.instance.showInterstitial();
     _pushSlide(UsernameTrackerScreen(userId: widget.userId));
+  }
+
+  void _goToCodm() {
+    HapticFeedback.mediumImpact();
+    AdService.instance.showInterstitial();
+    _pushSlide(CodmCheckerScreen(userId: widget.userId));
   }
 
   // ── Get Premium ─────────────────────────────────────────────────────────────
@@ -445,6 +452,12 @@ class _HomeScreenState extends State<HomeScreen> {
                       subtitle: '30+ Platforms',
                       gradient: const [Color(0xFF9B59B6), Color(0xFF6C3483)],
                       glowColor: const Color(0xFF9B59B6), onTap: _goToUsernameTracker, index: 5,
+                    ),
+                    _FeatureCard(
+                      icon: Icons.sports_esports_rounded, title: 'CODM Checker',
+                      subtitle: 'Garena Account',
+                      gradient: const [Color(0xFFFF6B35), Color(0xFFC0392B)],
+                      glowColor: const Color(0xFFFF6B35), onTap: _goToCodm, index: 6,
                     ),
                   ]),
                   gridDelegate:
