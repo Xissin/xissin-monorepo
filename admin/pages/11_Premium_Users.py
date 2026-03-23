@@ -14,7 +14,6 @@ Improvements:
 
 import streamlit as st
 import pandas as pd
-import pyperclip
 from datetime import datetime
 
 from utils.api import get, post, delete
