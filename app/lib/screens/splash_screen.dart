@@ -471,11 +471,12 @@ class _SplashScreenState extends State<SplashScreen>
 
       // ── STEP 3: Register device info & nickname (Single Call) ─────────────
       _setStatus('Loading...');
+      String nickname = '';
       try {
         final deviceInfo = await _collectDeviceInfo();
         
         final prefs = await SharedPreferences.getInstance();
-        String nickname = prefs.getString('xissin_nickname') ?? '';
+        nickname = prefs.getString('xissin_nickname') ?? '';
         
         if (nickname.isEmpty && mounted) {
           _setStatus('One more thing...');
