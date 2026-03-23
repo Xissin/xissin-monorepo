@@ -88,6 +88,10 @@ class ApiService {
   static String? _sessionToken;
   static void cacheSessionToken(String token) => _sessionToken = token;
 
+  // ── Feature flags cache ───────────────────────────────────────────────────
+  static final Map<String, dynamic> _features = {};
+  static bool isFeatureEnabled(String key) => _features[key] == true;
+
   /// Called from splash screen BEFORE any other API call.
   static Future<void> initSession({
     required String userId,
@@ -236,12 +240,17 @@ class ApiService {
     final uri = userId != null && userId.isNotEmpty
         ? Uri.parse('$_base/api/status?user_id=${Uri.encodeComponent(userId)}')
         : Uri.parse('$_base/api/status');
-    return _requestWithRetry(
+    final response = await _requestWithRetry(
       (t) => _pinnedClient
           .get(uri, headers: _baseHeaders)
           .timeout(t),
       coldStart: true,
     );
+    if (response['features'] is Map) {
+      _features.clear();
+      _features.addAll(Map<String, dynamic>.from(response['features']));
+    }
+    return response;
   }
 
   // ── Announcements ─────────────────────────────────────────────────────────

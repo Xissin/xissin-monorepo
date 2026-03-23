@@ -34,6 +34,11 @@ class ServerSettings(BaseModel):
     feature_sms:             bool            = True
     feature_keys:            bool            = True
     feature_ngl:             bool            = True
+    feature_url_remover:     bool            = True
+    feature_dup_remover:     bool            = True
+    feature_ip_tracker:      bool            = True
+    feature_username_tracker:bool            = True
+    feature_codm_checker:    bool            = True
     apk_download_url:        Optional[str]   = ""
     apk_version_notes:       Optional[str]   = ""
     # ── Owner bypass — these device IDs skip maintenance mode ────────────────

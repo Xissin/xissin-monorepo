@@ -48,8 +48,13 @@ DEFAULT_SETTINGS = {
     "maintenance_message": "Xissin is under maintenance. We'll be back shortly!",
     "min_app_version":     "1.0.0",
     "latest_app_version":  "1.0.0",
-    "feature_sms":         True,
-    "feature_ngl":         True,
+    "feature_sms":              True,
+    "feature_ngl":              True,
+    "feature_url_remover":      True,
+    "feature_dup_remover":      True,
+    "feature_ip_tracker":       True,
+    "feature_username_tracker": True,
+    "feature_codm_checker":     True,
 }
 
 MAX_ANNOUNCEMENTS    = 10

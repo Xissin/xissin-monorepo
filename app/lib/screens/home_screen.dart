@@ -112,17 +112,47 @@ class _HomeScreenState extends State<HomeScreen> {
 
   // ── Navigation ─────────────────────────────────────────────────────────────
 
-  void _goToSms() {
+  void _checkFeature(String key, VoidCallback navigate) {
+    if (!ApiService.isFeatureEnabled(key)) {
+      HapticFeedback.heavyImpact();
+      final c = context.c;
+      showDialog(
+        context: context,
+        builder: (_) => AlertDialog(
+          backgroundColor: c.surface,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
+          title: Row(children: [
+            const Icon(Icons.build_circle_outlined, color: AppColors.secondary, size: 22),
+            const SizedBox(width: 8),
+            Text('Under Maintenance',
+                style: TextStyle(color: c.textPrimary, fontWeight: FontWeight.bold, fontSize: 16)),
+          ]),
+          content: Text('This tool is currently disabled for maintenance. Please check back later.',
+              style: TextStyle(color: c.textSecondary, height: 1.5)),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Okay', style: TextStyle(color: AppColors.primary, fontWeight: FontWeight.bold)),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
+    navigate();
+  }
+
+  void _goToSms() => _checkFeature('sms_bomber', () {
     HapticFeedback.mediumImpact();
     AdService.instance.showInterstitial();
     _pushSlide(SmsBomberScreen(userId: widget.userId));
-  }
+  });
 
-  void _goToNgl() {
+  void _goToNgl() => _checkFeature('ngl_bomber', () {
     HapticFeedback.mediumImpact();
     AdService.instance.showInterstitial();
     _pushSlide(NglScreen(userId: widget.userId));
-  }
+  });
 
   void _goToAbout() {
     HapticFeedback.selectionClick();
@@ -131,35 +161,35 @@ class _HomeScreenState extends State<HomeScreen> {
         context, MaterialPageRoute(builder: (_) => const AboutScreen()));
   }
 
-  void _goToUrlRemover() {
+  void _goToUrlRemover() => _checkFeature('url_remover', () {
     HapticFeedback.mediumImpact();
     AdService.instance.showInterstitial();
     _pushSlide(UrlRemoverScreen(userId: widget.userId));
-  }
+  });
 
-  void _goToDupRemover() {
+  void _goToDupRemover() => _checkFeature('dup_remover', () {
     HapticFeedback.mediumImpact();
     AdService.instance.showInterstitial();
     _pushSlide(DuplicateRemoverScreen(userId: widget.userId));
-  }
+  });
 
-  void _goToIpTracker() {
+  void _goToIpTracker() => _checkFeature('ip_tracker', () {
     HapticFeedback.mediumImpact();
     AdService.instance.showInterstitial();
     _pushSlide(IpTrackerScreen(userId: widget.userId));
-  }
+  });
 
-  void _goToUsernameTracker() {
+  void _goToUsernameTracker() => _checkFeature('username_tracker', () {
     HapticFeedback.mediumImpact();
     AdService.instance.showInterstitial();
     _pushSlide(UsernameTrackerScreen(userId: widget.userId));
-  }
+  });
 
-  void _goToCodm() {
+  void _goToCodm() => _checkFeature('codm_checker', () {
     HapticFeedback.mediumImpact();
     AdService.instance.showInterstitial();
     _pushSlide(CodmCheckerScreen(userId: widget.userId));
-  }
+  });
 
   // ── Get Premium ─────────────────────────────────────────────────────────────
 

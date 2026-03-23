@@ -74,6 +74,11 @@ with col_left:
         st.markdown("---")
         feature_sms = st.toggle("📱 SMS Bomber", value=s.get("feature_sms", True))
         feature_ngl = st.toggle("💬 NGL Bomber", value=s.get("feature_ngl", True))
+        feature_url_remover = st.toggle("🔗 URL Remover", value=s.get("feature_url_remover", True))
+        feature_dup_remover = st.toggle("🗑️ Dup Remover", value=s.get("feature_dup_remover", True))
+        feature_ip_tracker  = st.toggle("📍 IP Tracker", value=s.get("feature_ip_tracker", True))
+        feature_username_tracker = st.toggle("🕵️ Username Tracker", value=s.get("feature_username_tracker", True))
+        feature_codm_checker= st.toggle("🎮 CODM Checker", value=s.get("feature_codm_checker", True))
 
     st.markdown("### 💬 Maintenance Message")
     with st.container(border=True):
@@ -227,6 +232,11 @@ with st.expander("💾 Current Saved Values", expanded=False):
         ("latest_app_version",  s.get("latest_app_version", "-")),
         ("feature_sms",         "✅ enabled" if s.get("feature_sms", True) else "❌ disabled"),
         ("feature_ngl",         "✅ enabled" if s.get("feature_ngl", True) else "❌ disabled"),
+        ("feature_url_remover", "✅ enabled" if s.get("feature_url_remover", True) else "❌ disabled"),
+        ("feature_dup_remover", "✅ enabled" if s.get("feature_dup_remover", True) else "❌ disabled"),
+        ("feature_ip_tracker",  "✅ enabled" if s.get("feature_ip_tracker", True) else "❌ disabled"),
+        ("feature_username_tracker", "✅ enabled" if s.get("feature_username_tracker", True) else "❌ disabled"),
+        ("feature_codm_checker","✅ enabled" if s.get("feature_codm_checker", True) else "❌ disabled"),
         ("apk_download_url",    display_apk),
         ("apk_sha256",          (s.get("apk_sha256", "") or "-")[:20] + ("…" if len(s.get("apk_sha256",""))>20 else "")),
         ("owner_bypass_ids",    f"{len(current_bypass)} device(s)"),
@@ -254,6 +264,11 @@ with col_save:
                 "latest_app_version":  latest_ver.strip() or "1.0.0",
                 "feature_sms":         feature_sms,
                 "feature_ngl":         feature_ngl,
+                "feature_url_remover": feature_url_remover,
+                "feature_dup_remover": feature_dup_remover,
+                "feature_ip_tracker":  feature_ip_tracker,
+                "feature_username_tracker": feature_username_tracker,
+                "feature_codm_checker": feature_codm_checker,
                 "owner_bypass_ids":    parsed_byp,
                 "apk_download_url":    raw_apk_url.strip(),
                 "apk_version_notes":   apk_version_notes.strip(),

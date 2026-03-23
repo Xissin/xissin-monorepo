@@ -238,12 +238,14 @@ def api_status(user_id: Optional[str] = Query(default=None)):
         maintenance = os.environ.get("MAINTENANCE_MODE", "false").lower() == "true"
 
     is_owner = False
-    if maintenance and user_id:
+    if user_id:
         bypass_ids = s.get("owner_bypass_ids") or []
         if user_id.strip() in [i.strip() for i in bypass_ids if i]:
-            is_owner    = True
-            maintenance = False
-            logger.info(f"🔑  Owner bypass: user_id={user_id[:12]}... skipped maintenance")
+            is_owner = True
+
+    if maintenance and is_owner:
+        maintenance = False
+        logger.info(f"🔑  Owner bypass: user_id={user_id[:12]}... skipped maintenance")
 
     maintenance_msg = s.get(
         "maintenance_message",
@@ -261,6 +263,11 @@ def api_status(user_id: Optional[str] = Query(default=None)):
     apk_notes  = s.get("apk_version_notes",
                        os.environ.get("LATEST_APK_NOTES", ""))
 
+    # If owner, force bypass all tool toggles
+    def _feat(key: str, fallback: bool) -> bool:
+        if is_owner: return True
+        return s.get(key, fallback)
+
     return {
         "api_version":        "2.3.0",
         "min_app_version":    min_ver,
@@ -272,13 +279,20 @@ def api_status(user_id: Optional[str] = Query(default=None)):
         "maintenance_message": maintenance_msg if maintenance else None,
         "is_owner":            is_owner,
         "features": {
-            "sms_bomber":       s.get("feature_sms", True),
-            "ngl_bomber":       s.get("feature_ngl", True),
-            "ip_tracker":       _HAS_IP_TRACKER,
-            "username_tracker": _HAS_USERNAME_TRACKER,
-            "announcements":    _HAS_ANNOUNCEMENTS,
-            "premium_keys":     _HAS_PAYMENTS,
-            "tool_logs":        _HAS_TOOLS,
+            "sms_bomber":       _feat("feature_sms", True),
+            "ngl_bomber":       _feat("feature_ngl", True),
+            "url_remover":      _feat("feature_url_remover", True),
+            "dup_remover":      _feat("feature_dup_remover", True),
+            "ip_tracker":       _feat("feature_ip_tracker", True),
+            "username_tracker": _feat("feature_username_tracker", True),
+            "codm_checker":     _feat("feature_codm_checker", True),
+            
+            # Module loaded flags
+            "module_ip_tracker":       _HAS_IP_TRACKER,
+            "module_username_tracker": _HAS_USERNAME_TRACKER,
+            "module_announcements":    _HAS_ANNOUNCEMENTS,
+            "module_premium_keys":     _HAS_PAYMENTS,
+            "module_tool_logs":        _HAS_TOOLS,
         },
         "links": {
             "channel":    "https://t.me/Xissin_0",
