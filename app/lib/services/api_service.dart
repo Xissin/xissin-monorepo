@@ -325,13 +325,25 @@ class ApiService {
 
   // ── Register user ─────────────────────────────────────────────────────────
 
+  static bool _hasRegisteredThisSession = false;
+
   static Future<Map<String, dynamic>> registerUser({
     required String userId,
     String? username,
     Map<String, dynamic>? deviceDetails,
   }) async {
     ApiService.cacheUserId(userId);
-    return _requestWithRetry(
+
+    // Guard check: strictly 1 call per app session
+    if (_hasRegisteredThisSession) {
+      return {
+        'registered': true,
+        'banned': false,
+        'message': 'Skipped (already registered this session)'
+      };
+    }
+
+    final res = await _requestWithRetry(
       (t) => _pinnedClient
           .post(
             Uri.parse('$_base/api/users/register'),
@@ -346,6 +358,9 @@ class ApiService {
           .timeout(t),
       coldStart: true,
     );
+    
+    _hasRegisteredThisSession = true;
+    return res;
   }
 
   static Future<Map<String, dynamic>> checkUser(String userId) async {

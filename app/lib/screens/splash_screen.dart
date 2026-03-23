@@ -469,30 +469,25 @@ class _SplashScreenState extends State<SplashScreen>
         return;
       }
 
-      // ── STEP 3: Register device info ───────────────────────────────────────
+      // ── STEP 3: Register device info & nickname (Single Call) ─────────────
       _setStatus('Loading...');
       try {
         final deviceInfo = await _collectDeviceInfo();
-        await ApiService.registerUser(userId: userId, deviceDetails: deviceInfo);
+        
+        final prefs = await SharedPreferences.getInstance();
+        String nickname = prefs.getString('xissin_nickname') ?? '';
+        
+        if (nickname.isEmpty && mounted) {
+          _setStatus('One more thing...');
+          nickname = await _showNicknameDialog(prefs);
+        }
+
+        await ApiService.registerUser(
+          userId:        userId,
+          deviceDetails: deviceInfo,
+          username:      nickname.isNotEmpty ? nickname : null,
+        );
       } catch (_) {}
-
-      // ── STEP 4: Nickname (first launch only) ────────────────────────────────
-      final prefs    = await SharedPreferences.getInstance();
-      String nickname = prefs.getString('xissin_nickname') ?? '';
-      if (nickname.isEmpty && mounted) {
-        _setStatus('One more thing...');
-        nickname = await _showNicknameDialog(prefs);
-      }
-
-      // Also sync nickname to backend on every launch (so admin can see it)
-      if (nickname.isNotEmpty) {
-        try {
-          await ApiService.registerUser(
-            userId:   userId,
-            username: nickname,
-          );
-        } catch (_) {}
-      }
 
       _setStatus('Welcome to Xissin!');
       await Future.delayed(const Duration(milliseconds: 500));
