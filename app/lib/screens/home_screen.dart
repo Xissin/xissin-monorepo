@@ -466,7 +466,8 @@ class _HomeScreenState extends State<HomeScreen> {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          Selector<AdService, bool>(
+          Flexible(
+            child: Selector<AdService, bool>(
             selector: (_, s) => s.adsRemoved,
             builder: (_, adsRemoved, __) => Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -514,6 +515,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 .fadeIn(duration: 500.ms)
                 .slideX(begin: -0.2, end: 0, duration: 500.ms),
           ),
+          ),
 
           Row(
             children: [
@@ -525,7 +527,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     : GestureDetector(
                         onTap: _onRemoveAdsTap,
                         child: Container(
-                          width: 40, height: 40,
+                          width: 36, height: 36,
                           decoration: BoxDecoration(
                             color: c.primary.withOpacity(0.12),
                             borderRadius: BorderRadius.circular(AppRadius.md),
@@ -533,40 +535,40 @@ class _HomeScreenState extends State<HomeScreen> {
                                 color: c.primary.withOpacity(0.30), width: 1),
                           ),
                           child: Icon(Icons.workspace_premium_rounded,
-                              size: 18, color: c.primary),
+                              size: 16, color: c.primary),
                         ),
                       )
                         .animate(delay: 50.ms)
                         .fadeIn(duration: 500.ms)
                         .scale(begin: const Offset(0.8, 0.8), duration: 400.ms),
               ),
-              const SizedBox(width: 8),
+              const SizedBox(width: 6),
 
               // Telegram
               _TelegramButton(c: c)
                   .animate(delay: 100.ms)
                   .fadeIn(duration: 500.ms)
                   .scale(begin: const Offset(0.8, 0.8), duration: 400.ms),
-              const SizedBox(width: 8),
+              const SizedBox(width: 6),
 
               // About ⓘ
               GestureDetector(
                 onTap: _goToAbout,
                 child: Container(
-                  width: 40, height: 40,
+                  width: 36, height: 36,
                   decoration: BoxDecoration(
                     color:        c.surface,
                     borderRadius: BorderRadius.circular(AppRadius.md),
                     border:       Border.all(color: c.border),
                   ),
                   child: Icon(Icons.info_outline_rounded,
-                      size: 18, color: c.textSecondary),
+                      size: 16, color: c.textSecondary),
                 ),
               )
                   .animate(delay: 120.ms)
                   .fadeIn(duration: 500.ms)
                   .scale(begin: const Offset(0.8, 0.8), duration: 400.ms),
-              const SizedBox(width: 8),
+              const SizedBox(width: 6),
 
               // Theme toggle
               Selector<ThemeService, bool>(
@@ -611,14 +613,14 @@ class _TelegramButton extends StatelessWidget {
         }
       },
       child: Container(
-        width: 40, height: 40,
+        width: 36, height: 36,
         decoration: BoxDecoration(
           color: const Color(0xFF229ED9).withOpacity(0.15),
           borderRadius: BorderRadius.circular(AppRadius.md),
           border: Border.all(
               color: const Color(0xFF229ED9).withOpacity(0.30), width: 1),
         ),
-        child: const Icon(Icons.telegram, size: 20, color: Color(0xFF229ED9)),
+        child: const Icon(Icons.telegram, size: 18, color: Color(0xFF229ED9)),
       ),
     );
   }
