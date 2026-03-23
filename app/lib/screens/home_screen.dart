@@ -305,12 +305,16 @@ class _HomeScreenState extends State<HomeScreen> {
                               const Icon(Icons.workspace_premium_rounded,
                                   color: Color(0xFFFFD700), size: 16),
                               const SizedBox(width: 8),
-                              Text(
-                                '⭐  Premium Active  —  Thank you for supporting Xissin!',
-                                style: TextStyle(
-                                    color:      c.gold,
-                                    fontSize:   12,
-                                    fontWeight: FontWeight.w600),
+                              Flexible(
+                                child: Text(
+                                  '⭐  Premium Active — Thank you for supporting Xissin!',
+                                  style: TextStyle(
+                                      color:      c.gold,
+                                      fontSize:   12,
+                                      fontWeight: FontWeight.w600),
+                                  overflow: TextOverflow.ellipsis,
+                                  maxLines: 1,
+                                ),
                               ),
                             ],
                           ),
