@@ -616,12 +616,15 @@ async def _redis_raw_set(key: str, value: str, ttl_seconds: int = 0) -> bool:
     """
     SET key value [EX ttl_seconds]
     Uses Upstash pipeline-style URL: /set/key/value/EX/ttl
+    Value is URL-encoded to handle special characters in JSON strings.
     """
     try:
+        from urllib.parse import quote
+        encoded_value = quote(str(value), safe='')
         if ttl_seconds > 0:
-            url = f"{_url()}/set/{key}/{value}/EX/{ttl_seconds}"
+            url = f"{_url()}/set/{key}/{encoded_value}/EX/{ttl_seconds}"
         else:
-            url = f"{_url()}/set/{key}/{value}"
+            url = f"{_url()}/set/{key}/{encoded_value}"
         async with httpx.AsyncClient(timeout=_timeout()) as client:
             resp = await client.get(
                 url,

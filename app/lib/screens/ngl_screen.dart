@@ -71,6 +71,7 @@ class _NglScreenState extends State<NglScreen> {
   @override
   void initState() {
     super.initState();
+    AdService.instance.init();
     _messageCtrl.addListener(() {
       final len = _messageCtrl.text.length;
       if (len != _charCount) setState(() => _charCount = len);

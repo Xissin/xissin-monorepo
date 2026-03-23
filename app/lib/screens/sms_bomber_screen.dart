@@ -121,6 +121,7 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
   @override
   void initState() {
     super.initState();
+    AdService.instance.init();
     _loadPersistedData();
     AdService.instance.addListener(_onAdServiceChanged);
     _initBanner();
