@@ -85,53 +85,58 @@ class UpdateService {
     double progress  = 0;
     bool   cancelled = false;
     final  cancelToken = CancelToken();
+    void Function(void Function())? dialogSetState;
+    bool isVerifying = false;
 
     if (context.mounted) {
       showDialog(
         context: context,
         barrierDismissible: false,
         builder: (ctx) => StatefulBuilder(
-          builder: (ctx, setState) => AlertDialog(
-            backgroundColor: const Color(0xFF1A1A2E),
-            shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(16)),
-            title: const Text(
-              '⬇️  Downloading Update',
-              style: TextStyle(color: Colors.white, fontSize: 16),
-            ),
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  'Xissin v$latestVersion',
-                  style: const TextStyle(color: Colors.white70, fontSize: 13),
-                ),
-                const SizedBox(height: 12),
-                LinearProgressIndicator(
-                  value: progress,
-                  backgroundColor: Colors.white12,
-                  color: const Color(0xFF6C63FF),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  '${(progress * 100).toStringAsFixed(0)}%',
-                  style:
-                      const TextStyle(color: Colors.white54, fontSize: 12),
+          builder: (ctx, setState) {
+            dialogSetState = setState;
+            return AlertDialog(
+              backgroundColor: const Color(0xFF1A1A2E),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(16)),
+              title: Text(
+                isVerifying ? '🔍  Verifying Update' : '⬇️  Downloading Update',
+                style: const TextStyle(color: Colors.white, fontSize: 16),
+              ),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    'Xissin v$latestVersion',
+                    style: const TextStyle(color: Colors.white70, fontSize: 13),
+                  ),
+                  const SizedBox(height: 12),
+                  LinearProgressIndicator(
+                    value: isVerifying ? null : progress,
+                    backgroundColor: Colors.white12,
+                    color: const Color(0xFF6C63FF),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    isVerifying ? 'Please wait...' : '${(progress * 100).toStringAsFixed(0)}%',
+                    style:
+                        const TextStyle(color: Colors.white54, fontSize: 12),
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: isVerifying ? null : () {
+                    cancelled = true;
+                    cancelToken.cancel('User cancelled');
+                    Navigator.pop(ctx);
+                  },
+                  child: Text('Cancel',
+                      style: TextStyle(color: isVerifying ? Colors.white38 : Colors.redAccent)),
                 ),
               ],
-            ),
-            actions: [
-              TextButton(
-                onPressed: () {
-                  cancelled = true;
-                  cancelToken.cancel('User cancelled');
-                  Navigator.pop(ctx);
-                },
-                child: const Text('Cancel',
-                    style: TextStyle(color: Colors.redAccent)),
-              ),
-            ],
-          ),
+            );
+          },
         ),
       );
     }
@@ -147,7 +152,9 @@ class UpdateService {
         savePath,
         cancelToken: cancelToken,
         onReceiveProgress: (received, total) {
-          if (total > 0) progress = received / total;
+          if (total > 0 && dialogSetState != null) {
+            dialogSetState!(() { progress = received / total; });
+          }
         },
       );
 
@@ -156,22 +163,19 @@ class UpdateService {
         return;
       }
 
-      // 4. Close progress dialog
+      // 4. Update dialog to verifying state
+      if (dialogSetState != null) {
+        dialogSetState!(() { isVerifying = true; });
+      }
+
+      // 5. Verify SHA-256 checksum
+      final verified = await _verifySha256(savePath, expectedSha256.trim());
+      
+      // Close progress dialog
       if (context.mounted) {
         Navigator.of(context, rootNavigator: true).pop();
       }
 
-      // 5. Verify SHA-256 checksum
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Verifying download integrity…'),
-            duration: Duration(seconds: 2),
-          ),
-        );
-      }
-
-      final verified = await _verifySha256(savePath, expectedSha256.trim());
       if (!verified) {
         _tryDelete(savePath);
         if (context.mounted) {
