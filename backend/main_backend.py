@@ -111,6 +111,16 @@ async def lifespan(app: FastAPI):
     logger.info(f"    {'✅' if _HAS_TOOLS               else '❌'}  /api/tools            — Tool Logs")
 
     logger.info("=" * 55)
+    
+    # Check for Bot Token at startup
+    bot_token = os.getenv("XISSIN_BOT_TOKEN")
+    if not bot_token or not bot_token.strip():
+        logger.warning("⚠️  WARNING: XISSIN_BOT_TOKEN is missing from environment variables!")
+        logger.warning("⚠️  Crash reports will NOT be sent to Telegram.")
+    else:
+        logger.info("✅  Telegram Bot Token loaded successfully.")
+        
+    logger.info("=" * 55)
     logger.info("✅  Xissin Backend is ONLINE and ready!")
     logger.info("=" * 55)
 

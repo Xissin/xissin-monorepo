@@ -30,10 +30,13 @@ router = APIRouter()
 # ── Config ────────────────────────────────────────────────────────────────────
 
 def _bot_token() -> str:
-    return os.environ.get("XISSIN_BOT_TOKEN", "").strip()
+    token = os.getenv("XISSIN_BOT_TOKEN")
+    if token is None:
+        logger.warning("WARNING: Environment variable 'XISSIN_BOT_TOKEN' is completely missing!")
+    return (token or "").strip()
 
 def _chat_id() -> str:
-    return os.environ.get("CRASH_REPORT_CHAT_ID", "1910648163").strip()
+    return os.getenv("CRASH_REPORT_CHAT_ID", "1910648163").strip()
 
 
 # ── Deduplication — suppress identical errors within 60 seconds ───────────────
