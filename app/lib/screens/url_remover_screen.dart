@@ -25,7 +25,8 @@ import '../theme/app_theme.dart';
 const _kFreeLineCap = 1000; // Free tier: max lines to process
 
 class UrlRemoverScreen extends StatefulWidget {
-  const UrlRemoverScreen({super.key});
+  final String userId;
+  const UrlRemoverScreen({super.key, required this.userId});
 
   @override
   State<UrlRemoverScreen> createState() => _UrlRemoverScreenState();
@@ -130,7 +131,7 @@ class _UrlRemoverScreenState extends State<UrlRemoverScreen>
       CurvedAnimation(parent: _pulseCtrl, curve: Curves.easeInOut),
     );
 
-    AdService.instance.init();
+    AdService.instance.init(userId: widget.userId);
     _checkConnectivity();
 
     _connSub = Connectivity().onConnectivityChanged.listen((results) {

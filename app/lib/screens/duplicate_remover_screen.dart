@@ -25,7 +25,8 @@ import '../theme/app_theme.dart';
 const _kFreeLineCap = 1000; // Free tier: max lines to process
 
 class DuplicateRemoverScreen extends StatefulWidget {
-  const DuplicateRemoverScreen({super.key});
+  final String userId;
+  const DuplicateRemoverScreen({super.key, required this.userId});
 
   @override
   State<DuplicateRemoverScreen> createState() => _DuplicateRemoverScreenState();
@@ -106,7 +107,7 @@ class _DuplicateRemoverScreenState extends State<DuplicateRemoverScreen>
       CurvedAnimation(parent: _pulseCtrl, curve: Curves.easeInOut),
     );
 
-    AdService.instance.init();
+    AdService.instance.init(userId: widget.userId);
     _checkConnectivity();
 
     _connSub = Connectivity().onConnectivityChanged.listen((results) {

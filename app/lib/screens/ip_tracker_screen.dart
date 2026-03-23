@@ -32,7 +32,8 @@ import '../services/api_service.dart';
 import '../theme/app_theme.dart';
 
 class IpTrackerScreen extends StatefulWidget {
-  const IpTrackerScreen({super.key});
+  final String userId;
+  const IpTrackerScreen({super.key, required this.userId});
 
   @override
   State<IpTrackerScreen> createState() => _IpTrackerScreenState();
@@ -61,7 +62,7 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
   @override
   void initState() {
     super.initState();
-    AdService.instance.init();
+    AdService.instance.init(userId: widget.userId);
     AdService.instance.addListener(_onAdChanged);
     _initBanner();
   }

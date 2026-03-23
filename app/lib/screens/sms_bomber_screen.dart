@@ -356,7 +356,7 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
 
   void _repeatAttack(_AttackRecord r) {
     _phoneCtrl.text = r.phone;
-    setState(() => _rounds = r.rounds.clamp(1, 3));
+    setState(() => _rounds = r.rounds.clamp(1, AdService.instance.adsRemoved ? 50 : 3));
     _scrollCtrl.animateTo(0,
         duration: const Duration(milliseconds: 500), curve: Curves.easeOut);
     _snack('Phone pre-filled — tap FIRE when ready 🎯');
@@ -804,60 +804,72 @@ class _SmsBomberScreenState extends State<SmsBomberScreen> {
 
             const SizedBox(height: 10),
 
-            Row(
-              children: List.generate(3, (i) {
-                final n   = i + 1;
-                final sel = _rounds == n;
-                return Expanded(
-                  child: GestureDetector(
-                    onTap: () {
-                      HapticFeedback.selectionClick();
-                      setState(() => _rounds = n);
-                    },
-                    child: AnimatedContainer(
-                      duration: AppDurations.fast,
-                      margin:  EdgeInsets.only(right: i < 2 ? 10 : 0),
-                      padding: const EdgeInsets.symmetric(vertical: 14),
-                      decoration: BoxDecoration(
-                        gradient: sel
-                            ? const LinearGradient(
-                                colors: [AppColors.primary, AppColors.secondary])
-                            : null,
-                        color: sel ? null : c.surface,
-                        borderRadius: BorderRadius.circular(AppRadius.md),
-                        border: Border.all(
-                            color: sel ? AppColors.primary : c.border),
-                        boxShadow: sel
-                            ? AppShadows.glow(AppColors.primary,
-                                intensity: 0.35, blur: 14)
-                            : null,
-                      ),
-                      child: Column(
-                        children: [
-                          Text(
-                            '$n',
-                            style: TextStyle(
-                              color:      sel ? Colors.white : c.textSecondary,
-                              fontWeight: FontWeight.bold,
-                              fontSize:   18,
+            Builder(builder: (context) {
+              final isPremium = AdService.instance.adsRemoved;
+              final options = isPremium ? [1, 10, 25, 50] : [1, 2, 3];
+
+              // If premium status changed and selected rounds is invalid, reset
+              if (!options.contains(_rounds)) {
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  if (mounted) setState(() => _rounds = options.first);
+                });
+              }
+
+              return Row(
+                children: List.generate(options.length, (i) {
+                  final n   = options[i];
+                  final sel = _rounds == n;
+                  return Expanded(
+                    child: GestureDetector(
+                      onTap: () {
+                        HapticFeedback.selectionClick();
+                        setState(() => _rounds = n);
+                      },
+                      child: AnimatedContainer(
+                        duration: AppDurations.fast,
+                        margin:  EdgeInsets.only(right: i < options.length - 1 ? 8 : 0),
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        decoration: BoxDecoration(
+                          gradient: sel
+                              ? const LinearGradient(
+                                  colors: [AppColors.primary, AppColors.secondary])
+                              : null,
+                          color: sel ? null : c.surface,
+                          borderRadius: BorderRadius.circular(AppRadius.md),
+                          border: Border.all(
+                              color: sel ? AppColors.primary : c.border),
+                          boxShadow: sel
+                              ? AppShadows.glow(AppColors.primary,
+                                  intensity: 0.35, blur: 14)
+                              : null,
+                        ),
+                        child: Column(
+                          children: [
+                            Text(
+                              '$n',
+                              style: TextStyle(
+                                color:      sel ? Colors.white : c.textSecondary,
+                                fontWeight: FontWeight.bold,
+                                fontSize:   18,
+                              ),
                             ),
-                          ),
-                          Text(
-                            '${n * 14} SMS',
-                            style: TextStyle(
-                              color:    sel
-                                  ? Colors.white.withOpacity(0.75)
-                                  : c.textSecondary,
-                              fontSize: 10,
+                            Text(
+                              '${n * 14} SMS',
+                              style: TextStyle(
+                                color:    sel
+                                    ? Colors.white.withOpacity(0.75)
+                                    : c.textSecondary,
+                                fontSize: 10,
+                              ),
                             ),
-                          ),
-                        ],
+                          ],
+                        ),
                       ),
                     ),
-                  ),
-                );
-              }),
-            ).animate(delay: 250.ms).fadeIn(duration: 400.ms),
+                  );
+                }),
+              );
+            }).animate(delay: 250.ms).fadeIn(duration: 400.ms),
 
             const SizedBox(height: 32),
 

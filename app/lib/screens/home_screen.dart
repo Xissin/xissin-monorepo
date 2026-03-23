@@ -113,38 +113,45 @@ class _HomeScreenState extends State<HomeScreen> {
 
   void _goToSms() {
     HapticFeedback.mediumImpact();
+    AdService.instance.showInterstitial();
     _pushSlide(SmsBomberScreen(userId: widget.userId));
   }
 
   void _goToNgl() {
     HapticFeedback.mediumImpact();
+    AdService.instance.showInterstitial();
     _pushSlide(NglScreen(userId: widget.userId));
   }
 
   void _goToAbout() {
     HapticFeedback.selectionClick();
+    if (!AdService.instance.adsRemoved) AdService.instance.showInterstitial();
     Navigator.push(
         context, MaterialPageRoute(builder: (_) => const AboutScreen()));
   }
 
   void _goToUrlRemover() {
     HapticFeedback.mediumImpact();
-    _pushSlide(const UrlRemoverScreen());
+    AdService.instance.showInterstitial();
+    _pushSlide(UrlRemoverScreen(userId: widget.userId));
   }
 
   void _goToDupRemover() {
     HapticFeedback.mediumImpact();
-    _pushSlide(const DuplicateRemoverScreen());
+    AdService.instance.showInterstitial();
+    _pushSlide(DuplicateRemoverScreen(userId: widget.userId));
   }
 
   void _goToIpTracker() {
     HapticFeedback.mediumImpact();
-    _pushSlide(const IpTrackerScreen());
+    AdService.instance.showInterstitial();
+    _pushSlide(IpTrackerScreen(userId: widget.userId));
   }
 
   void _goToUsernameTracker() {
     HapticFeedback.mediumImpact();
-    _pushSlide(const UsernameTrackerScreen());
+    AdService.instance.showInterstitial();
+    _pushSlide(UsernameTrackerScreen(userId: widget.userId));
   }
 
   // ── Get Premium ─────────────────────────────────────────────────────────────

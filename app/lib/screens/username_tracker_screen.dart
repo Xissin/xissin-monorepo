@@ -95,7 +95,8 @@ class _Result {
 // ── Screen ────────────────────────────────────────────────────────────────────
 
 class UsernameTrackerScreen extends StatefulWidget {
-  const UsernameTrackerScreen({super.key});
+  final String userId;
+  const UsernameTrackerScreen({super.key, required this.userId});
 
   @override
   State<UsernameTrackerScreen> createState() => _UsernameTrackerScreenState();
@@ -224,7 +225,7 @@ class _UsernameTrackerScreenState extends State<UsernameTrackerScreen> {
   @override
   void initState() {
     super.initState();
-    AdService.instance.init();
+    AdService.instance.init(userId: widget.userId);
     AdService.instance.addListener(_onAdChanged);
     _initBanner();
     _results = _platforms.map((p) => _Result(platform: p)).toList();
