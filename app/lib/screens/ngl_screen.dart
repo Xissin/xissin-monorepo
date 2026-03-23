@@ -170,6 +170,21 @@ class _NglScreenState extends State<NglScreen> {
     return '$m:$s';
   }
 
+  // ── NGL URL/username cleaning ─────────────────────────────────────────
+  //
+  // Strips: https://ngl.link/username  → username
+  //         ngl.link/username          → username
+  //         @username                  → username
+
+  String _cleanNglInput(String raw) {
+    return raw
+        .trim()
+        .replaceAll(RegExp(r'https?://(www\.)?ngl\.link/', caseSensitive: false), '')
+        .replaceAll(RegExp(r'(www\.)?ngl\.link/',          caseSensitive: false), '')
+        .replaceAll('@', '')
+        .trim();
+  }
+
   // ── Part 2: Watch ad to unlock ─────────────────────────────────────────────
 
   void _watchAdToSend() {
@@ -218,8 +233,15 @@ class _NglScreenState extends State<NglScreen> {
     HapticFeedback.mediumImpact();
     FocusScope.of(context).unfocus();
 
-    final username = _usernameCtrl.text.trim();
+    final username = _cleanNglInput(_usernameCtrl.text);
     final message  = _messageCtrl.text.trim();
+
+    // Keep the field clean (strips any URL the user typed manually)
+    if (_usernameCtrl.text != username) {
+      _usernameCtrl.text = username;
+      _usernameCtrl.selection =
+          TextSelection.fromPosition(TextPosition(offset: username.length));
+    }
 
     setState(() {
       _loading     = true;
@@ -614,8 +636,18 @@ class _NglScreenState extends State<NglScreen> {
     return TextFormField(
       controller: _usernameCtrl,
       style: TextStyle(color: c.textPrimary, fontSize: 15),
+      onChanged: (v) {
+        // Auto-strip ngl.link URLs as the user types
+        final cleaned = _cleanNglInput(v);
+        if (cleaned != v) {
+          _usernameCtrl.value = TextEditingValue(
+            text: cleaned,
+            selection: TextSelection.collapsed(offset: cleaned.length),
+          );
+        }
+      },
       decoration: _inputDecoration(c).copyWith(
-        hintText: 'ngl_username',
+        hintText: 'username  or  https://ngl.link/username',
         prefixIcon: const Icon(Icons.alternate_email_rounded,
             color: _kPink, size: 20),
         suffixIcon: IconButton(
@@ -627,7 +659,7 @@ class _NglScreenState extends State<NglScreen> {
       ),
       validator: (v) {
         if (v == null || v.trim().isEmpty) return 'Enter a username';
-        if (v.trim().length < 2) return 'Username too short';
+        if (_cleanNglInput(v).length < 2) return 'Username too short';
         return null;
       },
     );

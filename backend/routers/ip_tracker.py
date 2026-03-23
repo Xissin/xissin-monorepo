@@ -1,12 +1,15 @@
 """
-routers/ip_tracker.py — IP & Domain Tracker
+routers/ip_tracker.py — IP & Domain Tracker  (v2 — multi-provider with fallback)
 
-Proxies ip-api.com lookups through the Xissin backend.
+Providers tried in order (all free, no key required):
+  1. ip-api.com   — best data (HTTP only, works server-side fine)
+  2. ipapi.co     — HTTPS, good data, 1000 req/day per IP
+  3. ip.guide     — HTTPS, minimal but reliable
+
 • No user key required — free public tool
 • Accepts: raw IPv4, IPv6, domain, or full URL (strips protocol/path)
 • Rate-limited: 15 requests/minute per IP
 • Logs every lookup to dedicated Redis list + activity log
-• /log endpoint receives direct lookups from the Flutter app
 """
 
 from fastapi import APIRouter, HTTPException, Request
@@ -15,6 +18,7 @@ import httpx
 import re
 import os
 import logging
+import json
 from limiter import limiter
 import database as db
 
@@ -23,12 +27,6 @@ logger = logging.getLogger(__name__)
 
 _REDIS_URL   = os.environ.get("UPSTASH_REDIS_REST_URL", "")
 _REDIS_TOKEN = os.environ.get("UPSTASH_REDIS_REST_TOKEN", "")
-
-# ip-api.com fields we request
-_FIELDS = (
-    "status,message,country,countryCode,regionName,city,zip,"
-    "lat,lon,timezone,isp,org,as,query,mobile,proxy,hosting"
-)
 
 MAX_IP_LOGS = 500
 
@@ -78,7 +76,7 @@ class IpLookupRequest(BaseModel):
 
 class IpLookupResponse(BaseModel):
     success:      bool
-    query:        str        # resolved IP returned by ip-api.com
+    query:        str        # resolved IP returned by the provider
     country:      str  = ""
     country_code: str  = ""
     region_name:  str  = ""
@@ -95,10 +93,11 @@ class IpLookupResponse(BaseModel):
     hosting:      bool = False
     maps_url:     str  = ""
     error:        str  = ""
+    provider:     str  = ""   # which API provider answered
 
 
 class IpLogRequest(BaseModel):
-    """Received from the Flutter app after a direct ip-api.com lookup."""
+    """Received from the Flutter app after a direct lookup."""
     user_id:     str   = "anonymous"
     query:       str   = ""
     resolved_ip: str   = ""
@@ -118,20 +117,173 @@ def _ph_ts() -> str:
 
 async def _save_ip_log(entry: dict):
     """Store a dedicated IP tracker log entry in Redis."""
-    import json
     try:
         await _redis("LPUSH", "xissin:ip_tracker:logs", json.dumps(entry))
         await _redis("LTRIM", "xissin:ip_tracker:logs", 0, MAX_IP_LOGS - 1)
 
-        # Country frequency counter
         country = entry.get("country", "")
         if country:
             await _redis("ZINCRBY", "xissin:ip_tracker:countries", 1, country)
 
-        # Total counter
         await _redis("INCR", "xissin:ip_tracker:total")
     except Exception as exc:
         logger.warning(f"[IpTracker] _save_ip_log failed (non-fatal): {exc}")
+
+
+# ── Multi-provider lookup ──────────────────────────────────────────────────────
+
+async def _try_ip_api(query: str, client: httpx.AsyncClient) -> dict | None:
+    """
+    Provider 1: ip-api.com
+    HTTP only — but this is fine because it's a server-side call from Railway.
+    Returns None on failure so the caller can try the next provider.
+    """
+    fields = (
+        "status,message,country,countryCode,regionName,city,zip,"
+        "lat,lon,timezone,isp,org,as,query,mobile,proxy,hosting"
+    )
+    try:
+        resp = await client.get(
+            f"http://ip-api.com/json/{query}",
+            params={"fields": fields},
+            timeout=8,
+        )
+        if resp.status_code != 200:
+            logger.warning(f"[IpTracker] ip-api.com returned {resp.status_code}")
+            return None
+        data = resp.json()
+        if data.get("status") == "fail":
+            # If the query itself is invalid, propagate fail — don't try other providers
+            return {"_fail": True, "message": data.get("message", "Invalid IP or domain.")}
+        return {
+            "provider":     "ip-api.com",
+            "query":        data.get("query", query),
+            "country":      data.get("country", ""),
+            "country_code": data.get("countryCode", ""),
+            "region_name":  data.get("regionName", ""),
+            "city":         data.get("city", ""),
+            "zip_code":     data.get("zip", ""),
+            "lat":          float(data.get("lat") or 0),
+            "lon":          float(data.get("lon") or 0),
+            "timezone":     data.get("timezone", ""),
+            "isp":          data.get("isp", ""),
+            "org":          data.get("org", ""),
+            "as_info":      data.get("as", ""),
+            "mobile":       bool(data.get("mobile", False)),
+            "proxy":        bool(data.get("proxy", False)),
+            "hosting":      bool(data.get("hosting", False)),
+        }
+    except Exception as exc:
+        logger.warning(f"[IpTracker] ip-api.com error: {exc}")
+        return None
+
+
+async def _try_ipapi_co(query: str, client: httpx.AsyncClient) -> dict | None:
+    """
+    Provider 2: ipapi.co — HTTPS, 1 000 req/day free (no key needed).
+    Returns None on failure.
+    """
+    try:
+        resp = await client.get(
+            f"https://ipapi.co/{query}/json/",
+            headers={"User-Agent": "xissin-app/2.0"},
+            timeout=8,
+        )
+        if resp.status_code == 429:
+            logger.warning("[IpTracker] ipapi.co rate-limited")
+            return None
+        if resp.status_code != 200:
+            logger.warning(f"[IpTracker] ipapi.co returned {resp.status_code}")
+            return None
+        data = resp.json()
+        # ipapi.co returns {"error": true, "reason": "..."} for invalid IPs
+        if data.get("error"):
+            reason = data.get("reason", "Invalid IP or domain.")
+            return {"_fail": True, "message": reason}
+        return {
+            "provider":     "ipapi.co",
+            "query":        data.get("ip", query),
+            "country":      data.get("country_name", ""),
+            "country_code": data.get("country_code", ""),
+            "region_name":  data.get("region", ""),
+            "city":         data.get("city", ""),
+            "zip_code":     data.get("postal", ""),
+            "lat":          float(data.get("latitude") or 0),
+            "lon":          float(data.get("longitude") or 0),
+            "timezone":     data.get("timezone", ""),
+            "isp":          data.get("org", ""),   # ipapi.co puts org+isp in "org"
+            "org":          data.get("org", ""),
+            "as_info":      data.get("asn", ""),
+            "mobile":       False,   # ipapi.co free tier doesn't provide this
+            "proxy":        False,
+            "hosting":      False,
+        }
+    except Exception as exc:
+        logger.warning(f"[IpTracker] ipapi.co error: {exc}")
+        return None
+
+
+async def _try_ipguide(query: str, client: httpx.AsyncClient) -> dict | None:
+    """
+    Provider 3: ip.guide — HTTPS, completely free, no key, no rate limit published.
+    Minimal data but reliable fallback.
+    Returns None on failure.
+    """
+    try:
+        resp = await client.get(
+            f"https://ip.guide/{query}",
+            headers={"Accept": "application/json", "User-Agent": "xissin-app/2.0"},
+            timeout=8,
+        )
+        if resp.status_code != 200:
+            logger.warning(f"[IpTracker] ip.guide returned {resp.status_code}")
+            return None
+        data = resp.json()
+        # ip.guide structure: {"ip": "...", "network": {...}, "location": {...}}
+        loc = data.get("location") or {}
+        net = data.get("network") or {}
+        return {
+            "provider":     "ip.guide",
+            "query":        data.get("ip", query),
+            "country":      loc.get("country", ""),
+            "country_code": loc.get("country_code", ""),
+            "region_name":  loc.get("region", ""),
+            "city":         loc.get("city", ""),
+            "zip_code":     loc.get("postal_code", ""),
+            "lat":          float(loc.get("latitude") or 0),
+            "lon":          float(loc.get("longitude") or 0),
+            "timezone":     loc.get("timezone", ""),
+            "isp":          net.get("name", ""),
+            "org":          net.get("name", ""),
+            "as_info":      str(net.get("autonomous_system", {}).get("asn", "")),
+            "mobile":       False,
+            "proxy":        False,
+            "hosting":      False,
+        }
+    except Exception as exc:
+        logger.warning(f"[IpTracker] ip.guide error: {exc}")
+        return None
+
+
+async def _multi_lookup(query: str) -> dict:
+    """
+    Try providers in order. Returns normalised result dict.
+    Raises HTTPException if all providers fail.
+    """
+    async with httpx.AsyncClient() as client:
+        for fn in [_try_ip_api, _try_ipapi_co, _try_ipguide]:
+            result = await fn(query, client)
+            if result is None:
+                continue   # provider error — try next
+            if result.get("_fail"):
+                # Query is invalid — don't try other providers
+                return result
+            return result
+
+    raise HTTPException(
+        status_code=503,
+        detail="All IP lookup providers are currently unavailable. Please try again in a moment.",
+    )
 
 
 # ── Lookup endpoint ────────────────────────────────────────────────────────────
@@ -141,29 +293,17 @@ async def _save_ip_log(entry: dict):
 async def lookup_ip(req: IpLookupRequest, request: Request):
     """
     Looks up geolocation + network info for any IP, domain, or URL.
-    Powered by ip-api.com (free, no key required).
+    Uses multiple providers with automatic fallback.
     """
     try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(
-                f"https://ip-api.com/json/{req.query}",
-                params={"fields": _FIELDS},
-                timeout=10,
-            )
-    except httpx.TimeoutException:
-        raise HTTPException(504, "IP lookup timed out. Try again.")
+        data = await _multi_lookup(req.query)
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"[IpTracker] http error: {e}")
-        raise HTTPException(502, "IP lookup service unreachable.")
+        logger.error(f"[IpTracker] unexpected error: {e}")
+        raise HTTPException(status_code=500, detail="IP lookup failed. Please try again.")
 
-    if resp.status_code != 200:
-        raise HTTPException(502, f"IP lookup service error ({resp.status_code}).")
-
-    data = resp.json()
-
-    # ip-api returns status=fail for invalid inputs
-    if data.get("status") == "fail":
-        logger.info(f"[IpTracker] fail: query={req.query} msg={data.get('message')}")
+    if data.get("_fail"):
         entry = {
             "ts":      _ph_ts(),
             "query":   req.query,
@@ -183,24 +323,25 @@ async def lookup_ip(req: IpLookupRequest, request: Request):
             error=data.get("message", "Invalid IP or domain."),
         )
 
-    lat         = float(data.get("lat") or 0)
-    lon         = float(data.get("lon") or 0)
-    maps_url    = (
+    lat      = data["lat"]
+    lon      = data["lon"]
+    maps_url = (
         f"https://www.google.com/maps?q={lat},{lon}"
         if (lat != 0 or lon != 0) else ""
     )
-    resolved_ip = data.get("query", req.query)
-    isp         = data.get("isp", "")
-    country     = data.get("country", "")
-    city        = data.get("city", "")
+
+    provider     = data.get("provider", "")
+    resolved_ip  = data.get("query", req.query)
+    isp          = data.get("isp", "")
+    country      = data.get("country", "")
+    city         = data.get("city", "")
 
     logger.info(
-        f"[IpTracker] OK: input={req.query!r} → {resolved_ip} "
-        f"| {city}, {data.get('countryCode', '')} "
+        f"[IpTracker] OK [{provider}]: input={req.query!r} → {resolved_ip} "
+        f"| {city}, {data.get('country_code', '')} "
         f"| ISP: {isp[:40]}"
     )
 
-    # Save dedicated IP log
     entry = {
         "ts":      _ph_ts(),
         "query":   req.query,
@@ -212,17 +353,18 @@ async def lookup_ip(req: IpLookupRequest, request: Request):
         "lat":     lat,
         "lon":     lon,
         "success": True,
+        "provider": provider,
     }
     await _save_ip_log(entry)
 
-    # Also append to activity log (action name matches Activity Logs filter)
     try:
         db.append_log({
             "action":  "ip_lookup",
             "user_id": req.user_id,
             "query":   req.query,
-            "country": data.get("countryCode", ""),
+            "country": data.get("country_code", ""),
             "city":    city,
+            "provider": provider,
         })
     except Exception:
         pass
@@ -231,32 +373,29 @@ async def lookup_ip(req: IpLookupRequest, request: Request):
         success=True,
         query=resolved_ip,
         country=country,
-        country_code=data.get("countryCode", ""),
-        region_name=data.get("regionName", ""),
+        country_code=data.get("country_code", ""),
+        region_name=data.get("region_name", ""),
         city=city,
-        zip_code=data.get("zip", ""),
+        zip_code=data.get("zip_code", ""),
         lat=lat,
         lon=lon,
         timezone=data.get("timezone", ""),
         isp=isp,
         org=data.get("org", ""),
-        as_info=data.get("as", ""),
-        mobile=bool(data.get("mobile", False)),
-        proxy=bool(data.get("proxy", False)),
-        hosting=bool(data.get("hosting", False)),
+        as_info=data.get("as_info", ""),
+        mobile=data.get("mobile", False),
+        proxy=data.get("proxy", False),
+        hosting=data.get("hosting", False),
         maps_url=maps_url,
+        provider=provider,
     )
 
 
-# ── App: log endpoint (called by Flutter after direct ip-api.com lookup) ──────
+# ── App: log endpoint ──────────────────────────────────────────────────────────
 
 @router.post("/log")
 async def log_ip_lookup(req: IpLogRequest):
-    """
-    Called by the Flutter app to log a direct ip-api.com lookup.
-    The app calls ip-api.com directly for speed, then reports here
-    so the admin panel can see all lookups.
-    """
+    """Called by the Flutter app to log a lookup result."""
     entry = {
         "ts":      _ph_ts(),
         "query":   req.query,
@@ -271,7 +410,6 @@ async def log_ip_lookup(req: IpLogRequest):
     }
     await _save_ip_log(entry)
 
-    # Also write to activity log
     try:
         db.append_log({
             "action":  "ip_lookup",
@@ -291,7 +429,6 @@ async def log_ip_lookup(req: IpLogRequest):
 @router.get("/logs")
 async def get_ip_logs(limit: int = 100):
     """Admin: recent IP lookup logs."""
-    import json
     try:
         raw = await _redis("LRANGE", "xissin:ip_tracker:logs", 0, limit - 1)
         if not raw:
@@ -316,7 +453,6 @@ async def get_ip_stats():
         total_raw = await _redis("GET", "xissin:ip_tracker:total")
         total = int(total_raw or 0)
 
-        # Top country from sorted set
         top_raw = await _redis(
             "ZREVRANGE", "xissin:ip_tracker:countries", 0, 0, "WITHSCORES"
         )

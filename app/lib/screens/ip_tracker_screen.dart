@@ -220,13 +220,16 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
     } on ApiException catch (e) {
       setState(() { _loading = false; _error = e.userMessage; });
     } on SocketException {
-      setState(() { _loading = false; _error = 'No internet connection.'; });
+      setState(() { _loading = false; _error = 'No internet connection. Please check your network.'; });
     } on TimeoutException {
-      setState(() { _loading = false; _error = 'Request timed out. Try again.'; });
+      setState(() { _loading = false; _error = 'Request timed out. The server may be busy — tap Retry.'; });
     } catch (e) {
+      final msg = e.toString().replaceAll('Exception: ', '');
       setState(() {
         _loading = false;
-        _error   = e.toString().replaceAll('Exception: ', '');
+        _error   = msg.contains('503') || msg.contains('502')
+            ? 'Lookup service temporarily unavailable. Tap Retry in a moment.'
+            : msg;
       });
     }
   }
@@ -596,12 +599,35 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
       borderRadius: BorderRadius.circular(14),
       border:       Border.all(color: const Color(0xFFFF6B6B).withOpacity(0.3)),
     ),
-    child: Row(children: [
-      const Icon(Icons.error_outline_rounded, color: Color(0xFFFF6B6B), size: 16),
-      const SizedBox(width: 8),
-      Expanded(child: Text(_error!,
-          style: const TextStyle(color: Color(0xFFFF6B6B), fontSize: 12))),
-    ]),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(children: [
+          const Icon(Icons.error_outline_rounded, color: Color(0xFFFF6B6B), size: 16),
+          const SizedBox(width: 8),
+          Expanded(child: Text(_error!,
+              style: const TextStyle(color: Color(0xFFFF6B6B), fontSize: 12))),
+        ]),
+        const SizedBox(height: 10),
+        GestureDetector(
+          onTap: () => _lookup(_queryCtrl.text.trim().isEmpty ? null : _queryCtrl.text.trim()),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+            decoration: BoxDecoration(
+              color:        const Color(0xFFFF6B6B).withOpacity(0.12),
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: const Color(0xFFFF6B6B).withOpacity(0.4)),
+            ),
+            child: const Row(mainAxisSize: MainAxisSize.min, children: [
+              Icon(Icons.refresh_rounded, color: Color(0xFFFF6B6B), size: 13),
+              SizedBox(width: 5),
+              Text('Retry', style: TextStyle(
+                  color: Color(0xFFFF6B6B), fontSize: 12, fontWeight: FontWeight.w700)),
+            ]),
+          ),
+        ),
+      ],
+    ),
   );
 
   // ── Loading Card ──────────────────────────────────────────────────────────
@@ -644,6 +670,8 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
     final hosting     = d['hosting']      as bool?   ?? false;
     final mapsUrl     = d['maps_url']     as String? ?? '';
 
+    final provider = d['provider'] as String? ?? '';
+
     return [
       // ── Resolved IP header ───────────────────────────────────────────────
       Container(
@@ -664,6 +692,11 @@ class _IpTrackerScreenState extends State<IpTrackerScreen> {
                   style: const TextStyle(
                       color: _accent, fontSize: 16,
                       fontWeight: FontWeight.w800, letterSpacing: 0.8)),
+              if (provider.isNotEmpty) ...[
+                const SizedBox(height: 3),
+                Text('via $provider',
+                    style: TextStyle(color: _accent.withOpacity(0.5), fontSize: 9)),
+              ],
             ]),
           ),
           GestureDetector(

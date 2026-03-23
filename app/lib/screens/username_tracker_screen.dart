@@ -84,8 +84,10 @@ enum _Status { idle, checking, found, notFound, error }
 class _Result {
   final _Platform platform;
   _Status status;
-  String? profileUrl;
-  String? foundVariant;
+  String? profileUrl;       // primary (first-found) URL — kept for compatibility
+  String? foundVariant;     // primary variant
+  List<String> allUrls     = [];  // ALL matching profile URLs across variants
+  List<String> allVariants = [];  // corresponding variant names
 
   _Result({required this.platform, this.status = _Status.idle});
 }
@@ -410,6 +412,8 @@ class _UsernameTrackerScreenState extends State<UsernameTrackerScreen> {
         r.status       = _Status.checking;
         r.profileUrl   = null;
         r.foundVariant = null;
+        r.allUrls      = [];
+        r.allVariants  = [];
       }
     });
 
@@ -452,30 +456,41 @@ class _UsernameTrackerScreenState extends State<UsernameTrackerScreen> {
 
   // ── Per-platform variant check ─────────────────────────────────────────────
 
+  // ── Per-platform variant check (collects ALL matching variants) ────────────
+  //
+  // Instead of stopping at the first match, we now check EVERY variant and
+  // collect all profile URLs that return 200/found. This gives users a complete
+  // picture — e.g. both "john_doe" and "johndoe" may exist on GitHub.
+
   Future<void> _checkPlatformVariants(
       _Result result, List<String> variants) async {
+    final foundUrls     = <String>[];
+    final foundVariants = <String>[];
+    bool  hadError      = false;
+
     for (final variant in variants) {
       final status = await _tryVariant(result.platform, variant);
       if (status == _Status.found) {
         final displayUrl = result.platform.urlTemplate
             .replaceAll('{u}', variant)
             .replaceAll('m.facebook.com', 'www.facebook.com');
-        result.profileUrl   = displayUrl;
-        result.foundVariant = variant;
-        result.status       = _Status.found;
-        return;
+        foundUrls.add(displayUrl);
+        foundVariants.add(variant);
+      } else if (status == _Status.error) {
+        hadError = true;
       }
-      if (status == _Status.notFound) continue;
     }
 
-    final lastStatus = await _tryVariant(result.platform, variants.last);
-    if (lastStatus == _Status.notFound) {
-      result.status = _Status.notFound;
-    } else {
-      result.profileUrl = result.platform.urlTemplate
-          .replaceAll('{u}', variants.first)
-          .replaceAll('m.facebook.com', 'www.facebook.com');
+    if (foundUrls.isNotEmpty) {
+      result.profileUrl   = foundUrls.first;
+      result.foundVariant = foundVariants.first;
+      result.allUrls      = foundUrls;
+      result.allVariants  = foundVariants;
+      result.status       = _Status.found;
+    } else if (hadError) {
       result.status = _Status.error;
+    } else {
+      result.status = _Status.notFound;
     }
   }
 
@@ -564,6 +579,8 @@ class _UsernameTrackerScreenState extends State<UsernameTrackerScreen> {
         r.status       = _Status.idle;
         r.profileUrl   = null;
         r.foundVariant = null;
+        r.allUrls      = [];
+        r.allVariants  = [];
       }
     });
   }
@@ -803,7 +820,7 @@ class _UsernameTrackerScreenState extends State<UsernameTrackerScreen> {
                             ),
                           ],
                           decoration: InputDecoration(
-                            hintText:  'e.g. nathaniel_reformina',
+                            hintText:  'e.g. xissin or john_doe',
                             hintStyle: TextStyle(color: c.textHint, fontSize: 13),
                             border:    InputBorder.none,
                           ),
@@ -1330,62 +1347,95 @@ class _UsernameTrackerScreenState extends State<UsernameTrackerScreen> {
             ),
           ),
 
-          if (isFound && url.isNotEmpty) ...[
+          // Show ALL found profile URLs (one row per matching variant)
+          if (isFound && result.allUrls.isNotEmpty) ...[
             Divider(height: 1, color: c.border),
             Padding(
-              padding: const EdgeInsets.fromLTRB(12, 7, 8, 7),
-              child: Row(
-                children: [
-                  const Icon(Icons.link_rounded, size: 13, color: Color(0xFF2ECC71)),
-                  const SizedBox(width: 6),
-                  Expanded(
-                    child: Text(url,
-                        style: const TextStyle(
-                            color: Color(0xFF2ECC71), fontSize: 11,
-                            decoration: TextDecoration.underline,
-                            decorationColor: Color(0x882ECC71)),
-                        overflow: TextOverflow.ellipsis, maxLines: 1),
-                  ),
-                  const SizedBox(width: 6),
-                  GestureDetector(
-                    onTap: () {
-                      Clipboard.setData(ClipboardData(text: url));
-                      HapticFeedback.selectionClick();
-                      _snack('${result.platform.name} URL copied!');
-                    },
-                    child: Container(
-                      padding: const EdgeInsets.all(5),
-                      decoration: BoxDecoration(
-                        color:        c.border.withOpacity(0.5),
-                        borderRadius: BorderRadius.circular(6),
-                      ),
-                      child: Icon(Icons.copy_rounded, size: 12, color: c.textSecondary),
+              padding: const EdgeInsets.fromLTRB(12, 6, 8, 6),
+              child: Column(
+                children: List.generate(result.allUrls.length, (i) {
+                  final itemUrl     = result.allUrls[i];
+                  final itemVariant = result.allVariants.length > i
+                      ? result.allVariants[i]
+                      : null;
+                  final showVariant = itemVariant != null &&
+                      itemVariant != _currentUsername;
+                  return Padding(
+                    padding: EdgeInsets.only(bottom: i < result.allUrls.length - 1 ? 6 : 0),
+                    child: Row(
+                      children: [
+                        Icon(
+                          result.allUrls.length > 1
+                              ? Icons.fork_right_rounded
+                              : Icons.link_rounded,
+                          size: 13, color: const Color(0xFF2ECC71),
+                        ),
+                        const SizedBox(width: 5),
+                        if (showVariant)
+                          Container(
+                            margin: const EdgeInsets.only(right: 5),
+                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF2ECC71).withOpacity(0.12),
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: Text('@$itemVariant',
+                                style: const TextStyle(
+                                    color: Color(0xFF2ECC71), fontSize: 10,
+                                    fontWeight: FontWeight.w700)),
+                          ),
+                        Expanded(
+                          child: Text(itemUrl,
+                              style: const TextStyle(
+                                  color: Color(0xFF2ECC71), fontSize: 11,
+                                  decoration: TextDecoration.underline,
+                                  decorationColor: Color(0x882ECC71)),
+                              overflow: TextOverflow.ellipsis, maxLines: 1),
+                        ),
+                        const SizedBox(width: 5),
+                        GestureDetector(
+                          onTap: () {
+                            Clipboard.setData(ClipboardData(text: itemUrl));
+                            HapticFeedback.selectionClick();
+                            _snack('${result.platform.name} URL copied!');
+                          },
+                          child: Container(
+                            padding: const EdgeInsets.all(5),
+                            decoration: BoxDecoration(
+                              color:        c.border.withOpacity(0.5),
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: Icon(Icons.copy_rounded, size: 12, color: c.textSecondary),
+                          ),
+                        ),
+                        const SizedBox(width: 5),
+                        GestureDetector(
+                          onTap: () { HapticFeedback.selectionClick(); _openUrl(itemUrl); },
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                            decoration: BoxDecoration(
+                              color:        const Color(0xFF2ECC71).withOpacity(0.15),
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: const Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.open_in_new_rounded, size: 11, color: Color(0xFF2ECC71)),
+                                SizedBox(width: 4),
+                                Text('Open', style: TextStyle(
+                                    color: Color(0xFF2ECC71), fontSize: 11, fontWeight: FontWeight.w700)),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
-                  ),
-                  const SizedBox(width: 6),
-                  GestureDetector(
-                    onTap: () { HapticFeedback.selectionClick(); _openUrl(url); },
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                      decoration: BoxDecoration(
-                        color:        const Color(0xFF2ECC71).withOpacity(0.15),
-                        borderRadius: BorderRadius.circular(6),
-                      ),
-                      child: const Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(Icons.open_in_new_rounded, size: 11, color: Color(0xFF2ECC71)),
-                          SizedBox(width: 4),
-                          Text('Open', style: TextStyle(
-                              color: Color(0xFF2ECC71), fontSize: 11, fontWeight: FontWeight.w700)),
-                        ],
-                      ),
-                    ),
-                  ),
-                ],
+                  );
+                }),
               ),
             ),
           ],
+
         ],
       ),
     ).animate(delay: Duration(milliseconds: 15 * index)).fadeIn(duration: 180.ms);
