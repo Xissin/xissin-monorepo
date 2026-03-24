@@ -1,10 +1,11 @@
 // ============================================================
 //  codm_checker_screen.dart  —  CODM / Garena Checker
 //
-//  v3 — Backend-proxy architecture
-//  All Garena API calls now go through Railway backend which
-//  uses cloudscraper to bypass DataDome. Flutter just sends
-//  the combo and displays the JSON result.
+//  v4 — Proxy support added
+//  Users can optionally supply their own proxy
+//  (http://user:pass@host:port or host:port)
+//  Backend also has a pool in Redis; per-request proxy takes
+//  priority over the pool.
 // ============================================================
 
 import 'dart:convert';
@@ -68,9 +69,11 @@ class _State extends State<CodmCheckerScreen> {
   bool _adGranted = false;
 
   // state
-  final _ctrl   = TextEditingController();
-  final _scroll = ScrollController();
+  final _ctrl        = TextEditingController();
+  final _proxyCtrl   = TextEditingController();   // ← NEW: proxy input
+  final _scroll      = ScrollController();
   bool _running = false, _stopped = false;
+  bool _proxyEnabled = false;                      // ← NEW: proxy toggle
   int _total = 0, _checked = 0, _hits = 0, _bad = 0, _errors = 0;
   final _results = <_R>[];
 
@@ -88,6 +91,7 @@ class _State extends State<CodmCheckerScreen> {
     AdService.instance.removeListener(_onAd);
     _banner?.dispose();
     _ctrl.dispose();
+    _proxyCtrl.dispose();
     _scroll.dispose();
     super.dispose();
   }
@@ -150,17 +154,26 @@ class _State extends State<CodmCheckerScreen> {
   }
 
   // ── Backend call ──────────────────────────────────────────────
-  // Sends one combo to Railway → returns _R
   Future<_R> _checkOne(String combo) async {
     if (!combo.contains(':')) {
       return _R(combo: combo, status: _S.error, detail: 'Bad format — use email:password');
     }
 
     try {
+      // Build request body — include proxy only if user enabled it
+      final body = <String, dynamic>{
+        'combo':   combo,
+        'user_id': widget.userId,
+      };
+      final proxyVal = _proxyCtrl.text.trim();
+      if (_proxyEnabled && proxyVal.isNotEmpty) {
+        body['proxy'] = proxyVal;
+      }
+
       final res = await http.post(
         Uri.parse('$_kBackend/api/codm/check-one'),
         headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'combo': combo, 'user_id': widget.userId}),
+        body: jsonEncode(body),
       ).timeout(const Duration(seconds: 60));
 
       if (res.statusCode != 200) {
@@ -170,7 +183,7 @@ class _State extends State<CodmCheckerScreen> {
         );
       }
 
-      final data = jsonDecode(res.body) as Map<String, dynamic>;
+      final data   = jsonDecode(res.body) as Map<String, dynamic>;
       final status = data['status'] as String? ?? 'error';
       final binds  = (data['binds'] as List?)?.cast<String>() ?? [];
 
@@ -276,12 +289,11 @@ class _State extends State<CodmCheckerScreen> {
       setState(() {
         _checked++;
         _results.insert(0, r);
-        if (r.isHit)              _hits++;
-        else if (r.status == _S.bad)   _bad++;
-        else                           _errors++;
+        if (r.isHit)                _hits++;
+        else if (r.status == _S.bad) _bad++;
+        else                         _errors++;
       });
       if (_scroll.hasClients) _scroll.jumpTo(0);
-      // Small delay between checks to be polite to the backend
       await Future.delayed(const Duration(milliseconds: 300));
     }
 
@@ -492,6 +504,7 @@ class _State extends State<CodmCheckerScreen> {
       border: Border.all(color: _kAccent.withOpacity(.3)),
     ),
     child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      // ── Combo list label ──────────────────────────────────
       Row(children: [
         const Icon(Icons.list_alt_rounded, color: _kAccent, size: 16),
         const SizedBox(width: 8),
@@ -501,6 +514,7 @@ class _State extends State<CodmCheckerScreen> {
         ),
       ]),
       const SizedBox(height: 10),
+      // ── Combo textarea ────────────────────────────────────
       TextField(
         controller: _ctrl,
         enabled: !_running,
@@ -521,7 +535,110 @@ class _State extends State<CodmCheckerScreen> {
         keyboardType: TextInputType.multiline,
       ),
       const SizedBox(height: 12),
-      // Info chip about backend
+
+      // ── Proxy toggle row ──────────────────────────────────
+      GestureDetector(
+        onTap: () {
+          if (_running) return;
+          HapticFeedback.selectionClick();
+          setState(() => _proxyEnabled = !_proxyEnabled);
+        },
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          decoration: BoxDecoration(
+            color: _proxyEnabled
+                ? const Color(0xFF5B8CFF).withOpacity(.1)
+                : c.background,
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(
+              color: _proxyEnabled
+                  ? const Color(0xFF5B8CFF).withOpacity(.4)
+                  : c.border,
+            ),
+          ),
+          child: Row(children: [
+            Icon(
+              Icons.vpn_lock_rounded,
+              color: _proxyEnabled ? const Color(0xFF5B8CFF) : c.textHint,
+              size: 15,
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                'Use Proxy',
+                style: TextStyle(
+                  color: _proxyEnabled ? const Color(0xFF5B8CFF) : c.textSecondary,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+            Switch(
+              value: _proxyEnabled,
+              onChanged: _running ? null : (v) {
+                HapticFeedback.selectionClick();
+                setState(() => _proxyEnabled = v);
+              },
+              activeColor: const Color(0xFF5B8CFF),
+              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            ),
+          ]),
+        ),
+      ),
+
+      // ── Proxy input (shown only when enabled) ─────────────
+      if (_proxyEnabled) ...[
+        const SizedBox(height: 8),
+        TextField(
+          controller: _proxyCtrl,
+          enabled: !_running,
+          style: TextStyle(
+            color: c.textPrimary,
+            fontSize: 12,
+            fontFamily: 'monospace',
+          ),
+          decoration: InputDecoration(
+            hintText: 'http://user:pass@host:port  or  host:port',
+            hintStyle: TextStyle(color: c.textHint, fontSize: 11),
+            filled: true,
+            fillColor: c.background,
+            prefixIcon: Icon(Icons.dns_rounded, color: const Color(0xFF5B8CFF), size: 16),
+            suffixIcon: _proxyCtrl.text.isNotEmpty
+                ? IconButton(
+                    icon: Icon(Icons.clear_rounded, color: c.textHint, size: 16),
+                    onPressed: () => setState(() => _proxyCtrl.clear()),
+                  )
+                : null,
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: BorderSide(color: const Color(0xFF5B8CFF).withOpacity(.3)),
+            ),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: BorderSide(color: const Color(0xFF5B8CFF).withOpacity(.3)),
+            ),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: const BorderSide(color: Color(0xFF5B8CFF)),
+            ),
+            contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          ),
+          keyboardType: TextInputType.url,
+          onChanged: (_) => setState(() {}),
+        ),
+        const SizedBox(height: 4),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 4),
+          child: Text(
+            'Leave blank to use the backend proxy pool (if set by admin).',
+            style: TextStyle(color: c.textHint, fontSize: 10),
+          ),
+        ),
+      ],
+
+      const SizedBox(height: 12),
+
+      // ── Backend info chip ─────────────────────────────────
       Container(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
         decoration: BoxDecoration(
@@ -538,6 +655,8 @@ class _State extends State<CodmCheckerScreen> {
         ]),
       ),
       const SizedBox(height: 12),
+
+      // ── Start / Stop / Reset row ──────────────────────────
       Row(children: [
         Expanded(child: ElevatedButton.icon(
           onPressed: _running ? () => setState(() => _stopped = true) : _start,

