@@ -1,6 +1,7 @@
 # ============================================================
 #  routers/codm.py  —  CODM / Garena Checker Backend
-#  v4 — Redis cookie pool + proxy support
+#  v4.1 — Fixed admin auth: now uses require_admin from auth.py
+#          instead of its own broken _ADMIN_KEY guard.
 #
 #  Cookie pool priority:  Redis (codm:cookies)  →  env CODM_COOKIES
 #  Proxy pool priority:   per-request proxy arg  →  Redis (codm:proxies)  →  none
@@ -25,9 +26,12 @@ import urllib.parse
 
 import requests as _req
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import Optional, List
+
+# ── Use the same admin auth as every other router ─────────────
+from auth import require_admin
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -61,18 +65,6 @@ _UA_SDK = "GarenaMSDK/5.12.1(Lenovo TB-9707F ;Android 15;en;us;)"
 
 # ── CODM client secret ────────────────────────────────────────
 _CLIENT_SECRET = "388066813c7cda8d51c1a70b0f6050b991986326fcfb0cb3bf2287e861cfa415"
-
-# ── Admin key ─────────────────────────────────────────────────
-_ADMIN_KEY = os.getenv("ADMIN_KEY", "")
-
-
-# ─────────────────────────────────────────────────────────────
-#  Admin key guard
-# ─────────────────────────────────────────────────────────────
-
-def _require_admin(x_admin_key: str = Header(default="")):
-    if not _ADMIN_KEY or x_admin_key != _ADMIN_KEY:
-        raise HTTPException(status_code=403, detail="Forbidden — invalid admin key")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -616,7 +608,7 @@ def _parse_account(data: dict) -> dict:
 class CheckOneRequest(BaseModel):
     combo: str
     user_id: Optional[str] = None
-    proxy: Optional[str] = None      # ← NEW: optional per-request proxy
+    proxy: Optional[str] = None      # optional per-request proxy
 
 
 class CheckOneResponse(BaseModel):
@@ -643,11 +635,12 @@ class ProxyUpdateRequest(BaseModel):
 
 # ─────────────────────────────────────────────────────────────
 #  Admin — Cookie pool endpoints
+#  All use Depends(require_admin) — same as every other router.
+#  Reads ADMIN_SECRET_KEY from Railway env (set once, shared).
 # ─────────────────────────────────────────────────────────────
 
-@router.get("/cookies")
-async def get_cookies(x_admin_key: str = Header(default="")):
-    _require_admin(x_admin_key)
+@router.get("/cookies", dependencies=[Depends(require_admin)])
+async def get_cookies():
     cookies = _get_all_cookies()
     return {
         "count": len(cookies),
@@ -656,9 +649,8 @@ async def get_cookies(x_admin_key: str = Header(default="")):
     }
 
 
-@router.post("/cookies")
-async def set_cookies(req: CookieUpdateRequest, x_admin_key: str = Header(default="")):
-    _require_admin(x_admin_key)
+@router.post("/cookies", dependencies=[Depends(require_admin)])
+async def set_cookies(req: CookieUpdateRequest):
     cleaned = [l.strip() for l in req.cookies if l.strip()]
     if not cleaned:
         raise HTTPException(status_code=400, detail="No valid cookie lines provided")
@@ -668,9 +660,8 @@ async def set_cookies(req: CookieUpdateRequest, x_admin_key: str = Header(defaul
     return {"saved": len(cleaned), "message": f"✅ {len(cleaned)} cookie(s) saved to Redis"}
 
 
-@router.delete("/cookies")
-async def delete_cookies(x_admin_key: str = Header(default="")):
-    _require_admin(x_admin_key)
+@router.delete("/cookies", dependencies=[Depends(require_admin)])
+async def delete_cookies():
     _redis_del(_REDIS_KEY_COOKIES)
     return {"message": "✅ Cookie pool cleared from Redis (env fallback still active if set)"}
 
@@ -679,16 +670,14 @@ async def delete_cookies(x_admin_key: str = Header(default="")):
 #  Admin — Proxy pool endpoints
 # ─────────────────────────────────────────────────────────────
 
-@router.get("/proxies")
-async def get_proxies(x_admin_key: str = Header(default="")):
-    _require_admin(x_admin_key)
+@router.get("/proxies", dependencies=[Depends(require_admin)])
+async def get_proxies():
     proxies = _get_all_proxies()
     return {"count": len(proxies), "proxies": proxies}
 
 
-@router.post("/proxies")
-async def set_proxies(req: ProxyUpdateRequest, x_admin_key: str = Header(default="")):
-    _require_admin(x_admin_key)
+@router.post("/proxies", dependencies=[Depends(require_admin)])
+async def set_proxies(req: ProxyUpdateRequest):
     cleaned = [l.strip() for l in req.proxies if l.strip()]
     if not cleaned:
         raise HTTPException(status_code=400, detail="No valid proxy lines provided")
@@ -698,9 +687,8 @@ async def set_proxies(req: ProxyUpdateRequest, x_admin_key: str = Header(default
     return {"saved": len(cleaned), "message": f"✅ {len(cleaned)} proxy(ies) saved to Redis"}
 
 
-@router.delete("/proxies")
-async def delete_proxies(x_admin_key: str = Header(default="")):
-    _require_admin(x_admin_key)
+@router.delete("/proxies", dependencies=[Depends(require_admin)])
+async def delete_proxies():
     _redis_del(_REDIS_KEY_PROXIES)
     return {"message": "✅ Proxy pool cleared from Redis"}
 
@@ -729,7 +717,7 @@ async def check_one(req: CheckOneRequest):
         return CheckOneResponse(combo=combo, status="error", detail="Empty account or password")
 
     datadome = _pick_datadome()
-    proxy    = _pick_proxy(req.proxy)           # ← per-request or pool
+    proxy    = _pick_proxy(req.proxy)           # per-request or pool
     session  = _make_session(datadome, proxy)
 
     try:
