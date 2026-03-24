@@ -1,17 +1,13 @@
 // ============================================================
-//  codm_checker_screen.dart  —  CODM / Garena Checker  v5
+//  codm_checker_screen.dart  —  CODM / Garena Checker  v5.2
 //
-//  Improvements over v4:
-//  - Concurrent checking (1–5 simultaneous requests, user-configurable)
-//  - Result filter chips: All / Hits / Valid / Bad / Error
-//  - Combo count indicator below input
-//  - ETA + average check time display in stats bar
-//  - "Copy All Hits" produces fully formatted output
-//  - Long-press result card copies full details to clipboard
-//  - Paste from clipboard button on combo input
-//
-//  Fix v5.1: ApiService.instance.sessionToken → ApiService.sessionToken
-//            (ApiService is a static-only class, no instance singleton)
+//  Fix v5.2:
+//  - Increased Flutter HTTP timeout: 60s → 90s
+//    (backend now has a 55s watchdog; 90s Flutter timeout gives
+//     headroom for Railway cold starts and network jitter)
+//  - TimeoutException now shows a human-readable message instead
+//    of the raw Dart exception string
+//  - No other changes
 // ============================================================
 
 import 'dart:async';
@@ -140,7 +136,7 @@ class _State extends State<CodmCheckerScreen> {
   final _proxyCtrl = TextEditingController();
   final _scroll    = ScrollController();
   bool _proxyEnabled = false;
-  int  _concurrency  = 2;        // simultaneous requests
+  int  _concurrency  = 2;
 
   // ── Run state ─────────────────────────────────────────────
   bool _running = false;
@@ -152,7 +148,7 @@ class _State extends State<CodmCheckerScreen> {
   _Filter _filter = _Filter.all;
 
   // ── Timing ────────────────────────────────────────────────
-  final _checkTimes = <double>[];   // ms per combo
+  final _checkTimes = <double>[];
   DateTime? _startTime;
 
   // ── Lifecycle ─────────────────────────────────────────────
@@ -277,16 +273,23 @@ class _State extends State<CodmCheckerScreen> {
         Uri.parse('$_kBackend/api/codm/check-one'),
         headers: {
           'Content-Type':    'application/json',
-          // FIX: ApiService is static-only — use ApiService.sessionToken, not .instance
           'X-Session-Token': ApiService.sessionToken ?? '',
           'X-App-Id':        'com.xissin.app',
         },
         body: jsonEncode(body),
-      ).timeout(const Duration(seconds: 60));
+      ).timeout(
+        // FIX v5.2: was 60s — backend now caps at 55s so 90s gives
+        // safe headroom for Railway cold-starts and slow networks.
+        const Duration(seconds: 90),
+        onTimeout: () => http.Response(
+          '{"status":"error","detail":"Request timed out (90s) — Garena may be slow or blocking. Try again or enable proxy."}',
+          200,
+        ),
+      );
 
       final elapsed = DateTime.now().difference(t0).inMilliseconds.toDouble();
       _checkTimes.add(elapsed);
-      if (_checkTimes.length > 20) _checkTimes.removeAt(0); // rolling avg
+      if (_checkTimes.length > 20) _checkTimes.removeAt(0);
 
       if (res.statusCode != 200) {
         return _R(combo: combo, status: _S.error, detail: 'Server error ${res.statusCode}');
@@ -339,6 +342,13 @@ class _State extends State<CodmCheckerScreen> {
             detail: data['detail'] ?? 'Unknown error',
           );
       }
+    } on TimeoutException {
+      // FIX v5.2: clean human-readable message instead of raw Dart exception
+      return _R(
+        combo:  combo,
+        status: _S.error,
+        detail: 'Timed out (90s) — Garena is blocking or slow. Try proxy.',
+      );
     } on Exception catch (e) {
       return _R(combo: combo, status: _S.error, detail: 'Request failed: $e');
     }
@@ -390,7 +400,6 @@ class _State extends State<CodmCheckerScreen> {
       _filter = _Filter.all;
     });
 
-    // Process in concurrent batches
     final semaphore = <Future>[];
     int idx = 0;
 
@@ -412,7 +421,6 @@ class _State extends State<CodmCheckerScreen> {
     }
 
     while (idx < lines.length && !_stopped) {
-      // Fill up to _concurrency simultaneous tasks
       while (semaphore.length < _concurrency && idx < lines.length && !_stopped) {
         final combo = lines[idx++];
         semaphore.add(processOne(combo));
@@ -423,7 +431,6 @@ class _State extends State<CodmCheckerScreen> {
       }
     }
 
-    // Drain remaining
     await Future.wait(semaphore);
 
     if (!mounted) return;
@@ -731,7 +738,6 @@ class _State extends State<CodmCheckerScreen> {
           style: TextStyle(color: _kAccent, fontSize: 12, fontWeight: FontWeight.w600),
         ),
         const Spacer(),
-        // Paste button
         if (!_running)
           GestureDetector(
             onTap: _pasteFromClipboard,
@@ -773,7 +779,6 @@ class _State extends State<CodmCheckerScreen> {
         keyboardType: TextInputType.multiline,
       ),
 
-      // ── Combo count indicator ─────────────────────────────
       if (_comboCount > 0 && !_running) ...[
         const SizedBox(height: 6),
         Padding(
@@ -842,9 +847,7 @@ class _State extends State<CodmCheckerScreen> {
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
           decoration: BoxDecoration(
-            color: _proxyEnabled
-                ? _kValid.withOpacity(.1)
-                : c.background,
+            color: _proxyEnabled ? _kValid.withOpacity(.1) : c.background,
             borderRadius: BorderRadius.circular(10),
             border: Border.all(
               color: _proxyEnabled ? _kValid.withOpacity(.4) : c.border,
@@ -875,7 +878,6 @@ class _State extends State<CodmCheckerScreen> {
         ),
       ),
 
-      // ── Proxy input ───────────────────────────────────────
       if (_proxyEnabled) ...[
         const SizedBox(height: 8),
         TextField(
@@ -1022,7 +1024,6 @@ class _State extends State<CodmCheckerScreen> {
             const SizedBox(width: 6),
             Text(sl, style: TextStyle(color: sc, fontSize: 12, fontWeight: FontWeight.w700)),
             const Spacer(),
-            // Copy combo
             GestureDetector(
               onTap: () {
                 Clipboard.setData(ClipboardData(text: r.combo));
@@ -1068,7 +1069,6 @@ class _State extends State<CodmCheckerScreen> {
             Text(r.detail,
                 style: TextStyle(color: sc.withOpacity(.7), fontSize: 10)),
           ],
-          // Long-press hint
           const SizedBox(height: 4),
           Text(
             'Long-press to copy full details',

