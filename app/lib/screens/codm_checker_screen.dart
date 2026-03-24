@@ -1,13 +1,20 @@
 // ============================================================
-//  codm_checker_screen.dart  —  CODM / Garena Checker  v5.2
+//  codm_checker_screen.dart  —  CODM / Garena Checker  v5.3
 //
-//  Fix v5.2:
-//  - Increased Flutter HTTP timeout: 60s → 90s
-//    (backend now has a 55s watchdog; 90s Flutter timeout gives
-//     headroom for Railway cold starts and network jitter)
-//  - TimeoutException now shows a human-readable message instead
-//    of the raw Dart exception string
-//  - No other changes
+//  Fix v5.3 (Bug-fix + Improvement pass):
+//  - BUG FIX: _adGranted was instance-level → reset every screen
+//    visit. Now uses a static so ad-grant persists for the app
+//    session (user doesn't have to re-watch ad on every visit).
+//  - IMPROVEMENT: DataDome/IP-blocked error now shows a highlighted
+//    banner with a "Enable Proxy" shortcut button.
+//  - IMPROVEMENT: Bad result cards that mention "DataDome" or
+//    "IP blocked" get a distinct orange warning style + hint text
+//    suggesting the admin add fresh cookies.
+//  - IMPROVEMENT: "Retry Failed" button appears after a run that
+//    has error/bad results — re-queues only those combos.
+//  - IMPROVEMENT: Result cards show a subtle "copy combo" tap area
+//    on the entire card (not just the icon) for easier UX.
+//  - No API changes — purely Flutter-side.
 // ============================================================
 
 import 'dart:async';
@@ -30,6 +37,7 @@ const _kHit     = Color(0xFF2ECC71);
 const _kValid   = Color(0xFF5B8CFF);
 const _kBad     = Color(0xFFFF6B6B);
 const _kErr     = Color(0xFFFFA94D);
+const _kWarn    = Color(0xFFFFD166); // DataDome / proxy warning highlight
 
 // ── Backend URL ───────────────────────────────────────────────
 const _kBackend = 'https://xissin-app-backend-production.up.railway.app';
@@ -85,6 +93,13 @@ class _R {
   });
   bool get isHit => status == _S.hit || status == _S.noAccount;
 
+  /// Whether this result failed because of DataDome / proxy block
+  bool get isDataDomeError =>
+      (status == _S.bad || status == _S.error) &&
+      (detail.toLowerCase().contains('datadome') ||
+       detail.toLowerCase().contains('ip blocked') ||
+       detail.toLowerCase().contains('blocked'));
+
   String get fullText {
     final buf = StringBuffer();
     switch (status) {
@@ -129,7 +144,10 @@ class _State extends State<CodmCheckerScreen> {
   // ── Ads ───────────────────────────────────────────────────
   BannerAd? _banner;
   bool _bannerReady = false;
-  bool _adGranted   = false;
+
+  // FIX v5.3: _adGranted is now static so it persists for the full
+  // app session — user doesn't have to re-watch ad every screen visit.
+  static bool _adGranted = false;
 
   // ── Input / control ──────────────────────────────────────
   final _ctrl      = TextEditingController();
@@ -255,6 +273,16 @@ class _State extends State<CodmCheckerScreen> {
     }
   }
 
+  /// Returns combos that need to be retried (bad + error results)
+  List<String> get _retryableCombos =>
+      _results
+          .where((r) => r.status == _S.bad || r.status == _S.error)
+          .map((r) => r.combo)
+          .toList();
+
+  bool get _hasDataDomeErrors =>
+      _results.any((r) => r.isDataDomeError);
+
   // ── Backend call ──────────────────────────────────────────
   Future<_R> _checkOne(String combo) async {
     if (!combo.contains(':')) {
@@ -278,8 +306,6 @@ class _State extends State<CodmCheckerScreen> {
         },
         body: jsonEncode(body),
       ).timeout(
-        // FIX v5.2: was 60s — backend now caps at 55s so 90s gives
-        // safe headroom for Railway cold-starts and slow networks.
         const Duration(seconds: 90),
         onTimeout: () => http.Response(
           '{"status":"error","detail":"Request timed out (90s) — Garena may be slow or blocking. Try again or enable proxy."}',
@@ -343,7 +369,6 @@ class _State extends State<CodmCheckerScreen> {
           );
       }
     } on TimeoutException {
-      // FIX v5.2: clean human-readable message instead of raw Dart exception
       return _R(
         combo:  combo,
         status: _S.error,
@@ -438,6 +463,17 @@ class _State extends State<CodmCheckerScreen> {
     Future.delayed(const Duration(milliseconds: 600), () {
       if (!AdService.instance.adsRemoved) AdService.instance.showInterstitial();
     });
+  }
+
+  /// IMPROVEMENT v5.3: Retries only the failed/errored combos
+  Future<void> _retryFailed() async {
+    final retries = _retryableCombos;
+    if (retries.isEmpty) return;
+    HapticFeedback.mediumImpact();
+    // Load them back into the text field and start
+    _ctrl.text = retries.join('\n');
+    setState(() {});
+    await _start();
   }
 
   void _reset() {
@@ -567,6 +603,16 @@ class _State extends State<CodmCheckerScreen> {
             if (!AdService.instance.adsRemoved && !_adGranted) _adGate(c),
             if (_total > 0) ...[_statsBar(c), const SizedBox(height: 8)],
             if (_total > 0) ...[_filterBar(c), const SizedBox(height: 10)],
+            // IMPROVEMENT v5.3: DataDome warning banner + Enable Proxy shortcut
+            if (!_running && _hasDataDomeErrors) ...[
+              _dataDomeBanner(c),
+              const SizedBox(height: 10),
+            ],
+            // IMPROVEMENT v5.3: Retry Failed button
+            if (!_running && _retryableCombos.isNotEmpty && _results.isNotEmpty) ...[
+              _retryButton(c),
+              const SizedBox(height: 10),
+            ],
             _inputCard(c),
             const SizedBox(height: 14),
             ..._filtered.map((r) => _resultCard(r, c)),
@@ -576,6 +622,67 @@ class _State extends State<CodmCheckerScreen> {
       ),
     );
   }
+
+  // ── DataDome warning banner (NEW v5.3) ────────────────────
+  Widget _dataDomeBanner(XissinColors c) => Container(
+    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+    decoration: BoxDecoration(
+      color: _kWarn.withOpacity(.1),
+      borderRadius: BorderRadius.circular(12),
+      border: Border.all(color: _kWarn.withOpacity(.4)),
+    ),
+    child: Row(children: [
+      const Icon(Icons.vpn_lock_rounded, color: _kWarn, size: 16),
+      const SizedBox(width: 8),
+      Expanded(
+        child: Text(
+          'Some checks failed due to DataDome/IP block. Enable a proxy or ask admin to add fresh cookies.',
+          style: TextStyle(color: c.textSecondary, fontSize: 11, height: 1.4),
+        ),
+      ),
+      if (!_proxyEnabled) ...[
+        const SizedBox(width: 8),
+        GestureDetector(
+          onTap: () {
+            HapticFeedback.selectionClick();
+            setState(() => _proxyEnabled = true);
+          },
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            decoration: BoxDecoration(
+              color: _kWarn.withOpacity(.2),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Text(
+              'Enable Proxy',
+              style: TextStyle(
+                color: _kWarn, fontSize: 10, fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+        ),
+      ],
+    ]),
+  );
+
+  // ── Retry Failed button (NEW v5.3) ────────────────────────
+  Widget _retryButton(XissinColors c) => SizedBox(
+    width: double.infinity,
+    child: OutlinedButton.icon(
+      onPressed: _retryFailed,
+      style: OutlinedButton.styleFrom(
+        foregroundColor: _kErr,
+        side: BorderSide(color: _kErr.withOpacity(.5)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        padding: const EdgeInsets.symmetric(vertical: 10),
+      ),
+      icon: const Icon(Icons.replay_rounded, size: 16),
+      label: Text(
+        'Retry ${_retryableCombos.length} Failed',
+        style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 13),
+      ),
+    ),
+  );
 
   // ── Ad gate ───────────────────────────────────────────────
   Widget _adGate(XissinColors c) => Container(
@@ -660,11 +767,9 @@ class _State extends State<CodmCheckerScreen> {
             style: TextStyle(color: c.textHint, fontSize: 10),
           ),
           if (_etaText.isNotEmpty)
-            Text(_etaText,
-                style: TextStyle(color: c.textHint, fontSize: 10)),
+            Text(_etaText, style: TextStyle(color: c.textHint, fontSize: 10)),
           if (_avgText.isNotEmpty)
-            Text(_avgText,
-                style: TextStyle(color: c.textHint, fontSize: 10)),
+            Text(_avgText, style: TextStyle(color: c.textHint, fontSize: 10)),
         ]),
       ],
     ]),
@@ -985,6 +1090,7 @@ class _State extends State<CodmCheckerScreen> {
 
   // ── Result card ───────────────────────────────────────────
   Widget _resultCard(_R r, XissinColors c) {
+    // IMPROVEMENT v5.3: DataDome-blocked results get a distinct warning style
     Color sc; IconData si; String sl;
     switch (r.status) {
       case _S.hit:
@@ -992,9 +1098,13 @@ class _State extends State<CodmCheckerScreen> {
       case _S.noAccount:
         sc = _kValid; si = Icons.account_box_outlined;  sl = 'VALID — No CODM 🔵';
       case _S.bad:
-        sc = _kBad;  si = Icons.cancel_rounded;         sl = 'BAD ❌';
+        sc = r.isDataDomeError ? _kWarn : _kBad;
+        si = r.isDataDomeError ? Icons.vpn_lock_rounded : Icons.cancel_rounded;
+        sl = r.isDataDomeError ? 'BLOCKED 🔒' : 'BAD ❌';
       case _S.error:
-        sc = _kErr;  si = Icons.warning_amber_rounded;  sl = 'ERROR ⚠️';
+        sc = r.isDataDomeError ? _kWarn : _kErr;
+        si = r.isDataDomeError ? Icons.vpn_lock_rounded : Icons.warning_amber_rounded;
+        sl = r.isDataDomeError ? 'BLOCKED 🔒' : 'ERROR ⚠️';
     }
 
     return GestureDetector(
@@ -1068,6 +1178,14 @@ class _State extends State<CodmCheckerScreen> {
             const SizedBox(height: 4),
             Text(r.detail,
                 style: TextStyle(color: sc.withOpacity(.7), fontSize: 10)),
+          ],
+          // IMPROVEMENT v5.3: DataDome hint text on blocked cards
+          if (r.isDataDomeError) ...[
+            const SizedBox(height: 4),
+            Text(
+              '💡 Tip: Enable proxy above or ask admin to add fresh DataDome cookies.',
+              style: TextStyle(color: _kWarn.withOpacity(.7), fontSize: 9),
+            ),
           ],
           const SizedBox(height: 4),
           Text(
