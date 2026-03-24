@@ -1,25 +1,17 @@
 # ============================================================
-#  admin/pages/15_CODM_Cookies.py  —  v5
+#  admin/pages/15_CODM_Cookies.py  —  v6
 #  Manage DataDome cookie pool and proxy pool for CODM checker.
+#  Testing moved to Termux — health check tab removed.
 #
-#  v5 NEW: 🧪 Health Check tab
-#    - "Test All Cookies" — batch tests every cookie from Railway's
-#      own IP via the new /api/codm/test-cookies backend endpoint.
-#      Shows ✅/❌, latency, reason. Auto-remove dead cookies option.
-#    - "Test All Proxies" — same for proxy pool.
-#    - Per-item test buttons in paginated list view.
-#    - Summary metrics: Good / Dead / Untested counts.
-#
-#  v4 features kept:
+#  Features:
 #    - Paginated list view, bulk text view for large pools
 #    - Dedup detection, danger zone, upload .txt file
 #    - Append / Replace / Clear All
 # ============================================================
 
 import re
-import time
 import streamlit as st
-from utils.api import get, post, delete, _request, TIMEOUT_HEAVY
+from utils.api import get, post, delete
 
 st.set_page_config(
     page_title="CODM Cookies & Proxies — Xissin Admin",
@@ -103,8 +95,8 @@ st.markdown(
 )
 st.divider()
 
-tab_cookies, tab_proxies, tab_health, tab_help = st.tabs(
-    ["🍪 DataDome Cookies", "🔀 Proxy Pool", "🧪 Health Check", "📖 Help"]
+tab_cookies, tab_proxies, tab_help = st.tabs(
+    ["🍪 DataDome Cookies", "🔀 Proxy Pool", "📖 Help"]
 )
 
 
@@ -198,35 +190,12 @@ with tab_cookies:
                 if pc3.button("Next ▶", key="ck_next", disabled=page >= total_pages - 1):
                     st.session_state[page_key] = page + 1; st.rerun()
 
-            ck_results = st.session_state.get("ck_test_results", {})
             for i, cookie in page_items:
                 display = _short_cookie(cookie)
-                result  = ck_results.get(cookie)
-                # Status badge from previous test run
-                if result is not None:
-                    badge = "✅" if result["ok"] else "❌"
-                    latency_str = f" {result['latency_ms']}ms" if result.get("latency_ms") else ""
-                    detail_str  = f" — {result['detail']}" if result.get("detail") else ""
-                    label = f"{i:>3}. {display}  {badge}{latency_str}{detail_str}"
-                else:
-                    label = f"{i:>3}. {display}"
+                label   = f"{i:>3}. {display}"
 
-                col_a, col_test, col_del = st.columns([9, 1, 1])
+                col_a, col_del = st.columns([10, 1])
                 col_a.code(label, language=None)
-
-                if col_test.button("🔍", key=f"ck_test_{i}", help="Test this cookie now"):
-                    with st.spinner(f"Testing cookie #{i}…"):
-                        try:
-                            res = post("/api/codm/test-cookie", {"cookie": cookie}, timeout=20)
-                            ck_results[cookie] = res
-                            st.session_state["ck_test_results"] = ck_results
-                            if res.get("ok"):
-                                st.success(f"✅ Cookie #{i}: {res.get('detail', 'Valid')}")
-                            else:
-                                st.error(f"❌ Cookie #{i}: {res.get('detail', 'Failed')}")
-                        except Exception as e:
-                            st.error(f"❌ Test error: {e}")
-                    st.rerun()
 
                 if col_del.button("🗑️", key=f"ck_del_{i}", help="Remove this cookie"):
                     updated = [c for j, c in enumerate(raw_cookies, 1) if j != i]
@@ -424,34 +393,15 @@ with tab_proxies:
                 if pp3.button("Next ▶", key="px_next", disabled=ppage >= ptotal_pages - 1):
                     st.session_state[ppage_key] = ppage + 1; st.rerun()
 
-            px_results = st.session_state.get("px_test_results", {})
             for i, proxy in ppage_items:
-                display = _mask_proxy(proxy)
-                result  = px_results.get(proxy)
+                display  = _mask_proxy(proxy)
                 is_valid = _validate_proxy(proxy)
                 fmt_badge = "✅" if is_valid else "⚠️ bad format"
-                if result is not None:
-                    test_badge  = "✅" if result["ok"] else "❌"
-                    latency_str = f" {result['latency_ms']}ms" if result.get("latency_ms") else ""
-                    label = f"{i:>3}. {display}  {test_badge}{latency_str}"
-                else:
-                    label = f"{i:>3}. {display}  {fmt_badge}"
+                label    = f"{i:>3}. {display}  {fmt_badge}"
 
-                col_a, col_test, col_del = st.columns([9, 1, 1])
+                col_a, col_del = st.columns([10, 1])
                 col_a.code(label, language=None)
-                if col_test.button("🔍", key=f"px_test_{i}", help="Test this proxy now"):
-                    with st.spinner(f"Testing proxy #{i}…"):
-                        try:
-                            res = post("/api/codm/test-proxy", {"proxy": proxy}, timeout=20)
-                            px_results[proxy] = res
-                            st.session_state["px_test_results"] = px_results
-                            if res.get("ok"):
-                                st.success(f"✅ Proxy #{i}: {res.get('detail', 'Alive')}")
-                            else:
-                                st.error(f"❌ Proxy #{i}: {res.get('detail', 'Dead')}")
-                        except Exception as e:
-                            st.error(f"❌ Test error: {e}")
-                    st.rerun()
+
                 if col_del.button("🗑️", key=f"px_del_{i}", help="Remove this proxy"):
                     updated = [p for j, p in enumerate(current_proxies, 1) if j != i]
                     try:
@@ -553,319 +503,7 @@ with tab_proxies:
 
 
 # ══════════════════════════════════════════════════════════════
-#  TAB 3 — 🧪 Health Check  (NEW v5)
-# ══════════════════════════════════════════════════════════════
-with tab_health:
-    st.markdown("### 🧪 Health Check — Cookies & Proxies")
-    st.markdown(
-        "Tests run **from Railway's server IP** — the exact same conditions as your CODM checker. "
-        "Results are cached in this session. Refresh the page or click **Clear Results** to reset."
-    )
-    st.info(
-        "💡 **How it works:**\n"
-        "- **Cookie test**: Makes a real Garena prelogin request with the cookie. "
-        "`200` = DataDome bypassed ✅. `403` = blocked/expired ❌.\n"
-        "- **Proxy test**: Routes a Garena request through the proxy. "
-        "Any HTTP response = proxy alive ✅. Timeout/refused = dead ❌."
-    )
-
-    # ── Fetch current pools ───────────────────────────────────
-    try:
-        ck_data  = get("/api/codm/cookies")
-        hc_cookies = ck_data.get("cookies", [])
-    except Exception as e:
-        st.error(f"❌ Could not load cookies: {e}")
-        hc_cookies = []
-
-    try:
-        px_data  = get("/api/codm/proxies")
-        hc_proxies = px_data.get("proxies", [])
-    except Exception as e:
-        st.error(f"❌ Could not load proxies: {e}")
-        hc_proxies = []
-
-    # ── Session state for results ─────────────────────────────
-    if "hc_cookie_results" not in st.session_state:
-        st.session_state["hc_cookie_results"] = {}   # cookie → result dict
-    if "hc_proxy_results" not in st.session_state:
-        st.session_state["hc_proxy_results"]  = {}   # proxy  → result dict
-
-    ck_res = st.session_state["hc_cookie_results"]
-    px_res = st.session_state["hc_proxy_results"]
-
-    col_clear1, col_clear2 = st.columns([1, 5])
-    if col_clear1.button("🗑️ Clear Results", key="hc_clear_results"):
-        st.session_state["hc_cookie_results"] = {}
-        st.session_state["hc_proxy_results"]  = {}
-        ck_res, px_res = {}, {}
-        st.success("✅ Results cleared.")
-
-    st.divider()
-
-    # ──────────────────────────────────────────────────────────
-    #  COOKIES SECTION
-    # ──────────────────────────────────────────────────────────
-    st.markdown("#### 🍪 DataDome Cookies")
-
-    if not hc_cookies:
-        st.warning("⚠️ No cookies in pool. Add cookies in the **DataDome Cookies** tab first.")
-    else:
-        # Summary metrics
-        tested   = [c for c in hc_cookies if c in ck_res]
-        good     = [c for c in tested if ck_res[c]["ok"]]
-        dead     = [c for c in tested if not ck_res[c]["ok"]]
-        untested = [c for c in hc_cookies if c not in ck_res]
-
-        mc1, mc2, mc3, mc4 = st.columns(4)
-        mc1.metric("🍪 Total",    len(hc_cookies))
-        mc2.metric("✅ Good",     len(good),     delta=f"+{len(good)}"    if good    else None)
-        mc3.metric("❌ Dead",     len(dead),     delta=f"-{len(dead)}"    if dead    else None, delta_color="inverse")
-        mc4.metric("⏳ Untested", len(untested))
-
-        # Action row
-        ca1, ca2, ca3 = st.columns([2, 2, 2])
-
-        with ca1:
-            if st.button("▶️ Test All Cookies", type="primary",
-                         use_container_width=True, key="hc_test_all_ck"):
-                progress = st.progress(0, text="Starting cookie tests…")
-                status   = st.empty()
-                total    = len(hc_cookies)
-                done     = 0
-                errors   = 0
-
-                # Call batch endpoint — concurrent on Railway side
-                try:
-                    with st.spinner(f"Testing {total} cookie(s) via Railway backend…"):
-                        results = _request(
-                            "POST", "/api/codm/test-cookies",
-                            body={"cookies": hc_cookies},
-                            timeout=max(60, total * 3),  # generous timeout for large pools
-                        )
-                    for r in results:
-                        ck_res[r["cookie"]] = r
-                        done += 1
-                        if not r["ok"]:
-                            errors += 1
-                        progress.progress(done / total,
-                                          text=f"Tested {done}/{total} — "
-                                               f"✅ {done - errors} good  ❌ {errors} dead")
-                    st.session_state["hc_cookie_results"] = ck_res
-                    progress.progress(1.0, text=f"Done! ✅ {done - errors} good  ❌ {errors} dead")
-                    st.success(f"✅ Tested {total} cookie(s): **{done - errors} valid**, **{errors} dead**.")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"❌ Batch test failed: {e}")
-
-        with ca2:
-            dead_list = [c for c in hc_cookies if c in ck_res and not ck_res[c]["ok"]]
-            if dead_list:
-                if st.button(f"🗑️ Remove {len(dead_list)} Dead Cookie(s)",
-                             use_container_width=True, key="hc_remove_dead_ck"):
-                    dead_set = set(dead_list)
-                    survivors = [c for c in hc_cookies if c not in dead_set]
-                    try:
-                        if survivors:
-                            post("/api/codm/cookies", {"cookies": survivors})
-                            st.success(f"✅ Removed {len(dead_list)} dead cookie(s). Pool = {len(survivors)}.")
-                        else:
-                            delete("/api/codm/cookies")
-                            st.success("✅ All cookies were dead — pool cleared.")
-                        # Clear dead from results cache
-                        for c in dead_list:
-                            ck_res.pop(c, None)
-                        st.session_state["hc_cookie_results"] = ck_res
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"❌ {e}")
-            else:
-                st.button("🗑️ Remove Dead Cookies", use_container_width=True,
-                          key="hc_remove_dead_ck_disabled", disabled=True)
-
-        with ca3:
-            if tested:
-                good_pct = int(len(good) / len(tested) * 100) if tested else 0
-                st.metric("🏥 Pass Rate", f"{good_pct}%", help=f"{len(good)}/{len(tested)} tested cookies passed")
-
-        # ── Results table ─────────────────────────────────────
-        st.markdown("---")
-        if ck_res:
-            # Sort: dead first (so admin sees problems immediately), then by latency
-            sorted_cookies = sorted(
-                hc_cookies,
-                key=lambda c: (ck_res.get(c, {}).get("ok", True),
-                               ck_res.get(c, {}).get("latency_ms", 0))
-            )
-            for idx, cookie in enumerate(sorted_cookies):
-                display = _short_cookie(cookie, 40)
-                result  = ck_res.get(cookie)
-                if result is None:
-                    icon   = "⏳"
-                    badge  = "Not tested"
-                    color  = "grey"
-                elif result["ok"]:
-                    icon   = "✅"
-                    latency = result.get("latency_ms", 0)
-                    badge  = f"Valid — {latency}ms"
-                    color  = "green"
-                else:
-                    icon   = "❌"
-                    badge  = result.get("detail", "Failed")[:80]
-                    color  = "red"
-
-                row_a, row_b = st.columns([9, 1])
-                row_a.markdown(
-                    f"`{icon}` **{display}**  "
-                    f"<span style='color:{color};font-size:11px'>{badge}</span>",
-                    unsafe_allow_html=True,
-                )
-                if row_b.button("🔍", key=f"hc_ck_retest_{idx}", help="Re-test"):
-                    with st.spinner("Testing…"):
-                        try:
-                            r = post("/api/codm/test-cookie", {"cookie": cookie}, timeout=20)
-                            ck_res[cookie] = r
-                            st.session_state["hc_cookie_results"] = ck_res
-                            if r.get("ok"):
-                                st.success(f"✅ {r.get('detail', 'Valid')}")
-                            else:
-                                st.error(f"❌ {r.get('detail', 'Failed')}")
-                        except Exception as e:
-                            st.error(f"❌ {e}")
-                    st.rerun()
-        else:
-            st.caption("No results yet. Click **▶️ Test All Cookies** to start.")
-
-    st.divider()
-
-    # ──────────────────────────────────────────────────────────
-    #  PROXIES SECTION
-    # ──────────────────────────────────────────────────────────
-    st.markdown("#### 🔀 Proxy Pool")
-
-    if not hc_proxies:
-        st.warning("⚠️ No proxies in pool. Add proxies in the **Proxy Pool** tab first.")
-    else:
-        tested_px   = [p for p in hc_proxies if p in px_res]
-        good_px     = [p for p in tested_px if px_res[p]["ok"]]
-        dead_px     = [p for p in tested_px if not px_res[p]["ok"]]
-        untested_px = [p for p in hc_proxies if p not in px_res]
-
-        mp1, mp2, mp3, mp4 = st.columns(4)
-        mp1.metric("🔀 Total",    len(hc_proxies))
-        mp2.metric("✅ Alive",    len(good_px), delta=f"+{len(good_px)}" if good_px else None)
-        mp3.metric("❌ Dead",     len(dead_px), delta=f"-{len(dead_px)}" if dead_px else None, delta_color="inverse")
-        mp4.metric("⏳ Untested", len(untested_px))
-
-        pa1, pa2, pa3 = st.columns([2, 2, 2])
-
-        with pa1:
-            if st.button("▶️ Test All Proxies", type="primary",
-                         use_container_width=True, key="hc_test_all_px"):
-                total  = len(hc_proxies)
-                errors = 0
-                progress = st.progress(0, text="Starting proxy tests…")
-                try:
-                    with st.spinner(f"Testing {total} proxy(ies) via Railway backend…"):
-                        results = _request(
-                            "POST", "/api/codm/test-proxies",
-                            body={"proxies": hc_proxies},
-                            timeout=max(60, total * 3),
-                        )
-                    done = 0
-                    for r in results:
-                        px_res[r["proxy"]] = r
-                        done += 1
-                        if not r["ok"]:
-                            errors += 1
-                        progress.progress(done / total,
-                                          text=f"Tested {done}/{total} — "
-                                               f"✅ {done - errors} alive  ❌ {errors} dead")
-                    st.session_state["hc_proxy_results"] = px_res
-                    progress.progress(1.0, text=f"Done! ✅ {done - errors} alive  ❌ {errors} dead")
-                    st.success(f"✅ Tested {total} proxy(ies): **{done - errors} alive**, **{errors} dead**.")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"❌ Batch test failed: {e}")
-
-        with pa2:
-            dead_px_list = [p for p in hc_proxies if p in px_res and not px_res[p]["ok"]]
-            if dead_px_list:
-                if st.button(f"🗑️ Remove {len(dead_px_list)} Dead Proxy(ies)",
-                             use_container_width=True, key="hc_remove_dead_px"):
-                    dead_set   = set(dead_px_list)
-                    survivors  = [p for p in hc_proxies if p not in dead_set]
-                    try:
-                        if survivors:
-                            post("/api/codm/proxies", {"proxies": survivors})
-                            st.success(f"✅ Removed {len(dead_px_list)} dead proxy(ies). Pool = {len(survivors)}.")
-                        else:
-                            delete("/api/codm/proxies")
-                            st.success("✅ All proxies were dead — pool cleared.")
-                        for p in dead_px_list:
-                            px_res.pop(p, None)
-                        st.session_state["hc_proxy_results"] = px_res
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"❌ {e}")
-            else:
-                st.button("🗑️ Remove Dead Proxies", use_container_width=True,
-                          key="hc_remove_dead_px_disabled", disabled=True)
-
-        with pa3:
-            if tested_px:
-                good_pct = int(len(good_px) / len(tested_px) * 100)
-                avg_lat  = (sum(px_res[p].get("latency_ms", 0) for p in good_px) // max(len(good_px), 1))
-                st.metric("⚡ Avg Latency", f"{avg_lat}ms",
-                          help=f"Average latency across {len(good_px)} live proxy(ies)")
-
-        # ── Results table ─────────────────────────────────────
-        st.markdown("---")
-        if px_res:
-            sorted_proxies = sorted(
-                hc_proxies,
-                key=lambda p: (px_res.get(p, {}).get("ok", True),
-                               px_res.get(p, {}).get("latency_ms", 0))
-            )
-            for idx, proxy in enumerate(sorted_proxies):
-                display = _mask_proxy(proxy)
-                result  = px_res.get(proxy)
-                if result is None:
-                    icon, badge, color = "⏳", "Not tested", "grey"
-                elif result["ok"]:
-                    latency = result.get("latency_ms", 0)
-                    icon    = "✅"
-                    badge   = f"Alive — {latency}ms"
-                    color   = "green"
-                else:
-                    icon    = "❌"
-                    badge   = result.get("detail", "Dead")[:80]
-                    color   = "red"
-
-                row_a, row_b = st.columns([9, 1])
-                row_a.markdown(
-                    f"`{icon}` **{display}**  "
-                    f"<span style='color:{color};font-size:11px'>{badge}</span>",
-                    unsafe_allow_html=True,
-                )
-                if row_b.button("🔍", key=f"hc_px_retest_{idx}", help="Re-test"):
-                    with st.spinner("Testing…"):
-                        try:
-                            r = post("/api/codm/test-proxy", {"proxy": proxy}, timeout=20)
-                            px_res[proxy] = r
-                            st.session_state["hc_proxy_results"] = px_res
-                            if r.get("ok"):
-                                st.success(f"✅ {r.get('detail', 'Alive')}")
-                            else:
-                                st.error(f"❌ {r.get('detail', 'Dead')}")
-                        except Exception as e:
-                            st.error(f"❌ {e}")
-                    st.rerun()
-        else:
-            st.caption("No results yet. Click **▶️ Test All Proxies** to start.")
-
-
-# ══════════════════════════════════════════════════════════════
-#  TAB 4 — Help
+#  TAB 3 — Help
 # ══════════════════════════════════════════════════════════════
 with tab_help:
     st.markdown("### 📖 How It Works")
@@ -878,6 +516,14 @@ Cookies expire (usually within 6–24 hours), so refresh them periodically.
 1. Open `https://100082.connect.garena.com` in Chrome.
 2. DevTools (F12) → Application → Cookies → copy the `datadome` value.
 3. Paste here — the `datadome=` prefix is stripped automatically.
+
+**How to test cookies (Termux):**
+```bash
+curl -s -o /dev/null -w "%{{http_code}}" \\
+  "https://100082.connect.garena.com/api/prelogin?app_id=100082&account=test@test.com&format=json" \\
+  -H "Cookie: datadome=YOUR_COOKIE_VALUE"
+# 200 = valid ✅   403 = expired ❌
+```
 
 **Cookie priority:**
 ```
@@ -898,19 +544,18 @@ host:port                      ← http:// assumed
 socks5://host:port
 ```
 
+**How to test proxies (Termux):**
+```bash
+curl -s -o /dev/null -w "%{{http_code}}" \\
+  --proxy "http://host:port" \\
+  "https://100082.connect.garena.com/api/prelogin?app_id=100082&account=test@test.com&format=json"
+# Any HTTP response = alive ✅   Connection error = dead ❌
+```
+
 **Priority per request:**
 ```
 User-provided proxy (Flutter)  →  Redis pool (random)  →  direct connection
 ```
-
----
-
-#### 🧪 Health Check
-- Tests run **from Railway's IP** — not your browser. Results reflect what the CODM checker actually experiences.
-- **Cookie test**: 200 = DataDome bypassed ✅. 403 = expired/blocked ❌.
-- **Proxy test**: Any HTTP response = alive ✅. Timeout/refused = dead ❌.
-- Use **▶️ Test All** then **🗑️ Remove Dead** to clean your pool in two clicks.
-- Results are cached in your current browser session — click **🗑️ Clear Results** to reset.
 
 ---
 
@@ -934,5 +579,4 @@ User-provided proxy (Flutter)  →  Redis pool (random)  →  direct connection
 
 #### ⚡ Performance Notes
 - Pools over **{BULK_THRESHOLD} items** use bulk text view to prevent browser lag.
-- Health checks are **concurrent on the backend** — testing 50 cookies takes ~10–15s total, not 50×10s.
 """)

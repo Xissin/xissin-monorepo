@@ -1,17 +1,7 @@
 # ============================================================
 #  routers/codm.py  —  CODM / Garena Checker Backend
-#  v4.4 — Fixed batch test KeyError (asyncio.as_completed → asyncio.gather)
-#
-#  v4.3 — Added health-check endpoints:
-#    POST /api/codm/test-cookie   — test one DataDome cookie
-#    POST /api/codm/test-proxy    — test one proxy
-#    POST /api/codm/test-cookies  — batch test all cookies
-#    POST /api/codm/test-proxies  — batch test all proxies
-#
-#  v4.2 fixes kept:
-#    - check-one runs in ThreadPoolExecutor (non-blocking)
-#    - asyncio.wait_for(timeout=55s) server-side watchdog
-#    - Per-request timeouts 10s, retries 2
+#  v4.5 — Removed DataDome/proxy health-check endpoints
+#          (testing moved to Termux)
 # ============================================================
 
 import asyncio
@@ -420,117 +410,11 @@ class CheckOneResponse(BaseModel):
     uid: str = ""; shell: str = ""; country: str = ""
     is_clean: bool = False; binds: list = []
 
-class TestCookieRequest(BaseModel):
-    cookie: str
-
-class TestCookieResponse(BaseModel):
-    cookie: str; ok: bool; status_code: int = 0
-    latency_ms: int = 0; detail: str = ""
-
-class TestProxyRequest(BaseModel):
-    proxy: str
-
-class TestProxyResponse(BaseModel):
-    proxy: str; ok: bool; latency_ms: int = 0; detail: str = ""
-
-class BatchTestCookiesRequest(BaseModel):
-    cookies: List[str]
-
-class BatchTestProxiesRequest(BaseModel):
-    proxies: List[str]
-
 class CookieUpdateRequest(BaseModel):
     cookies: List[str]
 
 class ProxyUpdateRequest(BaseModel):
     proxies: List[str]
-
-
-# ── Health check sync helpers ─────────────────────────────────
-
-def _check_cookie_sync(cookie: str) -> TestCookieResponse:
-    """
-    Tests a DataDome cookie via a real prelogin request from Railway's IP.
-    200 = DataDome bypassed (cookie valid)
-    403 = DataDome blocked (cookie expired/invalid)
-    """
-    raw = cookie.strip()
-    if raw.lower().startswith("datadome="):
-        raw = raw[len("datadome="):]
-    raw = raw.strip("; ")
-
-    if not raw:
-        return TestCookieResponse(cookie=cookie, ok=False, detail="Empty cookie value")
-
-    t0 = time.time()
-    try:
-        session = _make_session(datadome=raw)
-        ts = int(time.time() * 1000)
-        res = session.get(
-            _PRELOGIN_URL,
-            headers={
-                "Accept": "application/json, text/plain, */*",
-                "Host": _PRELOGIN_HOST,
-                "User-Agent": _UA_NEW,
-                "X-Requested-With": "com.garena.game.codm",
-            },
-            params={"app_id": "100082", "account": "xissin.healthcheck@test.com",
-                    "format": "json", "id": str(ts)},
-            timeout=10,
-        )
-        latency = int((time.time() - t0) * 1000)
-        session.close()
-        code = res.status_code
-        if code == 403:
-            return TestCookieResponse(cookie=cookie, ok=False, status_code=code,
-                latency_ms=latency, detail="DataDome blocked (403) — cookie expired")
-        if code == 200:
-            return TestCookieResponse(cookie=cookie, ok=True, status_code=code,
-                latency_ms=latency, detail=f"Valid — bypassed DataDome in {latency}ms")
-        return TestCookieResponse(cookie=cookie, ok=False, status_code=code,
-            latency_ms=latency, detail=f"Unexpected HTTP {code}")
-    except Exception as e:
-        latency = int((time.time() - t0) * 1000)
-        return TestCookieResponse(cookie=cookie, ok=False, latency_ms=latency,
-            detail=f"Connection error: {str(e)[:100]}")
-
-
-def _check_proxy_sync(proxy: str) -> TestProxyResponse:
-    """
-    Tests proxy by connecting to Garena through it.
-    Any HTTP response = alive. ProxyError/Timeout = dead.
-    """
-    raw = proxy.strip()
-    if not raw:
-        return TestProxyResponse(proxy=proxy, ok=False, detail="Empty proxy")
-
-    t0 = time.time()
-    try:
-        proxies = _proxy_dict(raw)
-        ts = int(time.time() * 1000)
-        res = _req.get(
-            _PRELOGIN_URL,
-            headers={"Accept": "application/json", "User-Agent": _UA_NEW,
-                     "X-Requested-With": "com.garena.game.codm"},
-            params={"app_id": "100082", "account": "xissin.proxycheck@test.com",
-                    "format": "json", "id": str(ts)},
-            proxies=proxies, timeout=10, allow_redirects=True,
-        )
-        latency = int((time.time() - t0) * 1000)
-        return TestProxyResponse(proxy=proxy, ok=True, latency_ms=latency,
-            detail=f"Alive — HTTP {res.status_code} via proxy ({latency}ms)")
-    except _req.exceptions.ProxyError as e:
-        latency = int((time.time() - t0) * 1000)
-        return TestProxyResponse(proxy=proxy, ok=False, latency_ms=latency,
-            detail=f"Proxy refused/auth failed: {str(e)[:80]}")
-    except (_req.exceptions.ConnectTimeout, _req.exceptions.ReadTimeout):
-        latency = int((time.time() - t0) * 1000)
-        return TestProxyResponse(proxy=proxy, ok=False, latency_ms=latency,
-            detail=f"Proxy timed out ({latency}ms)")
-    except Exception as e:
-        latency = int((time.time() - t0) * 1000)
-        return TestProxyResponse(proxy=proxy, ok=False, latency_ms=latency,
-            detail=f"Unreachable: {str(e)[:100]}")
 
 
 # ── Main check logic ──────────────────────────────────────────
@@ -646,93 +530,6 @@ async def set_proxies(req: ProxyUpdateRequest):
 async def delete_proxies():
     _redis_del(_REDIS_KEY_PROXIES)
     return {"message": "✅ Proxy pool cleared"}
-
-
-# ── Health check endpoints (v4.4 — fixed batch using asyncio.gather) ──────────
-
-@router.post("/test-cookie", response_model=TestCookieResponse,
-             dependencies=[Depends(require_admin)])
-async def test_cookie(req: TestCookieRequest):
-    """Test one DataDome cookie from Railway's IP via a live Garena request."""
-    if not _HAS_CLOUDSCRAPER:
-        return TestCookieResponse(cookie=req.cookie, ok=False,
-                                  detail="cloudscraper not installed on server")
-    loop = asyncio.get_event_loop()
-    try:
-        return await asyncio.wait_for(
-            loop.run_in_executor(_executor, _check_cookie_sync, req.cookie),
-            timeout=15.0)
-    except asyncio.TimeoutError:
-        return TestCookieResponse(cookie=req.cookie, ok=False,
-                                  detail="Test timed out (15s)")
-
-
-@router.post("/test-proxy", response_model=TestProxyResponse,
-             dependencies=[Depends(require_admin)])
-async def test_proxy(req: TestProxyRequest):
-    """Test one proxy by routing a Garena request through it from Railway's IP."""
-    loop = asyncio.get_event_loop()
-    try:
-        return await asyncio.wait_for(
-            loop.run_in_executor(_executor, _check_proxy_sync, req.proxy),
-            timeout=15.0)
-    except asyncio.TimeoutError:
-        return TestProxyResponse(proxy=req.proxy, ok=False,
-                                 detail="Test timed out (15s)")
-
-
-@router.post("/test-cookies", dependencies=[Depends(require_admin)])
-async def test_cookies_batch(req: BatchTestCookiesRequest):
-    """
-    Batch-test all cookies concurrently using asyncio.gather.
-    Each cookie gets its own 15s timeout. Results preserve input order.
-    """
-    if not _HAS_CLOUDSCRAPER:
-        return [{"cookie": c, "ok": False, "status_code": 0,
-                 "latency_ms": 0, "detail": "cloudscraper not installed"} for c in req.cookies]
-
-    loop = asyncio.get_event_loop()
-
-    async def _test_one(cookie: str) -> dict:
-        try:
-            result = await asyncio.wait_for(
-                loop.run_in_executor(_executor, _check_cookie_sync, cookie),
-                timeout=15.0,
-            )
-            return result.dict()
-        except asyncio.TimeoutError:
-            return {"cookie": cookie, "ok": False, "status_code": 0,
-                    "latency_ms": 15000, "detail": "Timed out (15s)"}
-        except Exception as e:
-            return {"cookie": cookie, "ok": False, "status_code": 0,
-                    "latency_ms": 0, "detail": f"Error: {str(e)[:100]}"}
-
-    return await asyncio.gather(*[_test_one(c) for c in req.cookies])
-
-
-@router.post("/test-proxies", dependencies=[Depends(require_admin)])
-async def test_proxies_batch(req: BatchTestProxiesRequest):
-    """
-    Batch-test all proxies concurrently using asyncio.gather.
-    Each proxy gets its own 15s timeout. Results preserve input order.
-    """
-    loop = asyncio.get_event_loop()
-
-    async def _test_one(proxy: str) -> dict:
-        try:
-            result = await asyncio.wait_for(
-                loop.run_in_executor(_executor, _check_proxy_sync, proxy),
-                timeout=15.0,
-            )
-            return result.dict()
-        except asyncio.TimeoutError:
-            return {"proxy": proxy, "ok": False,
-                    "latency_ms": 15000, "detail": "Timed out (15s)"}
-        except Exception as e:
-            return {"proxy": proxy, "ok": False,
-                    "latency_ms": 0, "detail": f"Error: {str(e)[:100]}"}
-
-    return await asyncio.gather(*[_test_one(p) for p in req.proxies])
 
 
 # ── Main endpoint ─────────────────────────────────────────────
