@@ -1,5 +1,7 @@
 # ============================================================
 #  routers/codm.py  —  CODM / Garena Checker Backend
+#  v4.4 — Fixed batch test KeyError (asyncio.as_completed → asyncio.gather)
+#
 #  v4.3 — Added health-check endpoints:
 #    POST /api/codm/test-cookie   — test one DataDome cookie
 #    POST /api/codm/test-proxy    — test one proxy
@@ -646,7 +648,7 @@ async def delete_proxies():
     return {"message": "✅ Proxy pool cleared"}
 
 
-# ── Health check endpoints (NEW v4.3) ─────────────────────────
+# ── Health check endpoints (v4.4 — fixed batch using asyncio.gather) ──────────
 
 @router.post("/test-cookie", response_model=TestCookieResponse,
              dependencies=[Depends(require_admin)])
@@ -682,48 +684,55 @@ async def test_proxy(req: TestProxyRequest):
 @router.post("/test-cookies", dependencies=[Depends(require_admin)])
 async def test_cookies_batch(req: BatchTestCookiesRequest):
     """
-    Batch-test all provided cookies concurrently from Railway's IP.
-    Returns list of results — order may differ from input (as_completed).
+    Batch-test all cookies concurrently using asyncio.gather.
+    Each cookie gets its own 15s timeout. Results preserve input order.
     """
     if not _HAS_CLOUDSCRAPER:
         return [{"cookie": c, "ok": False, "status_code": 0,
                  "latency_ms": 0, "detail": "cloudscraper not installed"} for c in req.cookies]
+
     loop = asyncio.get_event_loop()
-    # Map futures back to original cookies for timeout error reporting
-    future_to_cookie = {
-        loop.run_in_executor(_executor, _check_cookie_sync, c): c
-        for c in req.cookies
-    }
-    results = []
-    for future in asyncio.as_completed(list(future_to_cookie.keys())):
-        cookie = future_to_cookie[future]
+
+    async def _test_one(cookie: str) -> dict:
         try:
-            r = await asyncio.wait_for(asyncio.shield(future), timeout=15.0)
-            results.append(r.dict())
-        except (asyncio.TimeoutError, Exception):
-            results.append({"cookie": cookie, "ok": False, "status_code": 0,
-                            "latency_ms": 15000, "detail": "Timed out"})
-    return results
+            result = await asyncio.wait_for(
+                loop.run_in_executor(_executor, _check_cookie_sync, cookie),
+                timeout=15.0,
+            )
+            return result.dict()
+        except asyncio.TimeoutError:
+            return {"cookie": cookie, "ok": False, "status_code": 0,
+                    "latency_ms": 15000, "detail": "Timed out (15s)"}
+        except Exception as e:
+            return {"cookie": cookie, "ok": False, "status_code": 0,
+                    "latency_ms": 0, "detail": f"Error: {str(e)[:100]}"}
+
+    return await asyncio.gather(*[_test_one(c) for c in req.cookies])
 
 
 @router.post("/test-proxies", dependencies=[Depends(require_admin)])
 async def test_proxies_batch(req: BatchTestProxiesRequest):
-    """Batch-test all provided proxies concurrently from Railway's IP."""
+    """
+    Batch-test all proxies concurrently using asyncio.gather.
+    Each proxy gets its own 15s timeout. Results preserve input order.
+    """
     loop = asyncio.get_event_loop()
-    future_to_proxy = {
-        loop.run_in_executor(_executor, _check_proxy_sync, p): p
-        for p in req.proxies
-    }
-    results = []
-    for future in asyncio.as_completed(list(future_to_proxy.keys())):
-        proxy = future_to_proxy[future]
+
+    async def _test_one(proxy: str) -> dict:
         try:
-            r = await asyncio.wait_for(asyncio.shield(future), timeout=15.0)
-            results.append(r.dict())
-        except (asyncio.TimeoutError, Exception):
-            results.append({"proxy": proxy, "ok": False,
-                            "latency_ms": 15000, "detail": "Timed out"})
-    return results
+            result = await asyncio.wait_for(
+                loop.run_in_executor(_executor, _check_proxy_sync, proxy),
+                timeout=15.0,
+            )
+            return result.dict()
+        except asyncio.TimeoutError:
+            return {"proxy": proxy, "ok": False,
+                    "latency_ms": 15000, "detail": "Timed out (15s)"}
+        except Exception as e:
+            return {"proxy": proxy, "ok": False,
+                    "latency_ms": 0, "detail": f"Error: {str(e)[:100]}"}
+
+    return await asyncio.gather(*[_test_one(p) for p in req.proxies])
 
 
 # ── Main endpoint ─────────────────────────────────────────────
