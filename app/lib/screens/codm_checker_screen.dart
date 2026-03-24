@@ -9,6 +9,9 @@
 //  - "Copy All Hits" produces fully formatted output
 //  - Long-press result card copies full details to clipboard
 //  - Paste from clipboard button on combo input
+//
+//  Fix v5.1: ApiService.instance.sessionToken → ApiService.sessionToken
+//            (ApiService is a static-only class, no instance singleton)
 // ============================================================
 
 import 'dart:async';
@@ -274,7 +277,8 @@ class _State extends State<CodmCheckerScreen> {
         Uri.parse('$_kBackend/api/codm/check-one'),
         headers: {
           'Content-Type':    'application/json',
-          'X-Session-Token': ApiService.instance.sessionToken ?? '',
+          // FIX: ApiService is static-only — use ApiService.sessionToken, not .instance
+          'X-Session-Token': ApiService.sessionToken ?? '',
           'X-App-Id':        'com.xissin.app',
         },
         body: jsonEncode(body),

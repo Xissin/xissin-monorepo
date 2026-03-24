@@ -10,6 +10,7 @@
 //
 // Fix: logUsernameSearch() now includes user_id in the request body
 // Fix: redeemKey() uses correct endpoint
+// Fix: Added public sessionToken getter for use in codm_checker_screen
 
 import 'dart:async';
 import 'dart:convert';
@@ -87,6 +88,10 @@ class ApiService {
   // ── Session token cache ───────────────────────────────────────────────────
   static String? _sessionToken;
   static void cacheSessionToken(String token) => _sessionToken = token;
+
+  /// Public read-only accessor used by screens that need the raw token
+  /// (e.g. codm_checker_screen.dart header injection).
+  static String? get sessionToken => _sessionToken;
 
   // ── Feature flags cache ───────────────────────────────────────────────────
   static final Map<String, dynamic> _features = {};

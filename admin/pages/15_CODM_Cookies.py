@@ -1,15 +1,12 @@
 # ============================================================
-#  admin/pages/15_CODM_Cookies.py  —  v2
+#  admin/pages/15_CODM_Cookies.py  —  v3
 #  Manage DataDome cookie pool and proxy pool for CODM checker.
 #  Stored in Upstash Redis — no Railway redeployment needed.
 #
-#  Improvements over v1:
-#  - Cookie / proxy health badge (🔴 empty → 🟡 low → 🟢 good)
-#  - Duplicate detection + one-click dedup
-#  - Cookie format normalizer on save (handles raw value / datadome=VALUE)
-#  - Proxy format validator before saving (warns on bad format)
-#  - Download current pool as .txt
-#  - Last-saved timestamp stored alongside pool in Redis
+#  v3 changes:
+#  - Added prominent ☢️ "Clear ALL DataDome Cookies" button at top of cookie tab
+#  - Added prominent ☢️ "Clear ALL Proxies" button at top of proxy tab
+#  - Both use a 2-click confirmation to prevent accidental wipes
 # ============================================================
 
 import io
@@ -42,10 +39,8 @@ def _health_badge(count: int, low_threshold: int = 3) -> str:
 def _normalize_cookie(raw: str) -> str:
     """Ensure cookie is stored as raw datadome value (no prefix)."""
     raw = raw.strip()
-    # Strip 'datadome=' prefix — backend adds it when setting the cookie
     if raw.lower().startswith("datadome="):
         raw = raw[len("datadome="):]
-    # Strip any surrounding semicolons
     raw = raw.strip("; ")
     return raw
 
@@ -122,7 +117,46 @@ with tab_cookies:
     col3.metric("🏥 Health",      _health_badge(count))
     col4.metric("🕐 Last Saved",  last_updated if last_updated else "—")
 
+    # ══════════════════════════════════════════════════════════
+    #  ☢️  DANGER ZONE — Clear All Cookies
+    # ══════════════════════════════════════════════════════════
+    st.markdown("---")
+    with st.expander("☢️ **DANGER ZONE — Clear Entire Cookie Pool**", expanded=False):
+        st.error(
+            f"⚠️ This will **permanently delete all {count} DataDome cookie(s)** "
+            "from Redis. The backend will fall back to the `CODM_COOKIES` env var "
+            "on Railway if set, otherwise the checker will have no cookies and will "
+            "likely get blocked.\n\n"
+            "**This action cannot be undone.**"
+        )
+        col_warn, col_btn = st.columns([3, 1])
+        col_warn.caption(
+            "Only do this if you want to completely reset the cookie pool. "
+            "After clearing, paste fresh DataDome cookies in the section below."
+        )
+        if count == 0:
+            col_btn.info("Pool is already empty.")
+        else:
+            if col_btn.button(
+                "☢️ Clear ALL Cookies",
+                type="primary",
+                use_container_width=True,
+                key="danger_clear_all_cookies",
+            ):
+                if st.session_state.get("danger_confirm_all_cookies"):
+                    try:
+                        delete("/api/codm/cookies")
+                        st.success("✅ All DataDome cookies cleared from Redis.")
+                        st.session_state["danger_confirm_all_cookies"] = False
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ Failed to clear: {e}")
+                else:
+                    st.session_state["danger_confirm_all_cookies"] = True
+                    st.warning("⚠️ **Are you sure?** Click the button again to confirm. All cookies will be gone.")
+
     # ── Duplicate detection ───────────────────────────────────
+    st.markdown("---")
     dupes = len(raw_cookies) - len(set(raw_cookies))
     if dupes > 0:
         st.warning(
@@ -130,15 +164,13 @@ with tab_cookies:
             "Click **Dedup Pool** below to clean them up."
         )
         if st.button("🧹 Dedup Pool", key="dedup_cookies"):
-            deduped = list(dict.fromkeys(raw_cookies))   # preserve order
+            deduped = list(dict.fromkeys(raw_cookies))
             try:
                 post("/api/codm/cookies", {"cookies": deduped})
                 st.success(f"✅ Pool deduped — {len(raw_cookies)} → {len(deduped)} cookies.")
                 st.rerun()
             except Exception as e:
                 st.error(f"❌ {e}")
-
-    st.markdown("---")
 
     # ── Current pool display ──────────────────────────────────
     if raw_cookies:
@@ -153,7 +185,6 @@ with tab_cookies:
         )
 
         for i, cookie in enumerate(raw_cookies, 1):
-            # Show first 40 + last 10 chars — enough to verify identity without exposing full value
             display = cookie if len(cookie) <= 60 else f"{cookie[:40]}…{cookie[-10:]}"
             col_a, col_b = st.columns([11, 1])
             col_a.code(f"{i:>2}. {display}", language=None)
@@ -196,7 +227,6 @@ with tab_cookies:
         key="cookie_input",
     )
 
-    # Live preview of what will actually be saved
     preview_lines = [
         _normalize_cookie(l)
         for l in new_cookies_raw.splitlines()
@@ -339,7 +369,46 @@ with tab_proxies:
     col2.metric("🏥 Health",     _health_badge(pcount, low_threshold=2))
     col3.metric("🔄 Routing",    "Via proxy pool" if pcount > 0 else "Direct connection (no proxies)")
 
+    # ══════════════════════════════════════════════════════════
+    #  ☢️  DANGER ZONE — Clear All Proxies
+    # ══════════════════════════════════════════════════════════
+    st.markdown("---")
+    with st.expander("☢️ **DANGER ZONE — Clear Entire Proxy Pool**", expanded=False):
+        st.error(
+            f"⚠️ This will **permanently delete all {pcount} proxy(ies)** "
+            "from Redis. The backend will fall back to a direct connection for "
+            "all CODM checks — this may trigger DataDome blocks if your Railway "
+            "server IP has been flagged.\n\n"
+            "**This action cannot be undone.**"
+        )
+        col_pwarn, col_pbtn = st.columns([3, 1])
+        col_pwarn.caption(
+            "Only do this if you want to completely reset the proxy pool. "
+            "After clearing, paste fresh proxies in the section below."
+        )
+        if pcount == 0:
+            col_pbtn.info("Pool is already empty.")
+        else:
+            if col_pbtn.button(
+                "☢️ Clear ALL Proxies",
+                type="primary",
+                use_container_width=True,
+                key="danger_clear_all_proxies",
+            ):
+                if st.session_state.get("danger_confirm_all_proxies"):
+                    try:
+                        delete("/api/codm/proxies")
+                        st.success("✅ All proxies cleared from Redis. Backend will use direct connection.")
+                        st.session_state["danger_confirm_all_proxies"] = False
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ Failed to clear: {e}")
+                else:
+                    st.session_state["danger_confirm_all_proxies"] = True
+                    st.warning("⚠️ **Are you sure?** Click the button again to confirm. All proxies will be gone.")
+
     # ── Duplicate detection ───────────────────────────────────
+    st.markdown("---")
     pdupes = len(current_proxies) - len(set(current_proxies))
     if pdupes > 0:
         st.warning(f"⚠️ {pdupes} duplicate proxy(ies) detected.")
@@ -351,8 +420,6 @@ with tab_proxies:
                 st.rerun()
             except Exception as e:
                 st.error(f"❌ {e}")
-
-    st.markdown("---")
 
     # ── Current pool display ──────────────────────────────────
     if current_proxies:
@@ -412,7 +479,6 @@ with tab_proxies:
         key="proxy_input",
     )
 
-    # Live validation preview
     proxy_lines = [
         l.strip()
         for l in new_proxies_raw.splitlines()
@@ -564,6 +630,14 @@ User-provided proxy (Flutter app)  →  Redis pool (random)  →  direct connect
 
 > 💡 **Tip:** Free proxies are unreliable. Use paid residential proxies for best
 > results with Garena's DataDome protection.
+
+---
+
+#### ☢️ Danger Zone Buttons
+Each tab now has a **☢️ DANGER ZONE** expander near the top. Use these to wipe
+the entire pool in one action (with a 2-click confirmation). Useful when:
+- Your cookies are all expired and you need a clean slate before pasting fresh ones.
+- Your proxy pool has gone stale and you want to reset completely.
 
 ---
 
