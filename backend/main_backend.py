@@ -73,6 +73,13 @@ try:
 except ImportError:
     _HAS_TOOLS = False
 
+# ── NEW: CODM Checker ─────────────────────────────────────────
+try:
+    from routers import codm as codm_router
+    _HAS_CODM = True
+except ImportError:
+    _HAS_CODM = False
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s"
@@ -84,7 +91,7 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     port = int(os.environ.get("PORT", 8000))
     logger.info("=" * 55)
-    logger.info("🚀  XISSIN BACKEND  v2.3.0  —  STARTING UP")
+    logger.info("🚀  XISSIN BACKEND  v2.4.0  —  STARTING UP")
     logger.info("=" * 55)
     logger.info(f"🌐  Listening on  0.0.0.0:{port}")
     logger.info(f"🔧  Environment : {os.environ.get('ENVIRONMENT', 'production')}")
@@ -103,23 +110,29 @@ async def lifespan(app: FastAPI):
     logger.info(f"    {'✅' if _HAS_ANNOUNCEMENTS       else '❌'}  /api/announcements")
     logger.info(f"    {'✅' if _HAS_SETTINGS            else '❌'}  /api/settings")
     logger.info(f"    {'✅' if _HAS_LOCATION            else '❌'}  /api/location         — User Map")
-    logger.info(f"    {'✅' if _HAS_PAYMENTS            else '❌'}  /api/payments         — Premium Keys")  # ← updated
+    logger.info(f"    {'✅' if _HAS_PAYMENTS            else '❌'}  /api/payments         — Premium Keys")
     logger.info(f"    {'✅' if _HAS_CRASH_REPORT        else '❌'}  /api/crash-report     — Crash Reports")
     logger.info(f"    {'✅' if _HAS_IP_TRACKER          else '❌'}  /api/ip-tracker       — IP Tracker")
     logger.info(f"    {'✅' if _HAS_USERNAME_TRACKER    else '❌'}  /api/username-tracker — Username Tracker")
     logger.info(f"    {'✅' if _HAS_SESSION              else '❌'}  /api/auth/session     — Session Tokens")
     logger.info(f"    {'✅' if _HAS_TOOLS               else '❌'}  /api/tools            — Tool Logs")
-
+    logger.info(f"    {'✅' if _HAS_CODM                else '❌'}  /api/codm             — CODM Checker")
     logger.info("=" * 55)
-    
-    # Check for Bot Token at startup
+
     bot_token = os.getenv("XISSIN_BOT_TOKEN")
     if not bot_token or not bot_token.strip():
         logger.warning("⚠️  WARNING: XISSIN_BOT_TOKEN is missing from environment variables!")
-        logger.warning("⚠️  Crash reports will NOT be sent to Telegram.")
     else:
         logger.info("✅  Telegram Bot Token loaded successfully.")
-        
+
+    codm_cookies = os.getenv("CODM_COOKIES", "")
+    cookie_count = len([l for l in codm_cookies.splitlines() if l.strip()])
+    if cookie_count == 0:
+        logger.warning("⚠️  CODM_COOKIES env var is empty — CODM checker will have no DataDome cookies.")
+        logger.warning("⚠️  Add datadome cookies to CODM_COOKIES in Railway env vars.")
+    else:
+        logger.info(f"✅  CODM_COOKIES loaded: {cookie_count} cookie(s) available.")
+
     logger.info("=" * 55)
     logger.info("✅  Xissin Backend is ONLINE and ready!")
     logger.info("=" * 55)
@@ -132,7 +145,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Xissin App API",
     description="Backend API for the Xissin Multi-Tool Flutter App",
-    version="2.3.0",
+    version="2.4.0",
     lifespan=lifespan,
 )
 
@@ -170,7 +183,7 @@ async def log_requests(request: Request, call_next):
     return response
 
 
-# ── Routers ───────────────────────────────────────────────────────────────────
+# ── Routers ───────────────────────────────────────────────────
 app.include_router(users.router, prefix="/api/users", tags=["Users"])
 app.include_router(sms.router,   prefix="/api/sms",   tags=["SMS Bomber"])
 
@@ -214,14 +227,19 @@ if _HAS_TOOLS:
     app.include_router(tools_router.router,
                        prefix="/api/tools", tags=["Tool Logs"])
 
+# ── NEW: CODM Checker ─────────────────────────────────────────
+if _HAS_CODM:
+    app.include_router(codm_router.router,
+                       prefix="/api/codm", tags=["CODM Checker"])
 
-# ── Base routes ───────────────────────────────────────────────────────────────
+
+# ── Base routes ───────────────────────────────────────────────
 @app.get("/")
 def root():
     return {
         "status":  "online",
         "app":     "Xissin Multi-Tool API",
-        "version": "2.3.0",
+        "version": "2.4.0",
     }
 
 @app.get("/health")
@@ -263,13 +281,12 @@ def api_status(user_id: Optional[str] = Query(default=None)):
     apk_notes  = s.get("apk_version_notes",
                        os.environ.get("LATEST_APK_NOTES", ""))
 
-    # If owner, force bypass all tool toggles
     def _feat(key: str, fallback: bool) -> bool:
         if is_owner: return True
         return s.get(key, fallback)
 
     return {
-        "api_version":        "2.3.0",
+        "api_version":        "2.4.0",
         "min_app_version":    min_ver,
         "latest_app_version": lat_ver,
         "apk_download_url":   apk_url,
@@ -286,13 +303,14 @@ def api_status(user_id: Optional[str] = Query(default=None)):
             "ip_tracker":       _feat("feature_ip_tracker", True),
             "username_tracker": _feat("feature_username_tracker", True),
             "codm_checker":     _feat("feature_codm_checker", True),
-            
+
             # Module loaded flags
             "module_ip_tracker":       _HAS_IP_TRACKER,
             "module_username_tracker": _HAS_USERNAME_TRACKER,
             "module_announcements":    _HAS_ANNOUNCEMENTS,
             "module_premium_keys":     _HAS_PAYMENTS,
             "module_tool_logs":        _HAS_TOOLS,
+            "module_codm":             _HAS_CODM,
         },
         "links": {
             "channel":    "https://t.me/Xissin_0",
