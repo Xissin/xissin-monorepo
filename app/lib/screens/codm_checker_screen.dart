@@ -1,5 +1,5 @@
 // ============================================================
-//  codm_checker_screen.dart  —  CODM / Garena Checker  v5.3
+//  codm_checker_screen.dart  —  CODM / Garena Checker  v6.0
 //
 //  Fix v5.3 (Bug-fix + Improvement pass):
 //  - BUG FIX: _adGranted was instance-level → reset every screen
@@ -75,21 +75,26 @@ extension _FilterLabel on _Filter {
 
 class _R {
   final String combo, nickname, level, region, uid, shell, country, detail;
+  final String accountStatus, securityStatus, username;
   final _S status;
-  final bool isClean;
+  final bool isClean, suspicious;
   final List<String> binds;
   const _R({
     required this.combo,
     required this.status,
-    this.nickname = '',
-    this.level    = '',
-    this.region   = '',
-    this.uid      = '',
-    this.shell    = '',
-    this.country  = '',
-    this.isClean  = false,
-    this.detail   = '',
-    this.binds    = const [],
+    this.nickname       = '',
+    this.level          = '',
+    this.region         = '',
+    this.uid            = '',
+    this.shell          = '',
+    this.country        = '',
+    this.isClean        = false,
+    this.detail         = '',
+    this.binds          = const [],
+    this.accountStatus  = '',
+    this.securityStatus = '',
+    this.username       = '',
+    this.suspicious     = false,
   });
   bool get isHit => status == _S.hit || status == _S.noAccount;
 
@@ -115,6 +120,9 @@ class _R {
           ..writeln('🌐 Country: ${country.isNotEmpty ? country : "—"}')
           ..writeln('🔒 Clean: ${isClean ? "YES" : "NO"}');
         if (binds.isNotEmpty) buf.writeln('🔗 Binds: ${binds.join(", ")}');
+        if (accountStatus.isNotEmpty)  buf.writeln('📌 Status: $accountStatus');
+        if (securityStatus.isNotEmpty) buf.writeln('🛡 Security: $securityStatus');
+        if (suspicious) buf.writeln('⚠️ SUSPICIOUS ACCOUNT');
       case _S.noAccount:
         buf
           ..writeln('🔵 VALID — NO CODM')
@@ -123,6 +131,8 @@ class _R {
           ..writeln('🌐 Country: ${country.isNotEmpty ? country : "—"}')
           ..writeln('🔒 Clean: ${isClean ? "YES" : "NO"}');
         if (binds.isNotEmpty) buf.writeln('🔗 Binds: ${binds.join(", ")}');
+        if (accountStatus.isNotEmpty)  buf.writeln('📌 Status: $accountStatus');
+        if (securityStatus.isNotEmpty) buf.writeln('🛡 Security: $securityStatus');
       case _S.bad:
         buf.writeln('❌ BAD — ${combo}');
       case _S.error:
@@ -328,30 +338,39 @@ class _State extends State<CodmCheckerScreen> {
       switch (status) {
         case 'hit':
           final r = _R(
-            combo:    combo,
-            status:   _S.hit,
-            nickname: data['nickname'] ?? '',
-            level:    data['level']    ?? '',
-            region:   data['region']   ?? '',
-            uid:      data['uid']      ?? '',
-            shell:    data['shell']    ?? '',
-            country:  data['country']  ?? '',
-            isClean:  data['is_clean'] == true,
-            binds:    binds,
-            detail:   'HIT',
+            combo:          combo,
+            status:         _S.hit,
+            nickname:       data['nickname']        ?? '',
+            level:          data['level']           ?? '',
+            region:         data['region']          ?? '',
+            uid:            data['uid']             ?? '',
+            shell:          data['shell']           ?? '',
+            country:        data['country']         ?? '',
+            isClean:        data['is_clean']        == true,
+            binds:          binds,
+            accountStatus:  data['account_status']  ?? '',
+            securityStatus: data['security_status'] ?? '',
+            username:       data['username']        ?? '',
+            suspicious:     data['suspicious']      == true,
+            detail:         'HIT',
           );
           _tgHit(r);
           return r;
 
         case 'valid_no_codm':
           return _R(
-            combo:   combo,
-            status:  _S.noAccount,
-            shell:   data['shell']   ?? '',
-            country: data['country'] ?? '',
-            isClean: data['is_clean'] == true,
-            binds:   binds,
-            detail:  data['detail'] ?? 'Valid Garena — No CODM linked',
+            combo:          combo,
+            status:         _S.noAccount,
+            shell:          data['shell']           ?? '',
+            country:        data['country']         ?? '',
+            isClean:        data['is_clean']        == true,
+            binds:          binds,
+            uid:            data['uid']             ?? '',
+            accountStatus:  data['account_status']  ?? '',
+            securityStatus: data['security_status'] ?? '',
+            username:       data['username']        ?? '',
+            suspicious:     data['suspicious']      == true,
+            detail:         data['detail'] ?? 'Valid Garena — No CODM linked',
           );
 
         case 'bad':
@@ -1162,6 +1181,12 @@ class _State extends State<CodmCheckerScreen> {
             _row('🔒 Clean',   r.isClean             ? 'YES ✅'   : 'NO ❌', c),
             if (r.binds.isNotEmpty)
               _row('🔗 Binds', r.binds.join(', '), c),
+            if (r.accountStatus.isNotEmpty)
+              _row('📌 Status', r.accountStatus, c),
+            if (r.securityStatus.isNotEmpty)
+              _row('🛡 Security', r.securityStatus, c),
+            if (r.suspicious)
+              _row('⚠️ Flag', 'SUSPICIOUS', c),
           ],
           if (r.status == _S.noAccount && r.shell.isNotEmpty) ...[
             const SizedBox(height: 8),
@@ -1172,6 +1197,10 @@ class _State extends State<CodmCheckerScreen> {
             _row('🔒 Clean',   r.isClean ? 'YES ✅' : 'NO ❌', c),
             if (r.binds.isNotEmpty)
               _row('🔗 Binds', r.binds.join(', '), c),
+            if (r.accountStatus.isNotEmpty)
+              _row('📌 Status', r.accountStatus, c),
+            if (r.securityStatus.isNotEmpty)
+              _row('🛡 Security', r.securityStatus, c),
             _row('ℹ️ Note', r.detail, c),
           ],
           if ((r.status == _S.bad || r.status == _S.error) && r.detail.isNotEmpty) ...[
